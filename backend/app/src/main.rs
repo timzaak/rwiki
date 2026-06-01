@@ -7,7 +7,27 @@ use rig::client::EmbeddingsClient;
 use rig::embeddings::EmbeddingModel;
 use std::env;
 use std::sync::Arc;
+use std::sync::Once;
 use tracing_subscriber::prelude::*;
+
+static SQLITE_VEC_INIT: Once = Once::new();
+
+/// Register the sqlite-vec extension globally. Must be called before opening any
+/// SQLite connection that uses vec0 virtual tables. Safe to call multiple times.
+fn ensure_sqlite_vec_loaded() {
+    SQLITE_VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    });
+}
 
 /// Rwiki Backend Application
 #[derive(Parser, Debug)]
@@ -129,18 +149,7 @@ async fn main() -> Result<()> {
     tracing::info!("OpenAPI enabled: {}", config.server.enable_openapi);
 
     // 注册 sqlite-vec 扩展（必须在打开连接之前调用）
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    }
+    ensure_sqlite_vec_loaded();
 
     // 确保数据目录存在
     if let Some(parent) = std::path::Path::new(&config.sqlite.path).parent() {
