@@ -6,7 +6,7 @@ icon: Rocket
 
 RWiki 是一个知识库问答平台。你把文档传上去，它自动分块和向量化，然后你可以针对文档内容提问。
 
-整个过程：上传文档 → 发布 → 在聊天界面提问（或通过 API 调用）。后面三节会把这三步走一遍。
+整个过程：上传文档 → 发布 → 在聊天界面提问（或通过 API 调用）。后面几节会把这几步走一遍。
 
 ## 你需要先装好
 
@@ -64,6 +64,30 @@ model = "deepseek/deepseek-chat-v3-0324"
 ```
 
 也支持 OpenAI、智谱 AI 等 provider，详见[配置](/docs/zh/configuration)。
+
+### 零成本启动（OpenRouter 免费模型）
+
+如果你只想试一下，不想花钱，可以用 OpenRouter 的免费模型跑起来。只需要一个 [OpenRouter API Key](https://openrouter.ai/)（注册即可获取，不需要绑卡）。
+
+配置方式：LLM 和 Embedding 都指向 OpenRouter，用免费模型。
+
+```toml
+[llm]
+api_key = "sk-or-..."         # OpenRouter API Key
+base_url = "https://openrouter.ai/api/v1"
+model = "meta-llama/llama-3.3-70b-instruct:free"
+
+[embedding]
+api_key = "sk-or-..."         # 同一个 OpenRouter Key
+base_url = "https://openrouter.ai/api/v1"
+model = "nvidia/llama-nemotron-embed-vl-1b-v2"
+```
+
+这里的两个模型都是免费的（`$0/M` tokens）。LLM 也可以换成其他 OpenRouter 免费模型，比如 `google/gemma-3-27b:free` 或 `nvidia/nemotron-3-nano-30b-a3b:free`。
+
+OpenRouter 免费模型列表：[openrouter.ai/collections/free-models](https://openrouter.ai/collections/free-models)
+
+如果后续需要更好的质量，可以随时切到付费模型，配置不用改结构，只换 `model` 字段就行。
 
 ### API Token（文档管理用）
 
@@ -126,7 +150,21 @@ curl http://localhost:8080/health
 
 ### 准备一份文档
 
-RWiki 支持 `.md`、`.mdx`、`.xlsx` 格式。先创建一个测试用的 Markdown 文件：
+RWiki 支持三种格式的文件导入：
+
+| 格式 | 扩展名 | 典型场景 |
+|------|--------|----------|
+| Markdown | `.md`、`.mdx` | 技术文档、FAQ、知识条目 |
+| Excel | `.xlsx` | 批量导入结构化知识条目 |
+| OpenAPI JSON | `.json` | API 文档问答 |
+
+不支持 PDF、Word（.doc/.docx）、TXT、CSV 等格式。如果需要导入这类内容，先转换成 Markdown 或 Excel。
+
+文件大小上限 50MB。
+
+#### Markdown（.md / .mdx）
+
+先创建一个测试用的 Markdown 文件：
 
 ```markdown
 # RWiki 使用说明
@@ -143,6 +181,47 @@ RWiki 是一个 RAG + Agent 驱动的知识库问答平台。
 ```
 
 保存为 `faq.md`。
+
+Markdown 文件支持可选的 frontmatter（文件开头用 `---` 包裹的元数据块）：
+
+```markdown
+---
+title: 自定义标题
+locale: zh-CN
+link: https://example.com/doc
+tags: FAQ, 产品
+---
+
+正文内容...
+```
+
+frontmatter 支持的字段：`title`、`locale`、`link`、`tags`（逗号分隔）。如果省略 frontmatter，标题会从正文第一个 `#` 标题或文件名推导。
+
+文件必须是 UTF-8 编码。`.mdx` 文件按原始文本摄入，不执行 JSX 或组件编译。
+
+#### Excel（.xlsx）
+
+Excel 文件用于批量导入结构化的知识条目。第一行是表头，每个数据行生成一条知识条目。
+
+表头定义：
+
+| 列名 | 必填 | 说明 |
+|------|------|------|
+| `Title` | 是 | 条目标题 |
+| `Markdown Content` | 是 | 条目正文（支持 Markdown 格式） |
+| `Locale` | 否 | 语言标识，如 `zh-CN`、`en` |
+| `Link` | 否 | 原始链接 |
+| `Tags` | 否 | 标签，用逗号分隔 |
+
+列的顺序不影响解析，按列名匹配。缺少必填列时，上传会失败并返回具体的错误信息。
+
+如果某行的 `Title` 或 `Markdown Content` 为空，该行会被跳过，其他有效行正常导入。
+
+#### OpenAPI JSON（.json）
+
+`.json` 文件按 OpenAPI 3.x 规格解析。每个 API 端点（path + method 组合）生成一条独立的可检索条目。适合用来搭建 API 文档问答。
+
+文件必须包含 `openapi` 字段（版本 `3.x`）和 `paths` 对象。`components/schemas` 中的 `$ref` 引用会被自动解析。
 
 ### 上传文档
 

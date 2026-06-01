@@ -6,7 +6,7 @@ icon: Rocket
 
 RWiki is a knowledge base Q&A platform. You upload documents, it automatically chunks and vectorizes them, then you can ask questions about the content.
 
-The flow: upload a document → publish → ask questions via the chat UI or API. The next three sections walk you through each step.
+The flow: upload a document → publish → ask questions via the chat UI or API. The sections below walk you through each step.
 
 ## Prerequisites
 
@@ -64,6 +64,30 @@ model = "deepseek/deepseek-chat-v3-0324"
 ```
 
 Other providers like OpenAI, BigModel (Zhipu AI) are also supported. See [Configuration](/docs/configuration) for details.
+
+### Zero-cost setup (OpenRouter free models)
+
+If you just want to try it out without spending money, you can run RWiki entirely on OpenRouter's free models. You only need an [OpenRouter API Key](https://openrouter.ai/) (sign up for free, no credit card required).
+
+Point both LLM and Embedding at OpenRouter with free models:
+
+```toml
+[llm]
+api_key = "sk-or-..."         # OpenRouter API Key
+base_url = "https://openrouter.ai/api/v1"
+model = "meta-llama/llama-3.3-70b-instruct:free"
+
+[embedding]
+api_key = "sk-or-..."         # Same OpenRouter Key
+base_url = "https://openrouter.ai/api/v1"
+model = "nvidia/llama-nemotron-embed-vl-1b-v2"
+```
+
+Both models above are free (`$0/M` tokens). You can swap the LLM for any other free model on OpenRouter, such as `google/gemma-3-27b:free` or `nvidia/nemotron-3-nano-30b-a3b:free`.
+
+Free model list: [openrouter.ai/collections/free-models](https://openrouter.ai/collections/free-models)
+
+When you need better quality later, switch to a paid model — same config structure, just change the `model` field.
 
 ### API Token (for document management)
 
@@ -126,7 +150,21 @@ With the server running, let's walk through the full flow: upload a document, pu
 
 ### Prepare a document
 
-RWiki supports `.md`, `.mdx`, and `.xlsx` formats. Create a test Markdown file:
+RWiki supports three file formats:
+
+| Format | Extension | Use case |
+|--------|-----------|----------|
+| Markdown | `.md`, `.mdx` | Technical docs, FAQs, knowledge articles |
+| Excel | `.xlsx` | Batch import of structured knowledge entries |
+| OpenAPI JSON | `.json` | API documentation Q&A |
+
+PDF, Word (.doc/.docx), TXT, and CSV are **not supported**. Convert those to Markdown or Excel first.
+
+File size limit: 50MB.
+
+#### Markdown (.md / .mdx)
+
+Create a test Markdown file:
 
 ```markdown
 # RWiki Usage Guide
@@ -143,6 +181,47 @@ The backend listens on port 8080 by default. The frontend dev server listens on 
 ```
 
 Save it as `faq.md`.
+
+Markdown files support optional frontmatter (a metadata block wrapped in `---` at the top of the file):
+
+```markdown
+---
+title: Custom Title
+locale: en
+link: https://example.com/doc
+tags: FAQ, product
+---
+
+Body content...
+```
+
+Frontmatter fields: `title`, `locale`, `link`, `tags` (comma-separated). If you skip frontmatter, the title is derived from the first `#` heading in the body or the filename.
+
+Files must be UTF-8 encoded. `.mdx` files are ingested as raw text — no JSX execution or component compilation.
+
+#### Excel (.xlsx)
+
+Excel files are for batch importing structured knowledge entries. The first row is the header, and each data row becomes one searchable entry.
+
+Header columns:
+
+| Column name | Required | Description |
+|-------------|----------|-------------|
+| `Title` | Yes | Entry title |
+| `Markdown Content` | Yes | Entry body (supports Markdown formatting) |
+| `Locale` | No | Language identifier, e.g. `en`, `zh-CN` |
+| `Link` | No | Original URL |
+| `Tags` | No | Comma-separated tags |
+
+Column order doesn't matter — columns are matched by name. If required columns are missing, the upload fails with a specific error message.
+
+If a row has empty `Title` or `Markdown Content`, that row is skipped and the rest are imported normally.
+
+#### OpenAPI JSON (.json)
+
+`.json` files are parsed as OpenAPI 3.x specs. Each API endpoint (path + method combination) becomes a separate searchable entry. Useful for building an API documentation assistant.
+
+The file must contain an `openapi` field (version `3.x`) and a `paths` object. `$ref` references inside `components/schemas` are resolved automatically.
 
 ### Upload the document
 
