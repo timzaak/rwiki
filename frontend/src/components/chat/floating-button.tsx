@@ -19,12 +19,13 @@ export function FloatingButton({ visible = true, position = 'right' }: FloatingB
       data-testid="floating-chat-button"
       onClick={openModal}
       className={cn(
-        'fixed bottom-6 z-50 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all hover:scale-105 hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'fixed bottom-6 z-50 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all hover:scale-105 hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 active:scale-95',
         position === 'left' ? 'left-6' : 'right-6',
+        'animate-glow-pulse',
       )}
       aria-label="Open chat assistant"
     >
-      <MessageCircleIcon className="size-6" />
+      <MessageCircleIcon className="size-5" />
     </button>
   )
 }

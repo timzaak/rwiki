@@ -16,7 +16,6 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
   const isModalOpen = useChatModalStore((s) => s.isModalOpen)
   const closeModal = useChatModalStore((s) => s.closeModal)
 
-  // Drag state — position delta from initial bottom-right anchor
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({
     x: 0,
     y: 0,
@@ -32,7 +31,6 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
 
   const handlePointerDown = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
-      // Prevent text selection while dragging
       e.preventDefault()
 
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
@@ -63,7 +61,6 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
       const newX = dragStart.current.offsetX + dx
       const newY = dragStart.current.offsetY + dy
 
-      // Clamp within viewport bounds (approximate 400x500 modal)
       const maxX = window.innerWidth - 400
       const maxY = window.innerHeight - 500
 
@@ -94,7 +91,6 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
     }
   }, [isModalOpen])
 
-  // Reset drag position when modal closes
   useEffect(() => {
     if (!isModalOpen) {
       setDragOffset({ x: 0, y: 0 })
@@ -105,19 +101,16 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
 
   return (
     <>
-      {/* Overlay — does NOT close on click */}
-      <div className="fixed inset-0 z-50 bg-black/40" />
+      <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
 
-      {/* PC: anchored modal */}
       <div
         data-testid="chat-modal"
         className={cn(
-          'fixed z-50 flex flex-col overflow-hidden rounded-xl border bg-background shadow-2xl',
-          // PC layout
+          'fixed z-50 flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-background/95 shadow-2xl backdrop-blur-xl',
           'bottom-24 h-[500px] w-[400px]',
           position === 'left' ? 'left-6' : 'right-6',
-          // Mobile: fullscreen
-          'max-sm:inset-0 max-sm:bottom-0 max-sm:right-0 max-sm:left-0 max-sm:h-full max-sm:w-full max-sm:rounded-none max-sm:border-0',
+          'max-sm:inset-0 max-sm:bottom-0 max-sm:right-0 max-sm:left-0 max-sm:h-full max-sm:w-full max-sm:rounded-none max-sm:border-0 max-sm:backdrop-blur-none',
+          '[animation:slide-up_0.3s_ease-out_both]',
         )}
         style={{
           transform:
@@ -126,14 +119,18 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
               : undefined,
         }}
       >
-        {/* Header / drag handle */}
         <div
           data-testid="chat-modal-header"
           onMouseDown={handlePointerDown}
           onTouchStart={handlePointerDown}
-          className="flex cursor-grab items-center justify-between border-b px-4 py-2 active:cursor-grabbing max-sm:cursor-default"
+          className="flex cursor-grab items-center justify-between border-b border-border/50 px-4 py-2.5 active:cursor-grabbing max-sm:cursor-default"
         >
-          <span className="text-sm font-medium">{title ?? 'Chat Assistant'}</span>
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-primary">
+              <span className="font-serif text-xs font-bold text-primary-foreground">R</span>
+            </div>
+            <span className="font-serif text-sm font-medium">{title ?? 'Rwiki Chat'}</span>
+          </div>
           <Button
             data-testid="chat-modal-close"
             size="icon-xs"
@@ -141,11 +138,10 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
             onClick={closeModal}
             aria-label="Close chat modal"
           >
-            <XIcon className="size-4" />
+            <XIcon className="size-3.5" />
           </Button>
         </div>
 
-        {/* Body */}
         <div className="min-h-0 flex-1">
           <ChatPanel showHeader={false} welcomeMessage={welcomeMessage} />
         </div>

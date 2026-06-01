@@ -16,10 +16,15 @@ export function MessageList() {
     return (
       <div
         data-testid="message-list-empty"
-        className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground"
+        className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-muted-foreground"
       >
-        <MessageSquareIcon className="size-10 opacity-40" />
-        <p className="text-sm">Anything you'd like to know? Just ask.</p>
+        <div className="flex size-16 items-center justify-center rounded-2xl bg-secondary/60 ring-1 ring-border/40">
+          <MessageSquareIcon className="size-7 opacity-50" />
+        </div>
+        <div className="text-center">
+          <p className="font-serif text-sm font-medium">Ask me anything</p>
+          <p className="mt-1 text-xs opacity-60">Your knowledge base, conversationally.</p>
+        </div>
       </div>
     )
   }

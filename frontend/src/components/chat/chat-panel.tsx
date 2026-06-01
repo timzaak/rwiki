@@ -52,14 +52,14 @@ export function ChatPanel({
       className={cn('flex h-full flex-col', className)}
     >
       {showHeader && (
-        <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
-          <span className="text-sm font-medium">{headerTitle}</span>
+        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
+          <span className="font-serif text-sm font-medium">{headerTitle}</span>
           {clearButton}
         </div>
       )}
 
       {!showHeader && hasConversation && (
-        <div className="flex items-center justify-end border-b px-4 py-2">
+        <div className="flex items-center justify-end border-b border-border/60 px-4 py-2">
           {clearButton}
         </div>
       )}
@@ -75,7 +75,7 @@ export function ChatPanel({
       {error && (
         <div
           data-testid="chat-error-banner"
-          className="flex items-center justify-between gap-2 border-t bg-destructive/5 px-4 py-2 text-sm text-destructive"
+          className="flex items-center justify-between gap-2 border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-sm text-destructive"
         >
           <span className="flex-1 truncate">{error}</span>
           <div className="flex items-center gap-1">

@@ -79,37 +79,37 @@ export function MessageItem({ message }: MessageItemProps) {
     <div
       data-testid={`message-item-${message.role}`}
       className={cn(
-        'flex gap-3 px-4 py-3',
+        'flex gap-3 px-4 py-3 [animation:message-enter_0.3s_ease-out_both]',
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
       <div
         className={cn(
-          'flex size-8 shrink-0 items-center justify-center rounded-full',
+          'flex size-8 shrink-0 items-center justify-center rounded-full shadow-sm',
           isUser
             ? 'bg-primary text-primary-foreground'
-            : 'bg-muted text-muted-foreground',
+            : 'bg-secondary text-muted-foreground ring-1 ring-border/50',
         )}
       >
         {isUser ? (
-          <UserIcon className="size-4" />
+          <UserIcon className="size-3.5" />
         ) : (
-          <BotIcon className="size-4" />
+          <BotIcon className="size-3.5" />
         )}
       </div>
 
       <div
         className={cn(
-          'max-w-[80%] rounded-lg px-3 py-2 text-sm',
+          'max-w-[80%] rounded-2xl px-3.5 py-2.5 text-sm',
           isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted text-foreground',
+            ? 'bg-primary text-primary-foreground rounded-br-md shadow-sm'
+            : 'bg-card text-foreground rounded-bl-md shadow-sm ring-1 ring-border/40',
         )}
       >
         {isUser ? (
           <p className="whitespace-pre-wrap break-all">{message.content}</p>
         ) : (
-          <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-blue-600/40 hover:[&_a]:text-blue-700 dark:[&_a]:text-blue-400 dark:hover:[&_a]:text-blue-300 [&_pre]:rounded-md [&_pre]:bg-background [&_pre]:p-3 [&_pre]:overflow-x-auto">
+          <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em]">
             <Markdown
               remarkPlugins={[remarkGfm]}
               components={markdownComponents}
@@ -122,12 +122,12 @@ export function MessageItem({ message }: MessageItemProps) {
         {message.isStreaming && (
           <span
             data-testid="message-item-streaming"
-            className="ml-1 inline-block size-2 animate-pulse rounded-full bg-current"
+            className="ml-1 inline-block size-1.5 animate-pulse rounded-full bg-current"
           />
         )}
 
         {message.error && (
-          <span className="mt-1 inline-flex items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
+          <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
             {message.error}
           </span>
         )}

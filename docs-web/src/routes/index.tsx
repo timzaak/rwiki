@@ -31,31 +31,57 @@ function GitHubIcon({ className }: { className?: string }) {
 function Home() {
   return (
     <HomeLayout {...baseOptions()}>
-      <div className="relative overflow-hidden selection:bg-purple-200">
-        {/* Background Gradient Blobs */}
-        <div className="absolute top-[-10%] left-[-10%] w-[50vw] h-[50vw] max-w-[600px] max-h-[600px] bg-purple-200/50 rounded-full mix-blend-multiply filter blur-[100px] opacity-70 animate-pulse pointer-events-none" />
-        <div className="absolute top-[-5%] right-[-5%] w-[45vw] h-[45vw] max-w-[500px] max-h-[500px] bg-blue-200/50 rounded-full mix-blend-multiply filter blur-[100px] opacity-60 animate-pulse pointer-events-none" />
+      <div className="relative overflow-hidden selection:bg-amber-200 selection:text-amber-900 dark:selection:bg-amber-800 dark:selection:text-amber-100">
+        {/* Dot grid background */}
+        <div
+          className="absolute inset-0 pointer-events-none opacity-[0.035] dark:opacity-[0.06]"
+          style={{
+            backgroundImage: "radial-gradient(circle, currentColor 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+          }}
+        />
+
+        {/* Warm gradient glow */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[600px] bg-amber-100/50 dark:bg-amber-900/10 rounded-full blur-[140px] pointer-events-none" />
 
         {/* Hero Section */}
-        <section className="relative z-10 pt-24 pb-16 px-4">
-          <div className="max-w-4xl mx-auto text-center">
-            <h1 className="text-5xl md:text-7xl font-serif font-bold text-gray-900 leading-[1.1] mb-6">
-              Self-hosted
-              <br />
-              knowledge base Q&A.
+        <section className="relative z-10 pt-28 pb-16 px-4">
+          <div className="max-w-3xl mx-auto text-center">
+            {/* Badge */}
+            <div
+              className="inline-flex items-center gap-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/70 dark:border-amber-800/40 text-amber-800 dark:text-amber-300 px-4 py-1.5 rounded-full text-sm font-medium mb-8"
+              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "0ms" }}
+            >
+              <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
+              Open source · Apache 2.0
+            </div>
+
+            <h1
+              className="text-5xl md:text-7xl font-serif font-bold text-stone-900 dark:text-stone-100 leading-[1.05] mb-6 tracking-tight"
+              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "80ms" }}
+            >
+              Your docs,{" "}
+              <em className="text-amber-700 dark:text-amber-400 italic">answered.</em>
             </h1>
-            <p className="text-lg md:text-xl text-gray-600 mb-10 max-w-2xl mx-auto leading-relaxed">
+
+            <p
+              className="text-lg md:text-xl text-stone-500 dark:text-stone-400 mb-10 max-w-2xl mx-auto leading-relaxed"
+              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "160ms" }}
+            >
               Upload your docs, ask questions, get sourced answers.
               <br className="hidden md:block" />
               Single binary, SQLite, zero external databases.
             </p>
 
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 flex-wrap">
+            <div
+              className="flex flex-col sm:flex-row items-center justify-center gap-4 flex-wrap"
+              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "240ms" }}
+            >
               <a
                 href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-8 py-3.5 rounded-full font-medium transition-all shadow-lg shadow-purple-200 justify-center"
+                className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-8 py-3.5 rounded-full font-medium transition-all duration-200 shadow-lg shadow-amber-600/20 dark:shadow-amber-900/40 justify-center"
               >
                 <GitHubIcon className="w-5 h-5" />
                 Star on GitHub
@@ -63,103 +89,117 @@ function Home() {
               <Link
                 to="/docs/$"
                 params={{ _splat: "getting-started" }}
-                className="flex items-center gap-2 bg-white/60 hover:bg-white backdrop-blur-md text-gray-700 px-8 py-3.5 rounded-full border border-gray-200/80 font-medium transition-all shadow-sm justify-center"
+                className="flex items-center gap-2 bg-white/70 dark:bg-stone-800/70 hover:bg-white dark:hover:bg-stone-800 backdrop-blur-md text-stone-700 dark:text-stone-300 px-8 py-3.5 rounded-full border border-stone-200 dark:border-stone-700 font-medium transition-all duration-200 shadow-sm justify-center"
               >
                 Read Docs
               </Link>
             </div>
           </div>
 
-          {/* Terminal/Code Snippet */}
-          <div className="relative mt-20 max-w-2xl mx-auto">
-            <div className="absolute inset-0 bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 blur-2xl opacity-20 md:opacity-30 rounded-3xl transform scale-y-75 translate-y-4" />
+          {/* Terminal Block */}
+          <div
+            className="relative mt-20 max-w-2xl mx-auto"
+            style={{ animation: "fade-up 0.7s ease-out both", animationDelay: "350ms" }}
+          >
+            <div className="absolute inset-0 bg-gradient-to-r from-amber-300/20 via-orange-200/20 to-amber-300/20 blur-2xl rounded-3xl transform scale-y-75 translate-y-4" />
 
-            <div className="relative bg-white/70 backdrop-blur-xl border border-white/60 shadow-[0_8px_30px_rgb(0,0,0,0.06)] rounded-2xl p-2 z-10 overflow-hidden">
-              <div className="flex gap-2 px-3 py-2">
-                <div className="w-3 h-3 rounded-full bg-[#ff5f56]" />
-                <div className="w-3 h-3 rounded-full bg-[#ffbd2e]" />
-                <div className="w-3 h-3 rounded-full bg-[#27c93f]" />
+            <div className="relative bg-stone-900 dark:bg-stone-950 border border-stone-800 dark:border-stone-800 shadow-[0_24px_60px_rgba(0,0,0,0.15)] rounded-2xl overflow-hidden z-10">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-800/60">
+                <div className="w-3 h-3 rounded-full bg-red-400/70" />
+                <div className="w-3 h-3 rounded-full bg-yellow-400/70" />
+                <div className="w-3 h-3 rounded-full bg-green-400/70" />
+                <span className="ml-3 text-stone-500 text-xs font-mono">terminal</span>
               </div>
-              <div className="px-6 py-5 md:py-6 bg-white/50 rounded-xl font-mono text-sm md:text-base text-gray-800 break-all sm:break-normal text-center sm:text-left overflow-x-auto shadow-inner">
-                <span className="text-pink-400 select-none mr-2 font-bold">
-                  $
+              <div className="px-5 py-5 md:py-6 bg-stone-900/50 font-mono text-sm md:text-base overflow-x-auto">
+                <span className="text-amber-400 select-none mr-2 font-semibold">$</span>
+                <span className="text-stone-200">
+                  docker run -d -p 8080:8080 -v rwiki-data:/app/data rwiki
                 </span>
-                docker run -d -p 8080:8080 -v rwiki-data:/app/data rwiki
+                <span className="inline-block w-[7px] h-[18px] bg-amber-400/90 ml-0.5 animate-pulse rounded-[1px]" />
               </div>
             </div>
           </div>
         </section>
 
+        <Divider />
+
         {/* Feature Grid */}
-        <section className="relative z-10 mt-16 max-w-4xl mx-auto px-4 pb-20">
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 cursor-default">
+        <section className="relative z-10 py-20 max-w-4xl mx-auto px-4">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-900 dark:text-stone-100 tracking-tight">
+              Everything you need
+            </h2>
+            <p className="mt-3 text-stone-500 dark:text-stone-400">
+              Built for simplicity, designed for power.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5 cursor-default">
             <FeatureCard
-              icon={<Activity className="w-6 h-6 text-gray-700" />}
+              icon={<Activity className="w-5 h-5" />}
               title="Streaming Q&A"
+              desc="Real-time streaming responses"
             />
             <FeatureCard
-              icon={<Database className="w-6 h-6 text-gray-700" />}
+              icon={<Database className="w-5 h-5" />}
               title="SQLite only"
+              desc="No external database needed"
             />
             <FeatureCard
-              icon={<Code className="w-6 h-6 text-gray-700" />}
+              icon={<Code className="w-5 h-5" />}
               title="Embeddable widget"
+              desc="Drop into any website"
             />
             <FeatureCard
-              icon={<FileStack className="w-6 h-6 text-gray-700" />}
+              icon={<FileStack className="w-5 h-5" />}
               title="Multi-format"
+              desc="PDF, Markdown, DOCX, URLs"
             />
             <FeatureCard
-              icon={<Sparkles className="w-6 h-6 text-gray-700" />}
+              icon={<Sparkles className="w-5 h-5" />}
               title="Any LLM provider"
+              desc="OpenAI, Claude, Gemini, local"
             />
             <FeatureCard
-              icon={<Cloud className="w-6 h-6 text-gray-700" />}
+              icon={<Cloud className="w-5 h-5" />}
               title="Self-hosted"
+              desc="Your data, your infrastructure"
             />
           </div>
         </section>
 
-        {/* How it works */}
-        <section className="relative z-10 py-24 px-4 bg-gradient-to-b from-transparent to-white/40">
-          <div className="max-w-xl mx-auto">
-            <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-16 text-center">
-              How it works
-            </h2>
+        <Divider />
 
-            <div className="relative space-y-12">
-              <div className="absolute top-8 left-[3.35rem] bottom-8 w-px bg-gray-200 hidden sm:block pointer-events-none" />
+        {/* How it works */}
+        <section className="relative z-10 py-20 px-4">
+          <div className="max-w-xl mx-auto">
+            <div className="text-center mb-16">
+              <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-900 dark:text-stone-100 tracking-tight">
+                How it works
+              </h2>
+              <p className="mt-3 text-stone-500 dark:text-stone-400">
+                Three steps to your own knowledge base.
+              </p>
+            </div>
+
+            <div className="relative space-y-10">
+              <div className="absolute top-7 left-[1.75rem] bottom-7 w-px bg-stone-200 dark:bg-stone-700 hidden sm:block pointer-events-none" />
 
               <Step
-                icon={
-                  <UploadCloud
-                    className="w-8 h-8 text-gray-700"
-                    strokeWidth={1.5}
-                  />
-                }
-                num="1"
+                icon={<UploadCloud className="w-7 h-7" strokeWidth={1.5} />}
+                num="01"
                 title="Upload"
                 desc="Upload your docs, files, and links directly into the system for secure local processing."
               />
               <Step
-                icon={
-                  <FileText
-                    className="w-8 h-8 text-gray-700"
-                    strokeWidth={1.5}
-                  />
-                }
-                num="2"
+                icon={<FileText className="w-7 h-7" strokeWidth={1.5} />}
+                num="02"
                 title="Publish"
                 desc="Content is processed, indexed, and optimally stored locally without external databases."
               />
               <Step
-                icon={
-                  <MessageSquare
-                    className="w-8 h-8 text-gray-700"
-                    strokeWidth={1.5}
-                  />
-                }
-                num="3"
+                icon={<MessageSquare className="w-7 h-7" strokeWidth={1.5} />}
+                num="03"
                 title="Ask"
                 desc="Ask questions and get instant, context-aware answers directly supported by your data."
               />
@@ -167,33 +207,38 @@ function Home() {
           </div>
         </section>
 
-        {/* Why RWiki Comparison Table */}
-        <section className="relative z-10 py-24 px-4">
-          <div className="max-w-4xl mx-auto">
-            <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-12 text-center">
-              Why RWiki
-            </h2>
+        <Divider />
 
-            <div className="bg-white/80 backdrop-blur-lg rounded-3xl shadow-[0_8px_40px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden">
+        {/* Why RWiki Comparison */}
+        <section className="relative z-10 py-20 px-4">
+          <div className="max-w-4xl mx-auto">
+            <div className="text-center mb-14">
+              <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-900 dark:text-stone-100 tracking-tight">
+                Why RWiki
+              </h2>
+              <p className="mt-3 text-stone-500 dark:text-stone-400">
+                Compared to typical RAG solutions.
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-stone-900 rounded-2xl shadow-[0_8px_40px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_40px_rgb(0,0,0,0.3)] border border-stone-100 dark:border-stone-800 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse min-w-[600px]">
                   <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="px-8 py-6 font-medium text-gray-400 w-1/3" />
-                      <th className="px-8 py-6 font-bold text-gray-900 w-1/3 text-lg">
-                        RWiki
+                    <tr className="border-b border-stone-100 dark:border-stone-800">
+                      <th className="px-8 py-6 font-medium text-stone-400 dark:text-stone-500 w-1/3" />
+                      <th className="px-8 py-6 w-1/3">
+                        <span className="text-lg font-bold text-amber-700 dark:text-amber-400">
+                          RWiki
+                        </span>
                       </th>
-                      <th className="px-8 py-6 font-bold text-gray-900 w-1/3 text-lg">
+                      <th className="px-8 py-6 font-bold text-stone-400 dark:text-stone-500 w-1/3 text-lg">
                         Typical RAG
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50 text-gray-600">
-                    <TableRow
-                      label="Database"
-                      rwiki="SQLite"
-                      typical="Vector DB + PostGres"
-                    />
+                  <tbody className="divide-y divide-stone-50 dark:divide-stone-800/60 text-stone-600 dark:text-stone-400">
+                    <TableRow label="Database" rwiki="SQLite" typical="Vector DB + Postgres" />
                     <TableRow
                       label="Dependencies"
                       rwiki="None"
@@ -204,11 +249,7 @@ function Home() {
                       rwiki="Single binary, drop-in"
                       typical="Complex setup scripts"
                     />
-                    <TableRow
-                      label="Setup"
-                      rwiki="5 minutes"
-                      typical="Requires expertise"
-                    />
+                    <TableRow label="Setup" rwiki="5 minutes" typical="Requires expertise" />
                   </tbody>
                 </table>
               </div>
@@ -216,21 +257,21 @@ function Home() {
           </div>
         </section>
 
+        <Divider />
+
         {/* Bottom CTA */}
         <section className="relative z-10 py-20 px-4 text-center">
-          <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-2">
+          <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-900 dark:text-stone-100 mb-3 tracking-tight">
             Open source, Apache 2.0.
           </h2>
-          <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-10">
-            Try it in 5 minutes.
-          </h2>
+          <p className="text-xl text-stone-500 dark:text-stone-400 mb-10">Try it in 5 minutes.</p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 flex-wrap">
             <a
               href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-8 py-3.5 rounded-full font-medium transition-all shadow-lg shadow-purple-200 justify-center"
+              className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-8 py-3.5 rounded-full font-medium transition-all duration-200 shadow-lg shadow-amber-600/20 dark:shadow-amber-900/40 justify-center"
             >
               <GitHubIcon className="w-5 h-5" />
               Star on GitHub
@@ -238,7 +279,7 @@ function Home() {
             <Link
               to="/docs/$"
               params={{ _splat: "getting-started" }}
-              className="flex items-center gap-2 bg-white/60 hover:bg-white backdrop-blur-md text-gray-700 px-8 py-3.5 rounded-full border border-gray-200/80 font-medium transition-all shadow-sm justify-center"
+              className="flex items-center gap-2 bg-white/70 dark:bg-stone-800/70 hover:bg-white dark:hover:bg-stone-800 backdrop-blur-md text-stone-700 dark:text-stone-300 px-8 py-3.5 rounded-full border border-stone-200 dark:border-stone-700 font-medium transition-all duration-200 shadow-sm justify-center"
             >
               Get Started
             </Link>
@@ -249,19 +290,34 @@ function Home() {
   );
 }
 
+function Divider() {
+  return (
+    <div className="flex items-center justify-center py-1 max-w-4xl mx-auto px-4">
+      <div className="h-px flex-1 max-w-12 bg-stone-200 dark:bg-stone-800" />
+      <div className="mx-3 w-1.5 h-1.5 bg-amber-400/60 dark:bg-amber-600/40 rotate-45" />
+      <div className="h-px flex-1 max-w-12 bg-stone-200 dark:bg-stone-800" />
+    </div>
+  );
+}
+
 function FeatureCard({
   icon,
   title,
+  desc,
 }: {
   icon: React.ReactNode;
   title: string;
+  desc: string;
 }) {
   return (
-    <div className="bg-white/70 backdrop-blur-sm rounded-2xl py-8 px-4 flex flex-col items-center gap-4 text-center shadow-[0_4px_20px_rgb(0,0,0,0.03)] border border-white hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] hover:bg-white transition-all group">
-      <div className="bg-gray-50 border border-gray-100 p-4 rounded-xl group-hover:scale-110 group-hover:shadow-sm transition-all duration-300">
+    <div className="group bg-white dark:bg-stone-900 rounded-2xl py-7 px-5 flex flex-col items-start gap-3 border border-stone-100 dark:border-stone-800 hover:border-amber-200/80 dark:hover:border-amber-800/50 hover:shadow-lg hover:shadow-amber-50/50 dark:hover:shadow-none transition-all duration-300">
+      <div className="text-amber-600 dark:text-amber-400 p-2.5 bg-amber-50/80 dark:bg-amber-900/20 rounded-lg">
         {icon}
       </div>
-      <h3 className="font-semibold text-gray-900 tracking-tight">{title}</h3>
+      <h3 className="font-semibold text-stone-900 dark:text-stone-100 tracking-tight text-[15px]">
+        {title}
+      </h3>
+      <p className="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">{desc}</p>
     </div>
   );
 }
@@ -278,20 +334,21 @@ function Step({
   desc: string;
 }) {
   return (
-    <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-8 relative z-10 group">
-      <div className="bg-white border text-gray-700 border-gray-100 p-4 rounded-xl shadow-sm relative z-10 group-hover:border-purple-200 transition-colors">
+    <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-6 relative z-10 group">
+      <div className="bg-white dark:bg-stone-900 border border-stone-100 dark:border-stone-800 p-3.5 rounded-xl shadow-sm group-hover:border-amber-200 dark:group-hover:border-amber-800/50 transition-colors text-amber-600 dark:text-amber-400 relative z-10">
         {icon}
       </div>
 
-      <div className="hidden sm:flex w-6 h-6 rounded-full bg-white border border-gray-200 items-center justify-center text-xs font-semibold text-gray-500 relative mt-5 shrink-0 z-10 group-hover:border-purple-300 group-hover:text-purple-600 transition-colors">
-        {num}
-      </div>
-
-      <div className="flex-1 text-center sm:text-left mt-2 sm:mt-4">
-        <h3 className="text-xl font-bold text-gray-900 mb-2 font-serif tracking-tight">
-          {title}
-        </h3>
-        <p className="text-gray-600 leading-relaxed text-sm max-w-sm mx-auto sm:mx-0">
+      <div className="flex-1 text-center sm:text-left mt-1 sm:mt-1.5">
+        <div className="flex items-center gap-2.5 justify-center sm:justify-start mb-1.5">
+          <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 font-mono tracking-wider">
+            {num}
+          </span>
+          <h3 className="text-lg font-bold text-stone-900 dark:text-stone-100 font-serif tracking-tight">
+            {title}
+          </h3>
+        </div>
+        <p className="text-stone-600 dark:text-stone-400 leading-relaxed text-sm max-w-sm mx-auto sm:mx-0">
           {desc}
         </p>
       </div>
@@ -309,12 +366,17 @@ function TableRow({
   typical: string;
 }) {
   return (
-    <tr className="hover:bg-gray-50/50 transition-colors">
-      <td className="px-8 py-5 font-semibold text-gray-900 border-r border-gray-50">
+    <tr className="hover:bg-amber-50/30 dark:hover:bg-amber-950/10 transition-colors">
+      <td className="px-8 py-5 font-semibold text-stone-900 dark:text-stone-200 border-r border-stone-50 dark:border-stone-800/60">
         {label}
       </td>
-      <td className="px-8 py-5 text-gray-800 font-medium">{rwiki}</td>
-      <td className="px-8 py-5 text-gray-500">{typical}</td>
+      <td className="px-8 py-5 border-r border-stone-50 dark:border-stone-800/60">
+        <div className="flex items-center gap-2.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+          <span className="text-stone-800 dark:text-stone-200 font-medium">{rwiki}</span>
+        </div>
+      </td>
+      <td className="px-8 py-5 text-stone-500 dark:text-stone-500">{typical}</td>
     </tr>
   );
 }

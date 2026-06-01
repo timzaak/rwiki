@@ -26,22 +26,23 @@ export function ChatInput() {
   }
 
   return (
-    <div className="flex items-end gap-2 border-t px-4 py-3">
+    <div className="flex items-end gap-2 border-t border-border/60 px-4 py-3">
       <textarea
         data-testid="chat-input"
         value={input}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={isLoading}
-        placeholder="Type your message..."
+        placeholder="Ask anything..."
         rows={1}
-        className="max-h-32 min-h-[2.25rem] flex-1 resize-none rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+        className="max-h-32 min-h-[2.25rem] flex-1 resize-none rounded-xl border border-border/60 bg-card px-3.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/15 disabled:opacity-50 transition-colors"
       />
       <Button
         data-testid="chat-send-button"
         size="icon-sm"
         onClick={handleSend}
         disabled={!trimmed || isLoading}
+        className="rounded-xl transition-all"
       >
         <SendHorizonalIcon className="size-4" />
       </Button>
