@@ -46,6 +46,11 @@ export const Route = createRootRoute({
       {
         title: "RWiki Documentation",
       },
+      // Google Search Console verification — replace content with your actual token
+      // {
+      //   name: "google-site-verification",
+      //   content: "YOUR_VERIFICATION_TOKEN",
+      // },
     ],
     links: [{ rel: "stylesheet", href: appCss }],
   }),

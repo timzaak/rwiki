@@ -99,20 +99,19 @@ docker run -d -p 8080:8080 \
 
 ## Caddy 反向代理
 
-使用 Caddy 在同一域名下同时托管文档站和后端服务。Caddy 负责静态文件服务、SPA 路由回退、自动 HTTPS 和反向代理。
+使用 Caddy 在同一域名下同时托管文档站和后端服务。Caddy 和后端都运行在 Docker 容器中，通过共享网络以容器名互相访问。
 
 ### 路由规划
 
 | 路径 | 目标 | 说明 |
 |------|------|------|
-| `/api/*` | 后端 | 文档管理 & 聊天 API |
-| `/health` | 后端 | 健康检查 |
-| `/swagger` | 后端 | Swagger UI（需配置开启） |
-| `/widget/*` | 后端 | 静态资源（聊天 widget JS） |
-| `/docs/*` | docs-web 静态文件 | 文档站（SPA） |
-| `/` | docs-web 静态文件 | 文档站（SPA） |
+| `/api/*` | 后端容器 | 文档管理 & 聊天 API |
+| `/health` | 后端容器 | 健康检查 |
+| `/swagger*` | 后端容器 | Swagger UI（需配置开启） |
+| `/widget/*` | 后端容器 | 静态资源（聊天 widget JS） |
+| `/*` | docs-web 静态文件 | 文档站（SPA） |
 
-### 构建
+### 构建与部署
 
 1. 拉取后端 Docker 镜像：
 
@@ -128,7 +127,7 @@ cd frontend
 npm run build:widget
 cp dist/rwiki-chat.js ../docs-web/public/
 
-# 构建文档站
+# 构建文档站（包含 sitemap 自动生成）
 cd ../docs-web
 npm install
 VITE_RWIKI_API_URL=https://your-domain.com npm run build
@@ -136,47 +135,68 @@ VITE_RWIKI_API_URL=https://your-domain.com npm run build
 
 `VITE_RWIKI_API_URL` 必须指向 Caddy 服务的**同一域名**（不是后端直接地址），因为聊天 widget 通过代理调用 `/api/chat`。
 
+构建命令会在 post-build 阶段自动生成 `sitemap.xml`。将 `robots.txt` 放在 `docs-web/public/` 目录下，构建时会自动复制到输出目录。
+
+3. 上传构建产物到服务器：
+
+```bash
+scp -r docs-web/.output/public/* your-server:/server/www/rwiki/
+```
+
 ### Caddyfile
 
 ```plaintext
 your-domain.com {
-    # 后端 API 和服务端点
     handle /api/* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /health {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /swagger* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /widget/* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
-
-    # 文档站（SPA）
     handle {
-        root * /path/to/docs-web/.output/public
-        try_files {path} /index.html
+        root * /srv/rwiki
+        try_files {path} /_shell.html
         file_server
     }
 }
 ```
 
-将 `your-domain.com` 替换为实际域名。Caddy 通过 Let's Encrypt 自动申请 TLS 证书。
+注意事项：
+
+- `rwiki` 是后端容器名，通过共享 Docker 网络访问
+- docs-web 的 SPA 入口是 `_shell.html`（不是 `index.html`），`try_files` 必须回退到 `/_shell.html`
+- `root * /srv/rwiki` 指向 Caddy 容器内挂载的 docs-web 静态文件目录
+- 将 `your-domain.com` 替换为实际域名，Caddy 通过 Let's Encrypt 自动申请 TLS 证书
 
 ### 启动全部服务
 
 ```bash
 # 启动后端
 docker run -d --name rwiki \
+  --restart unless-stopped \
+  --network your-network \
   -v rwiki-data:/app/data \
   -v /path/to/config.toml:/app/config.toml:ro \
-  -p 127.0.0.1:8080:8080 \
   ghcr.io/timzaak/rwiki
 
 # 启动 Caddy
-caddy run --config Caddyfile
+docker run -d --name caddy \
+  --restart unless-stopped \
+  --network your-network \
+  -p 80:80 \
+  -p 443:443 \
+  -p 443:443/udp \
+  -v /path/to/caddy/config:/config \
+  -v /path/to/caddy/data:/data \
+  -v /server/www/rwiki:/srv/rwiki:ro \
+  -v /path/to/Caddyfile:/etc/caddy/Caddyfile:ro \
+  caddy:2-alpine
 ```
 
-后端监听 `127.0.0.1:8080`（不对外暴露）。Caddy 绑定 80/443 端口，将请求路由到后端或文档站。
+两个容器运行在同一 Docker 网络中，Caddy 通过容器名（`rwiki:8080`）访问后端。后端无需对外暴露端口，只有 Caddy 绑定 80/443。

@@ -99,20 +99,19 @@ docker run -d -p 8080:8080 \
 
 ## Caddy Reverse Proxy
 
-Use Caddy to serve docs-web and the backend under a single domain. Caddy handles static file serving, SPA fallback, automatic HTTPS, and reverse proxying to the backend.
+Use Caddy to serve docs-web and the backend under a single domain. Both Caddy and the backend run as Docker containers on the same network — Caddy proxies to the backend by container name, not localhost.
 
 ### Route Layout
 
 | Path | Target | Description |
 |------|--------|-------------|
-| `/api/*` | Backend | Document management & chat API |
-| `/health` | Backend | Health check endpoint |
-| `/swagger` | Backend | Swagger UI (if enabled) |
-| `/widget/*` | Backend | Static assets (chat widget JS) |
-| `/docs/*` | docs-web static files | Documentation site (SPA) |
-| `/` | docs-web static files | Documentation site (SPA) |
+| `/api/*` | Backend container | Document management & chat API |
+| `/health` | Backend container | Health check endpoint |
+| `/swagger*` | Backend container | Swagger UI (if enabled) |
+| `/widget/*` | Backend container | Static assets (chat widget JS) |
+| `/*` | docs-web static files | Documentation site (SPA) |
 
-### Build
+### Build & Deploy
 
 1. Pull the backend Docker image:
 
@@ -128,7 +127,7 @@ cd frontend
 npm run build:widget
 cp dist/rwiki-chat.js ../docs-web/public/
 
-# Build docs-web
+# Build docs-web (includes sitemap generation)
 cd ../docs-web
 npm install
 VITE_RWIKI_API_URL=https://your-domain.com npm run build
@@ -136,47 +135,68 @@ VITE_RWIKI_API_URL=https://your-domain.com npm run build
 
 `VITE_RWIKI_API_URL` must point to the **same domain** served by Caddy (not the backend directly), since the chat widget calls `/api/chat` through the proxy.
 
+The build command automatically generates `sitemap.xml` via a post-build script. Place `robots.txt` in `docs-web/public/` — it will be copied to the output directory.
+
+3. Upload the built files to the server:
+
+```bash
+scp -r docs-web/.output/public/* your-server:/server/www/rwiki/
+```
+
 ### Caddyfile
 
 ```plaintext
 your-domain.com {
-    # API and backend endpoints
     handle /api/* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /health {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /swagger* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
     handle /widget/* {
-        reverse_proxy localhost:8080
+        reverse_proxy rwiki:8080
     }
-
-    # Documentation site (SPA)
     handle {
-        root * /path/to/docs-web/.output/public
-        try_files {path} /index.html
+        root * /srv/rwiki
+        try_files {path} /_shell.html
         file_server
     }
 }
 ```
 
-Replace `your-domain.com` with your actual domain. Caddy automatically provisions TLS certificates via Let's Encrypt.
+Key points:
+
+- `rwiki` is the backend container name on the shared Docker network
+- docs-web's SPA entry is `_shell.html` (not `index.html`), so `try_files` must fallback to `/_shell.html`
+- `root * /srv/rwiki` points to the docs-web static files directory mounted into the Caddy container
+- Replace `your-domain.com` with your actual domain — Caddy provisions TLS certificates automatically via Let's Encrypt
 
 ### Start All Services
 
 ```bash
 # Start backend
 docker run -d --name rwiki \
+  --restart unless-stopped \
+  --network your-network \
   -v rwiki-data:/app/data \
   -v /path/to/config.toml:/app/config.toml:ro \
-  -p 127.0.0.1:8080:8080 \
   ghcr.io/timzaak/rwiki
 
 # Start Caddy
-caddy run --config Caddyfile
+docker run -d --name caddy \
+  --restart unless-stopped \
+  --network your-network \
+  -p 80:80 \
+  -p 443:443 \
+  -p 443:443/udp \
+  -v /path/to/caddy/config:/config \
+  -v /path/to/caddy/data:/data \
+  -v /server/www/rwiki:/srv/rwiki:ro \
+  -v /path/to/Caddyfile:/etc/caddy/Caddyfile:ro \
+  caddy:2-alpine
 ```
 
-The backend listens on `127.0.0.1:8080` (not exposed publicly). Caddy binds ports 80/443 and routes traffic to the backend or docs-web as needed.
+Both containers run on the same Docker network so Caddy can reach the backend via container name (`rwiki:8080`). The backend does not need to expose any port publicly — only Caddy binds 80/443.
