@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;0,800;1,600&display=swap');
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumadocs-openapi/css/preset.css";
+
+@theme {
+  --font-serif: "Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+:root {
+  --color-fd-primary: oklch(0.5424 0.2454 293.016);
+  --color-fd-primary-foreground: oklch(0.9843 0.0017 247.8393);
+  --color-fd-accent: oklch(0.9544 0.0226 302.568);
+  --color-fd-accent-foreground: oklch(0.5424 0.2454 293.016);
+}
+
+.dark {
+  --color-fd-primary: oklch(0.4865 0.2423 291.8661);
+  --color-fd-primary-foreground: oklch(0.9838 0.0035 247.8583);
+  --color-fd-accent: oklch(0.2302 0.0714 298.2794);
+  --color-fd-accent-foreground: oklch(0.4865 0.2423 291.8661);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}

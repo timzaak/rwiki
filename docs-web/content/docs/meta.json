@@ -1,0 +1,10 @@
+{
+  "title": "Tutorials",
+  "pages": [
+    "getting-started",
+    "architecture",
+    "configuration",
+    "deployment",
+    "openapi"
+  ]
+}

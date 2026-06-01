@@ -1,0 +1,27 @@
+{
+  "name": "rwiki-demo-tests",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:report": "playwright show-report",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint e2e/"
+  },
+  "dependencies": {
+    "playwright-unified-logger": "^0.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.9.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.18.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.0"
+  }
+}

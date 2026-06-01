@@ -1,0 +1,259 @@
+---
+title: Configuration
+description: Config file and environment variables
+icon: Settings
+---
+
+The config file is at `backend/config/config.toml`, TOML format. Copy from the example on first use:
+
+```bash
+cp backend/config/config.example.toml backend/config/config.toml
+```
+
+On startup, `AppConfig::load()` reads the config file, then environment variables override specific fields. Priority: **environment variables > config file**.
+
+The config file path defaults to `config/config.toml` (relative to the working directory). Override it with the `APP_CONFIG` environment variable.
+
+## Environment Variables
+
+| Variable | Overrides | Description |
+|----------|-----------|-------------|
+| `APP_CONFIG` | Config file path | Defaults to `config/config.toml` |
+| `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
+| `API_TOKEN` | `api.token` | Bearer Token for document management endpoints |
+| `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP auth token |
+
+## Server
+
+`[server]` — Server listener and runtime config.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `bind_address` | string | Yes | — | Listen address, e.g. `"0.0.0.0:8080"` |
+| `log_level` | string | Yes | — | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+| `app_env` | string | Yes | — | Environment: `development`, `demo`, `test` |
+| `static_dir` | string | Yes | — | Frontend static files directory (production mode), e.g. `"../frontend/dist"` |
+| `enable_openapi` | bool | Yes | — | Enable Swagger docs at `/swagger` |
+
+## SQLite
+
+`[sqlite]` — SQLite database config.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `path` | string | Yes | — | Database file path, e.g. `"data/rwiki.db"`. Parent directory is created on startup. |
+
+The database runs in WAL mode for concurrent read/write. The vector column width in `vec_chunks` is determined by the embedding model's dimensions.
+
+## LLM
+
+`[llm]` — LLM chat model config. Supports all OpenAI-compatible providers.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | — | LLM API Key |
+| `base_url` | string | Yes | — | API Base URL |
+| `model` | string | Yes | — | Model name |
+
+Config examples for different providers:
+
+```toml
+# OpenRouter (default)
+[llm]
+api_key = "sk-or-..."
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+
+# OpenAI
+[llm]
+api_key = "sk-..."
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+
+# Zhipu AI (GLM)
+[llm]
+api_key = "your-glm-api-key"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "glm-4-flash"
+```
+
+## Embedding
+
+`[embedding]` — Vector embedding model config. All fields are optional — omitting the entire `[embedding]` section uses OpenAI defaults.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes* | — | API Key. `OPENAI_API_KEY` env var takes priority |
+| `base_url` | string | No | OpenAI default | API Base URL. Required for non-OpenAI providers |
+| `model` | string | No | `"text-embedding-3-small"` | Model name |
+| `dimensions` | number | No | Model default | Vector dimensions. BigModel supports 256/512/1024/2048 |
+
+**Note**: If you change the embedding model and the dimensions differ, you must delete the old database and rebuild it. The service validates dimension consistency on startup.
+
+Config examples:
+
+```toml
+# OpenAI (default config, just set api_key)
+[embedding]
+api_key = "sk-..."
+# base_url, model, dimensions can all be omitted
+
+# Zhipu AI Embedding-3
+[embedding]
+api_key = "your-bigmodel-api-key"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "embedding-3"
+dimensions = 2048   # Optional: 256 / 512 / 1024 / 2048
+```
+
+## API Token
+
+`[api]` — Document management endpoint auth config.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `token` | string | Yes | `""` | Bearer Token for document upload/delete management endpoints. Set via `API_TOKEN` env var. |
+
+**Token must not be empty** — the service panics on startup if it is. Prefer setting it via environment variable:
+
+```bash
+export API_TOKEN="your-secret-token"
+```
+
+Include in requests:
+
+```
+Authorization: Bearer your-secret-token
+```
+
+## Chat
+
+`[chat]` — Chat behavior config. All fields have defaults, so the entire `[chat]` section can be omitted.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `system_prompt` | string | No | Built-in default | System prompt defining the assistant's role and behavior. Use triple quotes `"""..."""` for multiline. |
+| `sliding_window_size` | number | No | `6` | Keep the last N messages for context |
+| `compact_threshold` | number | No | `8` | Trigger compaction check when message count exceeds this |
+| `token_budget` | number | No | `8000` | Trigger compaction when estimated token count exceeds this |
+
+### Sliding window & compaction
+
+Context management works in two layers:
+
+1. **Sliding window**: Each request sends only the last `sliding_window_size` messages to the LLM, discarding earlier ones.
+2. **Compaction check**: When total messages exceed `compact_threshold`, or estimated tokens exceed `token_budget`, the system compresses history into a summary to free up token space.
+
+These two mechanisms work together: the sliding window controls per-request context length, while compaction prevents unbounded history growth.
+
+RAG retrieval results are automatically appended after the system prompt. You don't need to handle context placeholders in `system_prompt` manually.
+
+Config example:
+
+```toml
+[chat]
+system_prompt = """
+You are a technical documentation assistant focused on helping developers understand project docs.
+Rules:
+1. Prefer code examples when explaining concepts.
+2. Cite source titles and sections when referencing content.
+"""
+sliding_window_size = 10
+compact_threshold = 12
+token_budget = 12000
+```
+
+## OpenTelemetry
+
+`[otel]` — OpenTelemetry OTLP tracing export config. All fields have defaults, so the entire `[otel]` section can be omitted. When `endpoint` is empty, OTLP tracing is disabled — zero overhead for local development.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `endpoint` | string | No | `""` (disabled) | OTLP gRPC endpoint |
+| `license_key` | string | No | `""` | Auth token, set via `OTEL_LICENSE_KEY` env var |
+| `service_name` | string | No | `"rwiki-backend"` | Service name shown in traces |
+
+Config example (Alibaba Cloud ARMS):
+
+```toml
+[otel]
+endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
+# license_key recommended via environment variable
+service_name = "rwiki-backend"
+```
+
+## Widget
+
+The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run build:widget`, embeddable on any website as a chat floating button. Initialize with `RWikiChat.init(config)`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `apiUrl` | string | Yes | — | Backend URL, must start with `http://` or `https://` |
+| `title` | string | No | `"Chat Assistant"` | Chat window title |
+| `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
+| `position` | string | No | `"right"` | Button position: `left` or `right` |
+| `welcomeMessage` | string | No | — | Welcome message |
+
+### HTML integration
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    title: 'Assistant',
+    primaryColor: '#6366f1',
+    position: 'right',
+    welcomeMessage: 'How can I help?',
+  });
+</script>
+```
+
+Destroy the instance:
+
+```js
+RWikiChat.destroy();
+```
+
+The widget uses Shadow DOM for style isolation and won't affect host page CSS.
+
+### React integration (docs-web pattern)
+
+For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`).
+
+```tsx
+// src/components/rwiki-chat-widget.tsx
+import { useEffect } from 'react';
+
+const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
+
+export default function RWikiChatWidget() {
+  useEffect(() => {
+    const w = window as any;
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl }); };
+    if (w.RWikiChat?.init) {
+      initWidget();
+    } else {
+      const script = document.createElement('script');
+      script.src = '/rwiki-chat.js';
+      script.onload = initWidget;
+      document.body.appendChild(script);
+    }
+    return () => { w.RWikiChat?.destroy?.(); };
+  }, []);
+  return null;
+}
+```
+
+Place the component in your root layout:
+
+```tsx
+<RWikiChatWidget />
+```
+
+Build and copy the widget before starting docs-web:
+
+```bash
+cd frontend && npm run build:widget
+cp dist/rwiki-chat.js ../docs-web/public/
+```

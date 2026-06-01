@@ -1,0 +1,10 @@
+{
+  "title": "教程",
+  "pages": [
+    "getting-started",
+    "architecture",
+    "configuration",
+    "deployment",
+    "openapi"
+  ]
+}

@@ -1,0 +1,182 @@
+---
+title: Deployment
+description: Docker deployment
+icon: Container
+---
+
+RWiki uses Docker multi-stage builds to produce a single binary + static frontend image. No external database or vector service needed. SQLite data is stored in a mounted volume.
+
+Pre-built images are available on [GitHub Container Registry](https://github.com/timzaak/rwiki/pkgs/container/rwiki).
+
+## Docker Deployment
+
+### Pull
+
+```bash
+docker pull ghcr.io/timzaak/rwiki
+```
+
+### Run
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  -e OPENROUTER_API_KEY=your-llm-key \
+  -e OPENAI_API_KEY=your-embedding-key \
+  ghcr.io/timzaak/rwiki
+```
+
+The container listens on port `8080`, data stored at `/app/data`.
+
+## Environment Variables
+
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `OPENROUTER_API_KEY` | LLM API Key | Yes |
+| `OPENAI_API_KEY` | Embedding API Key | Yes |
+| `API_TOKEN` | Document management endpoint auth token | Recommended |
+| `APP_CONFIG` | Config file path, default `/app/config.toml` | No |
+
+Environment variables take priority over the config file. You can also mount a config file instead:
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  -v /path/to/your/config.toml:/app/config.toml:ro \
+  ghcr.io/timzaak/rwiki
+```
+
+### Minimal config template
+
+```toml
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+static_dir = "/app/frontend/dist"
+
+[sqlite]
+path = "/app/data/rwiki.db"
+
+[llm]
+api_key = ""           # Falls back to OPENROUTER_API_KEY env var
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+
+[embedding]
+api_key = ""           # Falls back to OPENAI_API_KEY env var
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+
+[api]
+token = ""             # Falls back to API_TOKEN env var
+```
+
+See [Configuration](/docs/configuration) for the full config reference.
+
+## Health Check
+
+```bash
+curl http://localhost:8080/health
+```
+
+No auth required. Returns:
+
+```json
+{"status":"healthy","database":"connected"}
+```
+
+`status` as `"healthy"` and `database` as `"connected"` means the service is running normally.
+
+## Data Persistence
+
+All data is stored in `/app/data` inside the container (a single SQLite file). **You must mount a volume**, otherwise data is lost when the container is removed:
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  ghcr.io/timzaak/rwiki
+```
+
+## Caddy Reverse Proxy
+
+Use Caddy to serve docs-web and the backend under a single domain. Caddy handles static file serving, SPA fallback, automatic HTTPS, and reverse proxying to the backend.
+
+### Route Layout
+
+| Path | Target | Description |
+|------|--------|-------------|
+| `/api/*` | Backend | Document management & chat API |
+| `/health` | Backend | Health check endpoint |
+| `/swagger` | Backend | Swagger UI (if enabled) |
+| `/widget/*` | Backend | Static assets (chat widget JS) |
+| `/docs/*` | docs-web static files | Documentation site (SPA) |
+| `/` | docs-web static files | Documentation site (SPA) |
+
+### Build
+
+1. Pull the backend Docker image:
+
+```bash
+docker pull ghcr.io/timzaak/rwiki
+```
+
+2. Build the chat widget and docs-web:
+
+```bash
+# Build chat widget
+cd frontend
+npm run build:widget
+cp dist/rwiki-chat.js ../docs-web/public/
+
+# Build docs-web
+cd ../docs-web
+npm install
+VITE_RWIKI_API_URL=https://your-domain.com npm run build
+```
+
+`VITE_RWIKI_API_URL` must point to the **same domain** served by Caddy (not the backend directly), since the chat widget calls `/api/chat` through the proxy.
+
+### Caddyfile
+
+```plaintext
+your-domain.com {
+    # API and backend endpoints
+    handle /api/* {
+        reverse_proxy localhost:8080
+    }
+    handle /health {
+        reverse_proxy localhost:8080
+    }
+    handle /swagger* {
+        reverse_proxy localhost:8080
+    }
+    handle /widget/* {
+        reverse_proxy localhost:8080
+    }
+
+    # Documentation site (SPA)
+    handle {
+        root * /path/to/docs-web/.output/public
+        try_files {path} /index.html
+        file_server
+    }
+}
+```
+
+Replace `your-domain.com` with your actual domain. Caddy automatically provisions TLS certificates via Let's Encrypt.
+
+### Start All Services
+
+```bash
+# Start backend
+docker run -d --name rwiki \
+  -v rwiki-data:/app/data \
+  -v /path/to/config.toml:/app/config.toml:ro \
+  -p 127.0.0.1:8080:8080 \
+  ghcr.io/timzaak/rwiki
+
+# Start Caddy
+caddy run --config Caddyfile
+```
+
+The backend listens on `127.0.0.1:8080` (not exposed publicly). Caddy binds ports 80/443 and routes traffic to the backend or docs-web as needed.

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+api.json
+src/lib/api-generated/
+src/routeTree.gen.ts

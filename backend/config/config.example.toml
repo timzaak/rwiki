@@ -1,0 +1,91 @@
+# Rwiki Backend Configuration
+# 复制此文件为 config.toml 并修改配置值
+#
+# 开发环境：复制为 config/config.toml
+# Demo 环境：复制为 config/demo.toml
+#
+# Embedding API Key 可通过环境变量设置（优先级高于配置文件）：
+#   OPENAI_API_KEY     — OpenAI Embedding API Key
+
+[server]
+# 监听地址
+bind_address = "0.0.0.0:8080"
+# 日志级别：trace, debug, info, warn, error
+log_level = "info"
+# 运行环境：development, demo, test
+app_env = "development"
+# 是否启用 OpenAPI/Swagger 文档
+enable_openapi = true
+# 静态文件目录（含 rwiki-chat.js 等）
+# Docker 部署时设为 "/app/static"
+# 留空或不配置则不托管静态文件
+# static_dir = "/app/static"
+
+[sqlite]
+# SQLite 数据库文件路径
+path = "data/rwiki.db"
+
+[llm]
+# LLM API Key（必填）
+api_key = ""
+# LLM API base URL（支持 OpenAI 兼容的 provider）
+# OpenAI:       https://api.openai.com/v1
+# OpenRouter:   https://openrouter.ai/api/v1
+# GLM (智谱AI):  https://open.bigmodel.cn/api/paas/v4
+base_url = "https://openrouter.ai/api/v1"
+# 模型名称（填入对应 provider 支持的模型）
+# OpenAI:       gpt-4o, gpt-4o-mini
+# OpenRouter:   deepseek/deepseek-chat-v3-0324, anthropic/claude-sonnet-4-20250514
+# GLM:          glm-4-plus, glm-4-flash
+model = "deepseek/deepseek-chat-v3-0324"
+
+[embedding]
+# api_key = "sk-..."
+# base_url = "https://api.openai.com/v1"
+# model = "text-embedding-3-small"
+# dimensions = 1536   # 可选，不设置时使用模型默认维度
+
+# --- BigModel Embedding-3 ---
+# api_key = "your-bigmodel-api-key"
+# base_url = "https://open.bigmodel.cn/api/paas/v4"
+# model = "embedding-3"
+# dimensions = 2048   # 可选，支持 256/512/1024/2048，不设置时使用模型默认维度
+
+[api]
+# API Token for document management endpoints
+# Leave empty to use environment variable API_TOKEN
+token = ""
+
+[chat]
+# 系统提示词（推荐配置；省略整个 [chat] 段时使用内置默认值）
+# 定义知识库助手的角色描述和行为规则。
+# 上下文（RAG 检索结果）由系统自动拼接在提示词之后，无需手动包含。
+#
+# 示例（多行文本使用三引号）:
+# system_prompt = """
+# 你是一个技术文档助手，专注于帮助开发者理解项目文档。
+# 规则：
+# 1. 优先使用代码示例说明问题。
+# 2. 引用时标注来源标题和章节。
+# """
+system_prompt = "你是一个知识库助手。请根据以下上下文回答用户问题。\n规则：\n1. 如果上下文中没有相关信息，请明确告知用户。\n2. 引用信息时，请标注来源的标题和章节。格式：[来源: 标题 / 章节]\n3. 如果来源有链接，请在引用中附上链接。\n4. 如果来源标注了语言（Locale），请在回答中提及信息的语言。"
+
+# 滑动窗口大小：保留最近 N 条消息用于上下文（默认 6）
+# sliding_window_size = 6
+
+# 压缩阈值：消息数超过此值时触发压缩检查（默认 8）
+# compact_threshold = 8
+
+# Token 预算：估算 token 数超过此值时触发压缩（默认 8000）
+# token_budget = 8000
+
+[otel]
+# OpenTelemetry OTLP tracing 导出配置
+# endpoint 为空时不启用 OTLP tracing（本地开发零开销）
+#
+# OTLP gRPC endpoint（阿里云 ARMS 示例）:
+# endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
+# 鉴权 token，推荐通过环境变量 OTEL_LICENSE_KEY 设置
+# license_key = ""
+# 服务名称，默认 "rwiki-backend"
+# service_name = "rwiki-backend"

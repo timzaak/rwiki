@@ -1,0 +1,325 @@
+---
+title: Getting Started
+description: From zero to running
+icon: Rocket
+---
+
+RWiki is a knowledge base Q&A platform. You upload documents, it automatically chunks and vectorizes them, then you can ask questions about the content.
+
+The flow: upload a document → publish → ask questions via the chat UI or API. The next three sections walk you through each step.
+
+## Prerequisites
+
+- **Rust**: Latest stable. Run `rustup update` to check.
+- **Node.js**: 20 or higher. Run `node -v` to verify.
+- **Embedding API Key**: RWiki uses this to vectorize documents for retrieval. Supports OpenAI, BigModel (Zhipu AI), and other OpenAI-compatible services.
+- **LLM API Key**: For conversational Q&A. Same provider options as above.
+
+Both keys are **required** — the backend won't start without them. RWiki doesn't need an external database. SQLite is embedded in the process, zero external dependencies.
+
+## Install
+
+Clone the repo, then install dependencies for backend and frontend separately:
+
+```bash
+# Backend: Rust project, cargo handles everything
+cd backend
+
+# Frontend: install npm packages
+cd ../frontend
+npm install
+```
+
+## Configuration
+
+The backend config file is `backend/config/config.toml`. Copy it from the example:
+
+```bash
+cd backend
+cp config/config.example.toml config/config.toml
+```
+
+Open `config/config.toml` and set these fields:
+
+### Embedding config (required)
+
+RWiki uses embeddings for document vector retrieval.
+
+```toml
+[embedding]
+api_key = "sk-..."          # Required, or use OPENAI_API_KEY env var
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+```
+
+### LLM config (required)
+
+For conversational Q&A.
+
+```toml
+[llm]
+api_key = "sk-..."          # Required, or use OPENROUTER_API_KEY env var
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+```
+
+Other providers like OpenAI, BigModel (Zhipu AI) are also supported. See [Configuration](/docs/configuration) for details.
+
+### API Token (for document management)
+
+Document upload and publish endpoints require an auth token. For development, set anything:
+
+```toml
+[api]
+token = "dev-test"
+```
+
+## Start the server
+
+Backend:
+
+```bash
+cd backend
+cargo run
+```
+
+The backend starts at `http://localhost:8080`.
+
+Frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend starts at `http://localhost:3000`. During development, `/api` requests are proxied to the backend at `http://localhost:8080` via Vite, so no CORS setup needed.
+
+If the backend isn't on port 8080, set the `VITE_API_BASE_URL` environment variable or update `proxy.target` in `frontend/vite.config.ts`.
+
+Docs-web (documentation site with chat):
+
+```bash
+cd docs-web
+npm install
+npm run dev
+```
+
+Docs-web starts at `http://localhost:3001`. It loads a chat widget from `public/rwiki-chat.js` that connects to the backend. Set `VITE_RWIKI_API_URL` to point the widget at your backend (defaults to `http://localhost:18080`):
+
+```bash
+VITE_RWIKI_API_URL=http://localhost:8080 npm run dev
+```
+
+The chat widget JS must be built first. See [Embed in an existing site (Widget)](#embed-in-an-existing-site-widget) below.
+
+Verify the backend is running:
+
+```bash
+curl http://localhost:8080/health
+```
+
+You should see `{"status":"healthy","database":"connected"}`.
+
+## Your first knowledge base
+
+With the server running, let's walk through the full flow: upload a document, publish it, then ask a question.
+
+### Prepare a document
+
+RWiki supports `.md`, `.mdx`, and `.xlsx` formats. Create a test Markdown file:
+
+```markdown
+# RWiki Usage Guide
+
+## Product Overview
+RWiki is a RAG + Agent powered knowledge base Q&A platform.
+
+## Supported File Formats
+- Markdown (.md / .mdx)
+- Excel (.xlsx)
+
+## Port Configuration
+The backend listens on port 8080 by default. The frontend dev server listens on port 3000.
+```
+
+Save it as `faq.md`.
+
+### Upload the document
+
+Upload via API (the token is the `[api] token` value from your config):
+
+```bash
+curl -X POST http://localhost:8080/api/documents/upload \
+  -H "Authorization: Bearer dev-test" \
+  -F "file=@faq.md"
+```
+
+You'll get a response like:
+
+```json
+{
+  "id": "0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+  "fileName": "faq.md",
+  "status": "draft",
+  "rowCount": 1,
+  "createdAt": "2025-05-31T10:30:00+00:00"
+}
+```
+
+Note the `id` in the response. The status is `draft` — the document has been parsed and vectorized, but not yet published.
+
+You can also upload via the frontend: open `http://localhost:3000` and use the document management page.
+
+### Publish the document
+
+Documents in `draft` status are not included in search results. Publish it to make them available:
+
+```bash
+curl -X PATCH http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish \
+  -H "Authorization: Bearer dev-test"
+```
+
+Response: `{"id":"...","status":"published"}`.
+
+### Ask a question
+
+Now you can ask questions about the document content. Via API:
+
+```bash
+curl -N -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What file formats does RWiki support?"}'
+```
+
+The response is an SSE stream:
+
+```
+event: session
+data: {"sessionId":"0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"}
+
+event: chunk
+data: {"content":"RWiki supports the following file formats:"}
+
+event: chunk
+data: {"content":" Markdown (.md / .mdx) and Excel (.xlsx)."}
+
+event: done
+data: {}
+```
+
+You can also ask questions directly in the frontend chat page — it's more intuitive.
+
+## Embed in an existing site (Widget)
+
+RWiki ships a standalone chat widget as a single JS file. There are two integration paths: drop-in HTML script tag, or a React component (used by docs-web).
+
+### Build the widget
+
+```bash
+cd frontend
+npm run build:widget
+```
+
+Output is at `frontend/dist/rwiki-chat.js` — single file, no external dependencies.
+
+### Option A: HTML script tag
+
+Include the script and initialize on any page:
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({ apiUrl: 'http://localhost:8080' });
+</script>
+```
+
+Full config options: [Configuration → Widget](/docs/configuration#widget).
+
+The widget uses Shadow DOM for style isolation — it won't affect the host page's CSS.
+
+Destroy the instance:
+
+```js
+RWikiChat.destroy();
+```
+
+### Option B: React component (docs-web pattern)
+
+If your site is a React app, you can load the widget JS dynamically and call `RWikiChat.init()` from a component. This is how docs-web does it.
+
+1. Copy `rwiki-chat.js` to your project's public directory:
+
+```bash
+cp frontend/dist/rwiki-chat.js docs-web/public/
+```
+
+2. Create a component that loads the script and initializes the widget:
+
+```tsx
+import { useEffect } from 'react';
+
+const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
+
+export default function RWikiChatWidget() {
+  useEffect(() => {
+    const w = window as any;
+
+    const initWidget = () => {
+      w.RWikiChat?.init?.({ apiUrl });
+    };
+
+    if (w.RWikiChat?.init) {
+      initWidget();
+    } else {
+      const script = document.createElement('script');
+      script.src = '/rwiki-chat.js';
+      script.onload = initWidget;
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      w.RWikiChat?.destroy?.();
+    };
+  }, []);
+
+  return null;
+}
+```
+
+3. Place the component in your root layout (after the provider, before `</body>`):
+
+```tsx
+<RWikiChatWidget />
+```
+
+4. Set the backend URL at build time:
+
+```bash
+VITE_RWIKI_API_URL=http://localhost:8080 npm run dev
+```
+
+The component handles: script loading (idempotent), init with your API URL, and cleanup on unmount.
+
+### One-command demo
+
+The `demo-start.py` script automates the full flow — backend, widget build, docs-web, and document seeding:
+
+```bash
+uv run scripts/demo-start.py
+```
+
+This starts the backend on port 18080, builds the widget, copies it to `docs-web/public/`, starts both frontend and docs-web dev servers, and seeds the tutorial docs into the knowledge base.
+
+## AI-Assisted Development
+
+This entire project was built with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) + [web-dev-skills](https://github.com/timzaak/web-dev-skills) — a Claude Code plugin that ships Rust + React development skills.
+
+```bash
+# 1. Clone the skills repo
+git clone https://github.com/timzaak/web-dev-skills
+
+# 2. Launch Claude Code with the plugin
+claude --plugin-dir /path/to/web-dev-skills
+```
+
+That's it. The plugin registers skills for backend dev, frontend dev, testing, documentation, and more — all tailored to Rust + React workflows.

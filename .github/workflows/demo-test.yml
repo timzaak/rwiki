@@ -1,0 +1,72 @@
+name: Demo E2E Tests
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  CARGO_BUILD_RUSTC_WRAPPER: ""
+
+jobs:
+  demo-e2e:
+    name: Demo E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install demo dependencies
+        working-directory: demo
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: demo
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend/target
+          key: ${{ runner.os }}-cargo-demo-${{ hashFiles('backend/Cargo.lock') }}
+
+      - name: Start demo environment
+        run: python scripts/demo-run.py --timeout 300
+
+      - name: Run demo tests
+        working-directory: demo
+        run: |
+          TEST_FILES=$(find e2e -name '*.e2e.ts' -not -path '*/fixtures/*' | sort | tr '\n' ' ')
+          npx playwright test $TEST_FILES --project=demo-fast --max-failures=0
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-test-results
+          path: |
+            demo/test-results/
+            log/
+          if-no-files-found: ignore
+
+      - name: Stop demo environment
+        if: always()
+        run: python scripts/demo-stop.py

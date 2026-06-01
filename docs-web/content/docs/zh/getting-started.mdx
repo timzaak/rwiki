@@ -1,0 +1,325 @@
+---
+title: 快速上手
+description: 从零开始部署和运行 RWiki
+icon: Rocket
+---
+
+RWiki 是一个知识库问答平台。你把文档传上去，它自动分块和向量化，然后你可以针对文档内容提问。
+
+整个过程：上传文档 → 发布 → 在聊天界面提问（或通过 API 调用）。后面三节会把这三步走一遍。
+
+## 你需要先装好
+
+- **Rust**：最新稳定版。用 `rustup update` 确认版本。
+- **Node.js**：20 或更高。用 `node -v` 检查。
+- **Embedding API Key**：RWiki 用它把文档转成向量做检索。支持 OpenAI、智谱 AI（BigModel）等兼容 OpenAI 接口的服务。
+- **LLM API Key**：用于对话问答。同样支持 OpenAI / OpenRouter / 智谱。
+
+两个 key **都是必填的**，否则后端跑不起来。RWiki 不需要外部数据库，SQLite 嵌入在进程中，零依赖。
+
+## 安装
+
+克隆仓库后，分别进入后端和前端目录安装依赖：
+
+```bash
+# 后端：Rust 项目，cargo 自动处理
+cd backend
+
+# 前端：安装 npm 包
+cd ../frontend
+npm install
+```
+
+## 配置
+
+后端配置文件是 `backend/config/config.toml`，从示例文件复制：
+
+```bash
+cd backend
+cp config/config.example.toml config/config.toml
+```
+
+打开 `config/config.toml`，你需要改这几项：
+
+### embedding 配置（必填）
+
+RWiki 用 embedding 做文档向量检索。
+
+```toml
+[embedding]
+api_key = "sk-..."          # 必填，也可用环境变量 OPENAI_API_KEY
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+```
+
+### LLM 配置（必填）
+
+用于对话问答。
+
+```toml
+[llm]
+api_key = "sk-..."          # 必填，也可用环境变量 OPENROUTER_API_KEY
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+```
+
+也支持 OpenAI、智谱 AI 等 provider，详见[配置](/docs/zh/configuration)。
+
+### API Token（文档管理用）
+
+文档上传和发布接口需要鉴权 token。开发环境可以随便设一个：
+
+```toml
+[api]
+token = "dev-test"
+```
+
+## 启动
+
+后端：
+
+```bash
+cd backend
+cargo run
+```
+
+后端启动在 `http://localhost:8080`。
+
+前端：
+
+```bash
+cd frontend
+npm run dev
+```
+
+前端启动在 `http://localhost:3000`。开发时前端的 `/api` 请求会通过 Vite 代理转发到后端 `http://localhost:8080`，不需要处理跨域。
+
+如果后端不在 8080 端口，设置环境变量 `VITE_API_BASE_URL` 或修改 `frontend/vite.config.ts` 中的 `proxy.target`。
+
+docs-web（带聊天功能的文档站）：
+
+```bash
+cd docs-web
+npm install
+npm run dev
+```
+
+docs-web 启动在 `http://localhost:3001`。它从 `public/rwiki-chat.js` 加载聊天 widget，连接后端。设置 `VITE_RWIKI_API_URL` 指向你的后端（默认 `http://localhost:18080`）：
+
+```bash
+VITE_RWIKI_API_URL=http://localhost:8080 npm run dev
+```
+
+聊天 widget 的 JS 需要先构建，见下文[嵌入已有网站（Widget）](#嵌入已有网站widget)。
+
+确认后端跑起来了：
+
+```bash
+curl http://localhost:8080/health
+```
+
+返回 `{"status":"healthy","database":"connected"}` 就对了。
+
+## 你的第一个知识库
+
+服务跑起来后，跟着走一遍完整流程：上传一份文档，发布，然后提问。
+
+### 准备一份文档
+
+RWiki 支持 `.md`、`.mdx`、`.xlsx` 格式。先创建一个测试用的 Markdown 文件：
+
+```markdown
+# RWiki 使用说明
+
+## 产品介绍
+RWiki 是一个 RAG + Agent 驱动的知识库问答平台。
+
+## 支持的文件格式
+- Markdown（.md / .mdx）
+- Excel（.xlsx）
+
+## 端口配置
+后端默认监听 8080 端口，前端开发服务器监听 3000 端口。
+```
+
+保存为 `faq.md`。
+
+### 上传文档
+
+通过 API 上传（token 就是配置文件里 `[api] token` 的值）：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/upload \
+  -H "Authorization: Bearer dev-test" \
+  -F "file=@faq.md"
+```
+
+返回类似这样：
+
+```json
+{
+  "id": "0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+  "fileName": "faq.md",
+  "status": "draft",
+  "rowCount": 1,
+  "createdAt": "2025-05-31T10:30:00+00:00"
+}
+```
+
+记下返回的 `id`。状态是 `draft`，说明文档已经解析和向量化完成，但还没发布。
+
+也可以在前端界面上传：打开 `http://localhost:3000`，在文档管理页面上传文件。
+
+### 发布文档
+
+`draft` 状态的文档不会参与检索，发布后才行：
+
+```bash
+curl -X PATCH http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish \
+  -H "Authorization: Bearer dev-test"
+```
+
+返回 `{"id":"...","status":"published"}`。
+
+### 提问
+
+发布后就可以针对文档内容提问了。通过 API：
+
+```bash
+curl -N -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "RWiki 支持哪些文件格式？"}'
+```
+
+返回是 SSE 流式响应：
+
+```
+event: session
+data: {"sessionId":"0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"}
+
+event: chunk
+data: {"content":"RWiki 支持以下文件格式："}
+
+event: chunk
+data: {"content":"Markdown（.md / .mdx）和 Excel（.xlsx）。"}
+
+event: done
+data: {}
+```
+
+也可以在前端界面的聊天页面直接提问，体验更直观。
+
+## 嵌入已有网站（Widget）
+
+RWiki 提供单文件聊天 widget JS。集成方式有两种：HTML 脚本引入，或 React 组件（docs-web 的方式）。
+
+### 构建 Widget
+
+```bash
+cd frontend
+npm run build:widget
+```
+
+产物在 `frontend/dist/rwiki-chat.js`，单文件，无外部依赖。
+
+### 方式 A：HTML 脚本引入
+
+在任何页面中引入脚本并初始化：
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({ apiUrl: 'http://localhost:8080' });
+</script>
+```
+
+完整的配置项说明见[配置 → Widget](/docs/zh/configuration#widget)。
+
+Widget 通过 Shadow DOM 隔离样式，不会影响宿主页面的 CSS。
+
+销毁实例：
+
+```js
+RWikiChat.destroy();
+```
+
+### 方式 B：React 组件（docs-web 的集成方式）
+
+如果你的站点是 React 应用，可以动态加载 widget JS 并从组件中调用 `RWikiChat.init()`。docs-web 就是这么做的。
+
+1. 把 `rwiki-chat.js` 复制到项目的 public 目录：
+
+```bash
+cp frontend/dist/rwiki-chat.js docs-web/public/
+```
+
+2. 创建一个组件来加载脚本并初始化 widget：
+
+```tsx
+import { useEffect } from 'react';
+
+const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
+
+export default function RWikiChatWidget() {
+  useEffect(() => {
+    const w = window as any;
+
+    const initWidget = () => {
+      w.RWikiChat?.init?.({ apiUrl });
+    };
+
+    if (w.RWikiChat?.init) {
+      initWidget();
+    } else {
+      const script = document.createElement('script');
+      script.src = '/rwiki-chat.js';
+      script.onload = initWidget;
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      w.RWikiChat?.destroy?.();
+    };
+  }, []);
+
+  return null;
+}
+```
+
+3. 在根布局中放置这个组件（provider 之后、`</body>` 之前）：
+
+```tsx
+<RWikiChatWidget />
+```
+
+4. 构建时设置后端地址：
+
+```bash
+VITE_RWIKI_API_URL=http://localhost:8080 npm run dev
+```
+
+组件处理了：脚本加载（幂等）、用你的 API URL 初始化、卸载时清理。
+
+### 一键启动 Demo
+
+`demo-start.py` 脚本自动完成整个流程——后端、widget 构建、docs-web、文档种子：
+
+```bash
+uv run scripts/demo-start.py
+```
+
+这会在 18080 端口启动后端，构建 widget 并复制到 `docs-web/public/`，启动前端和 docs-web 开发服务器，并把教程文档导入知识库。
+
+## AI 辅助开发
+
+整个项目用 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) + [web-dev-skills](https://github.com/timzaak/web-dev-skills) 开发——一个给 Claude Code 用的 Rust + React 技能插件。
+
+```bash
+# 1. 克隆技能仓库
+git clone https://github.com/timzaak/web-dev-skills
+
+# 2. 带插件启动 Claude Code
+claude --plugin-dir /path/to/web-dev-skills
+```
+
+插件注册了后端开发、前端开发、测试、文档等技能，都是针对 Rust + React 工作流定制的。

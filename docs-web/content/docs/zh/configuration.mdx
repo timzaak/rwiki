@@ -1,0 +1,259 @@
+---
+title: 配置
+description: 配置项和环境变量
+icon: Settings
+---
+
+配置文件位于 `backend/config/config.toml`，TOML 格式。初次使用时从 `backend/config/config.example.toml` 复制：
+
+```bash
+cp backend/config/config.example.toml backend/config/config.toml
+```
+
+启动时 `AppConfig::load()` 读取配置文件，之后环境变量覆盖对应字段。优先级：**环境变量 > 配置文件**。
+
+配置文件路径默认为 `config/config.toml`（相对于工作目录），可通过环境变量 `APP_CONFIG` 指定其他路径。
+
+## 环境变量
+
+| 环境变量 | 覆盖字段 | 说明 |
+|---|---|---|
+| `APP_CONFIG` | 配置文件路径 | 默认 `config/config.toml` |
+| `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
+| `API_TOKEN` | `api.token` | 文档管理接口的 Bearer Token |
+| `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP 鉴权 Token |
+
+## 服务器
+
+`[server]` — 服务监听与运行时配置。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `bind_address` | string | 是 | — | 监听地址，如 `"0.0.0.0:8080"` |
+| `log_level` | string | 是 | — | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
+| `app_env` | string | 是 | — | 运行环境：`development`、`demo`、`test` |
+| `static_dir` | string | 是 | — | 前端静态文件目录（生产模式使用），如 `"../frontend/dist"` |
+| `enable_openapi` | bool | 是 | — | 是否启用 Swagger 文档（`/swagger`） |
+
+## SQLite
+
+`[sqlite]` — SQLite 数据库配置。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `path` | string | 是 | — | 数据库文件路径，如 `"data/rwiki.db"`。启动时自动创建父目录。 |
+
+数据库启用 WAL 模式以支持并发读写。`vec_chunks` 表的向量列宽度由 embedding 模型维度决定。
+
+## LLM
+
+`[llm]` — LLM 对话模型配置。支持所有 OpenAI 兼容的 provider。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `api_key` | string | 是 | — | LLM API Key |
+| `base_url` | string | 是 | — | API Base URL |
+| `model` | string | 是 | — | 模型名称 |
+
+不同 provider 的配置示例：
+
+```toml
+# OpenRouter（默认）
+[llm]
+api_key = "sk-or-..."
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+
+# OpenAI
+[llm]
+api_key = "sk-..."
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+
+# 智谱 AI (GLM)
+[llm]
+api_key = "your-glm-api-key"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "glm-4-flash"
+```
+
+## Embedding
+
+`[embedding]` — 向量嵌入模型配置。所有字段均为可选，省略整个 `[embedding]` 段时使用 OpenAI 默认值。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `api_key` | string | 是* | — | API Key。优先使用 `OPENAI_API_KEY` 环境变量 |
+| `base_url` | string | 否 | OpenAI 默认 | API Base URL，非 OpenAI provider 必须设置 |
+| `model` | string | 否 | `"text-embedding-3-small"` | 模型名称 |
+| `dimensions` | number | 否 | 模型默认 | 向量维度。BigModel 支持 256/512/1024/2048 |
+
+**注意**：更换 embedding 模型后如果维度不同，需要删除旧数据库重建（服务启动时会自动校验维度一致性）。
+
+配置示例：
+
+```toml
+# OpenAI（默认配置，只需设 api_key）
+[embedding]
+api_key = "sk-..."
+# base_url、model、dimensions 均可省略
+
+# 智谱 AI Embedding-3
+[embedding]
+api_key = "your-bigmodel-api-key"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "embedding-3"
+dimensions = 2048   # 可选：256 / 512 / 1024 / 2048
+```
+
+## API Token
+
+`[api]` — 文档管理接口认证配置。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `token` | string | 是 | `""` | Bearer Token，用于文档上传/删除等管理接口。可通过 `API_TOKEN` 环境变量设置 |
+
+**token 必须非空**，否则服务启动时 panic。建议通过环境变量设置：
+
+```bash
+export API_TOKEN="your-secret-token"
+```
+
+调用受保护接口时在请求头中携带：
+
+```
+Authorization: Bearer your-secret-token
+```
+
+## Chat
+
+`[chat]` — 对话行为配置。所有字段均有默认值，可省略整个 `[chat]` 段。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `system_prompt` | string | 否 | 内置默认提示词 | 系统提示词，定义助手角色与行为规则。多行文本用三引号 `"""..."""` |
+| `sliding_window_size` | number | 否 | `6` | 滑动窗口保留最近 N 条消息用于上下文 |
+| `compact_threshold` | number | 否 | `8` | 消息数超过此阈值时触发压缩检查 |
+| `token_budget` | number | 否 | `8000` | 估算 token 数超过此阈值时触发压缩 |
+
+### 滑动窗口与压缩机制
+
+对话上下文管理分两层：
+
+1. **滑动窗口**：每次请求只取最近 `sliding_window_size` 条消息发送给 LLM，丢弃更早的消息。
+2. **压缩检查**：当消息总数超过 `compact_threshold` 条，或估算 token 数超过 `token_budget` 时，系统将历史消息压缩为摘要，释放 token 空间。
+
+两个机制协同工作：滑动窗口控制单次请求的上下文长度，压缩机制防止历史无限增长。
+
+RAG 检索结果由系统自动拼接到系统提示词之后，`system_prompt` 中不需要手动处理上下文占位符。
+
+配置示例：
+
+```toml
+[chat]
+system_prompt = """
+你是一个技术文档助手，专注于帮助开发者理解项目文档。
+规则：
+1. 优先使用代码示例说明问题。
+2. 引用时标注来源标题和章节。
+"""
+sliding_window_size = 10
+compact_threshold = 12
+token_budget = 12000
+```
+
+## OpenTelemetry
+
+`[otel]` — OpenTelemetry OTLP tracing 导出配置。所有字段均有默认值，可省略整个 `[otel]` 段。`endpoint` 为空时不启用 OTLP tracing，本地开发零开销。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `endpoint` | string | 否 | `""` (空，即禁用) | OTLP gRPC endpoint |
+| `license_key` | string | 否 | `""` | 鉴权 Token，可通过 `OTEL_LICENSE_KEY` 环境变量设置 |
+| `service_name` | string | 否 | `"rwiki-backend"` | 在 trace 中显示的服务名称 |
+
+配置示例（阿里云 ARMS）：
+
+```toml
+[otel]
+endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
+# license_key 推荐通过环境变量设置
+service_name = "rwiki-backend"
+```
+
+## Widget
+
+前端可通过 `npm run build:widget` 导出纯 JS 文件（`rwiki-chat.js`），嵌入任何网站作为聊天悬浮按钮。通过 `RWikiChat.init(config)` 初始化。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `apiUrl` | string | 是 | — | 后端地址，需以 `http://` 或 `https://` 开头 |
+| `title` | string | 否 | `"Chat Assistant"` | 聊天窗口标题 |
+| `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
+| `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
+| `welcomeMessage` | string | 否 | — | 欢迎语 |
+
+### HTML 集成
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    title: '智能助手',
+    primaryColor: '#6366f1',
+    position: 'right',
+    welcomeMessage: '有什么可以帮你？',
+  });
+</script>
+```
+
+销毁实例：
+
+```js
+RWikiChat.destroy();
+```
+
+Widget 通过 Shadow DOM 隔离样式，不会影响宿主页面 CSS。
+
+### React 集成（docs-web 的方式）
+
+React 应用中可以动态加载 widget 脚本。后端地址通过 `VITE_RWIKI_API_URL` 环境变量传入（构建时确定，定义在 `docs-web/vite.config.ts`）。
+
+```tsx
+// src/components/rwiki-chat-widget.tsx
+import { useEffect } from 'react';
+
+const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
+
+export default function RWikiChatWidget() {
+  useEffect(() => {
+    const w = window as any;
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl }); };
+    if (w.RWikiChat?.init) {
+      initWidget();
+    } else {
+      const script = document.createElement('script');
+      script.src = '/rwiki-chat.js';
+      script.onload = initWidget;
+      document.body.appendChild(script);
+    }
+    return () => { w.RWikiChat?.destroy?.(); };
+  }, []);
+  return null;
+}
+```
+
+在根布局中放置组件：
+
+```tsx
+<RWikiChatWidget />
+```
+
+启动 docs-web 前先构建并复制 widget：
+
+```bash
+cd frontend && npm run build:widget
+cp dist/rwiki-chat.js ../docs-web/public/
+```

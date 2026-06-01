@@ -1,0 +1,71 @@
+---
+title: 架构
+description: 技术选型、RAG 核心流程
+icon: Boxes
+---
+
+RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处理文档解析、向量化、检索和流式对话，前端用 React SPA 提供聊天界面，同时支持以 widget 形式嵌入外部站点。
+
+## 技术栈
+
+- **后端**：Rust + Axum + rusqlite + sqlite-vec + rig-core
+- **前端**：React + TypeScript + TanStack Router/Query + Tailwind CSS
+
+选 sqlite-vec 而不是 Pinecone / Milvus，是因为 rwiki 定位为轻量私有部署——一个二进制文件加一个 `.db` 文件就能跑起来，不需要外部服务。代价是没法水平扩展，但对于单团队知识库场景，这个取舍合理。
+
+选 rig-core 做 LLM 调用，因为它在 OpenAI 兼容 API 上做了薄封装，同时支持 OpenAI、OpenRouter、BigModel 等多种 provider，切换只需要改 `base_url`。
+
+## 核心流程：RAG 管线
+
+从文档上传到用户收到回答，数据经过以下环节：
+
+```mermaid
+flowchart LR
+    A[上传文档] --> B[解析 & 分块]
+    B --> C[Embedding 向量化]
+    C --> D[存入 sqlite-vec]
+    D --> E{管理员发布}
+    E -->|status: published| F[可被检索]
+    E -->|status: draft| G[等待审核]
+
+    H[用户提问] --> I{有历史?}
+    I -->|是| J[查询改写]
+    I -->|否| K[原始查询]
+    J --> L[向量检索 + 窗口扩展]
+    K --> L
+    L --> M[构建 preamble]
+    M --> N[LLM 流式生成]
+    N --> O[SSE 事件流]
+```
+
+### 上传与解析
+
+通过 `POST /api/documents/upload` 上传文件（需要 Bearer Token）。支持：
+
+- **.xlsx**：逐行解析，每行格式化为 `header1: value1, header2: value2, ...` 的文本。
+- **.md / .mdx**：按 Markdown 标题层级分块，支持 YAML frontmatter 提取元数据。
+
+超长 chunk 会被按 Markdown 语义边界进一步切分。
+
+### 向量化与存储
+
+每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。相同内容会自动去重，跳过重复的 API 调用。
+
+### 文档状态
+
+文档状态流转：`processing` → `draft` → `published`（或 `failed`）。
+
+- `processing`：上传后正在解析和向量化
+- `draft`：处理完成，等待管理员审核，此状态下内容不会被搜索到
+- `published`：管理员确认发布后，chunk 参与向量检索
+
+加 draft 状态是因为数据质量不可控——加一层人工审核比直接上线再删更安全。
+
+### 检索与对话
+
+用户通过 `POST /api/chat` 发起对话（无需鉴权）：
+
+1. **会话管理**：请求携带可选的 `sessionId`，没有则生成新的
+2. **查询改写**：如果有历史消息，先用 LLM 把追问改写为独立查询
+3. **向量检索 + 窗口扩展**：用查询做向量搜索取 top-5，然后根据 page_id 和 sub_index 向前后扩展相邻 chunk，拿到完整上下文
+4. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`

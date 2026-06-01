@@ -1,0 +1,42 @@
+[package]
+name = "rwiki-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# API Documentation
+utoipa = { version = "5", features = ["chrono", "uuid"] }
+
+# Database
+rusqlite = { workspace = true }
+tokio-rusqlite = { workspace = true }
+rusqlite_migration = { workspace = true }
+zerocopy = { workspace = true }
+md5 = { workspace = true }
+
+# Time & ID
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Configuration
+toml = { workspace = true }
+
+# RAG / LLM
+rig = { workspace = true }
+calamine = { workspace = true }
+text-splitter = { workspace = true }
+pulldown-cmark = "0.13"
+
+[dev-dependencies]
+rust_xlsxwriter = "0.79"
+sqlite-vec = { workspace = true }
+tempfile = "3"

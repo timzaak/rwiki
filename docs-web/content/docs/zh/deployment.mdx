@@ -1,0 +1,182 @@
+---
+title: 部署
+description: Docker 部署
+icon: Container
+---
+
+RWiki 通过 Docker 多阶段构建产出单二进制 + 静态前端的镜像，无需外部数据库或向量服务。SQLite 文件存储在挂载卷中。
+
+预构建镜像发布在 [GitHub Container Registry](https://github.com/timzaak/rwiki/pkgs/container/rwiki)。
+
+## Docker 部署
+
+### 拉取
+
+```bash
+docker pull ghcr.io/timzaak/rwiki
+```
+
+### 运行
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  -e OPENROUTER_API_KEY=your-llm-key \
+  -e OPENAI_API_KEY=your-embedding-key \
+  ghcr.io/timzaak/rwiki
+```
+
+容器内监听端口 `8080`，数据存储在 `/app/data`。
+
+## 环境变量
+
+| 变量 | 用途 | 必填 |
+|------|------|------|
+| `OPENROUTER_API_KEY` | LLM API Key | 是 |
+| `OPENAI_API_KEY` | Embedding API Key | 是 |
+| `API_TOKEN` | 文档管理接口鉴权 Token | 建议设置 |
+| `APP_CONFIG` | 配置文件路径，默认 `/app/config.toml` | 否 |
+
+环境变量优先级高于配置文件。也可以挂载配置文件代替环境变量：
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  -v /path/to/your/config.toml:/app/config.toml:ro \
+  ghcr.io/timzaak/rwiki
+```
+
+### 最小配置模板
+
+```toml
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+static_dir = "/app/frontend/dist"
+
+[sqlite]
+path = "/app/data/rwiki.db"
+
+[llm]
+api_key = ""           # 留空则读取 OPENROUTER_API_KEY 环境变量
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-chat-v3-0324"
+
+[embedding]
+api_key = ""           # 留空则读取 OPENAI_API_KEY 环境变量
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+
+[api]
+token = ""             # 留空则读取 API_TOKEN 环境变量
+```
+
+完整的配置项说明见[配置](/docs/zh/configuration)章节。
+
+## 健康检查
+
+```bash
+curl http://localhost:8080/health
+```
+
+无需鉴权。返回：
+
+```json
+{"status":"healthy","database":"connected"}
+```
+
+`status` 为 `"healthy"` 且 `database` 为 `"connected"` 表示服务正常。
+
+## 数据持久化
+
+所有数据存储在容器内 `/app/data` 目录（单个 SQLite 文件）。**必须挂载卷**，否则容器删除后数据丢失：
+
+```bash
+docker run -d -p 8080:8080 \
+  -v rwiki-data:/app/data \
+  ghcr.io/timzaak/rwiki
+```
+
+## Caddy 反向代理
+
+使用 Caddy 在同一域名下同时托管文档站和后端服务。Caddy 负责静态文件服务、SPA 路由回退、自动 HTTPS 和反向代理。
+
+### 路由规划
+
+| 路径 | 目标 | 说明 |
+|------|------|------|
+| `/api/*` | 后端 | 文档管理 & 聊天 API |
+| `/health` | 后端 | 健康检查 |
+| `/swagger` | 后端 | Swagger UI（需配置开启） |
+| `/widget/*` | 后端 | 静态资源（聊天 widget JS） |
+| `/docs/*` | docs-web 静态文件 | 文档站（SPA） |
+| `/` | docs-web 静态文件 | 文档站（SPA） |
+
+### 构建
+
+1. 拉取后端 Docker 镜像：
+
+```bash
+docker pull ghcr.io/timzaak/rwiki
+```
+
+2. 构建聊天 widget 和文档站：
+
+```bash
+# 构建聊天 widget
+cd frontend
+npm run build:widget
+cp dist/rwiki-chat.js ../docs-web/public/
+
+# 构建文档站
+cd ../docs-web
+npm install
+VITE_RWIKI_API_URL=https://your-domain.com npm run build
+```
+
+`VITE_RWIKI_API_URL` 必须指向 Caddy 服务的**同一域名**（不是后端直接地址），因为聊天 widget 通过代理调用 `/api/chat`。
+
+### Caddyfile
+
+```plaintext
+your-domain.com {
+    # 后端 API 和服务端点
+    handle /api/* {
+        reverse_proxy localhost:8080
+    }
+    handle /health {
+        reverse_proxy localhost:8080
+    }
+    handle /swagger* {
+        reverse_proxy localhost:8080
+    }
+    handle /widget/* {
+        reverse_proxy localhost:8080
+    }
+
+    # 文档站（SPA）
+    handle {
+        root * /path/to/docs-web/.output/public
+        try_files {path} /index.html
+        file_server
+    }
+}
+```
+
+将 `your-domain.com` 替换为实际域名。Caddy 通过 Let's Encrypt 自动申请 TLS 证书。
+
+### 启动全部服务
+
+```bash
+# 启动后端
+docker run -d --name rwiki \
+  -v rwiki-data:/app/data \
+  -v /path/to/config.toml:/app/config.toml:ro \
+  -p 127.0.0.1:8080:8080 \
+  ghcr.io/timzaak/rwiki
+
+# 启动 Caddy
+caddy run --config Caddyfile
+```
+
+后端监听 `127.0.0.1:8080`（不对外暴露）。Caddy 绑定 80/443 端口，将请求路由到后端或文档站。

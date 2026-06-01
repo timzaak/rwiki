@@ -1,0 +1,86 @@
+name: Backend Tests
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 17 * * *"  # UTC 17:00 = 北京时间 01:00
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTC_WRAPPER: ""
+  CARGO_BUILD_RUSTC_WRAPPER: ""
+
+jobs:
+  check-backend-changes:
+    name: Check Backend Changes
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check yesterday's backend changes
+        id: check
+        run: |
+          SINCE=$(date -u -d "yesterday" +%Y-%m-%d)
+          UNTIL=$(date -u +%Y-%m-%d)
+          COUNT=$(git log --oneline --after="$SINCE" --before="$UNTIL" -- backend/ | wc -l)
+          echo "Commits since $SINCE until $UNTIL in backend/: $COUNT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  nextest:
+    name: Nextest
+    needs: [check-backend-changes]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && needs.check-backend-changes.outputs.has_changes == 'true'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend/target
+          key: ${{ runner.os }}-cargo-nextest-${{ hashFiles('backend/Cargo.lock') }}
+
+      - name: Run nextest
+        run: python scripts/backend-test.py
+
+      - name: Upload backend test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-output
+          path: log/backend-test-output.log
+          if-no-files-found: ignore

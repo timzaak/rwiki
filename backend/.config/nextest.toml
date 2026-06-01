@@ -1,0 +1,6 @@
+[profile.default]
+slow-timeout = { period = "300s", terminate-after = 1 }
+global-timeout = "60m"
+test-threads = 8
+failure-output = "immediate"
+fail-fast = false

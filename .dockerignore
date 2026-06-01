@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs
+LICENSE
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Node
+frontend/node_modules
+frontend/dist
+frontend/.turbo
+
+# Rust
+backend/target
+backend/.cargo
+**/*.rs.bk
+*.pdb
+
+# Environment
+.env
+.env.*
+*.local
+
+# Data
+backend/data
+
+# CI/CD
+*.log
+
+# Docker
+docker
+.dockerignore
+docker-compose*.yml
+
+# Tests
+demo
+scripts
+
+# CLAUDE
+CLAUDE.md
+AGENTS.md
+.claude

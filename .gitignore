@@ -1,0 +1,45 @@
+# Rust
+/target
+/backend/target
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+config.local.toml
+config.toml
+
+# Logs
+*.log
+/log/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+
+# AI / tooling
+.ai/
+.agent/
+
+# HuggingFace model cache
+.cache/
+.fastembed_cache/
+
+# Database
+*.db
+*.sqlite
+backend/data/
+backend/static/
