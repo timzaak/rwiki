@@ -2,15 +2,14 @@
 # Build order: backend first, then frontend (which depends on backend for API generation)
 
 # Stage 1: Shared Rust build environment
-FROM rust:1.90-alpine AS backend-chef
+FROM rust:1.90-bookworm AS backend-chef
 WORKDIR /app
 
-RUN apk add --no-cache \
-    musl-dev \
+RUN apt-get update && apt-get install -y \
     cmake \
-    openssl-dev \
-    openssl-libs-static \
-    pkgconfig && \
+    libssl-dev \
+    pkg-config && \
+    rm -rf /var/lib/apt/lists/* && \
     cargo install cargo-chef --locked
 
 # Stage 2: Analyze backend dependency graph
@@ -32,10 +31,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin app
 
 # Stage 4: Build frontend (depends on backend for API generation)
-FROM node:20-alpine AS frontend-builder
+FROM node:20-bookworm AS frontend-builder
 WORKDIR /frontend
 
-RUN apk add --no-cache openssl
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 COPY frontend/package*.json ./
 RUN npm ci --legacy-peer-deps
@@ -49,15 +48,16 @@ RUN (/tmp/rwiki-app --export-openapi api.json && npx openapi-ts || echo "Warning
     npm run build:widget
 
 # Stage 5: Final runtime image
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libgcc \
+    libgcc-s1 \
     tzdata \
     wget \
-    && addgroup -g 1000 rwiki \
-    && adduser -D -u 1000 -G rwiki rwiki
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --gid 1000 rwiki \
+    && adduser --disabled-password --gecos "" --uid 1000 --gid 1000 rwiki
 
 WORKDIR /app
 
