@@ -43,3 +43,6 @@ dist-ssr/
 *.sqlite
 backend/data/
 backend/static/
+
+# Generated OpenAPI spec
+docs-web/openapi.json
