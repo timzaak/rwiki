@@ -22,6 +22,7 @@ pub struct VectorStoreManager {
 }
 
 /// A single search result from the vector store.
+#[derive(Clone)]
 pub struct SearchResult {
     pub chunk_id: String,
     pub content: String,
@@ -346,30 +347,14 @@ impl VectorStoreManager {
         Ok(())
     }
 
-    /// Search the vector store for similar document chunks.
-    ///
-    /// Generates a query embedding, then uses sqlite-vec cosine distance search.
-    pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, CoreError> {
-        if self.is_empty().await {
-            return Err(CoreError::ProcessingError(
-                "知识库为空，请先上传文档".into(),
-            ));
-        }
-
-        let query_text = query.to_string();
-
-        // Generate query embedding
-        let embeddings = self
-            .embedding_model
-            .embed_texts(vec![query_text])
-            .await
-            .map_err(|e| CoreError::ProcessingError(format!("查询向量化失败: {e}")))?;
-
-        let query_vec = embeddings
-            .first()
-            .ok_or_else(|| CoreError::ProcessingError("查询向量化返回空结果".into()))?;
-        let query_bytes = embedding_to_bytes(&query_vec.vec);
-
+    /// Internal: vector search by pre-computed embedding vector.
+    /// Skips embedding generation and is_empty check (caller is responsible).
+    async fn search_by_vector(
+        &self,
+        query_vec: &[f64],
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>, CoreError> {
+        let query_bytes = embedding_to_bytes(query_vec);
         let top_k_i64 = top_k as i64;
 
         self.conn
@@ -429,6 +414,31 @@ impl VectorStoreManager {
             })
             .await
             .map_err(|e| CoreError::ProcessingError(format!("搜索失败: {e}")))
+    }
+
+    /// Search the vector store for similar document chunks.
+    ///
+    /// Generates a query embedding, then uses sqlite-vec cosine distance search.
+    pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, CoreError> {
+        if self.is_empty().await {
+            return Err(CoreError::ProcessingError(
+                "知识库为空，请先上传文档".into(),
+            ));
+        }
+
+        let query_text = query.to_string();
+
+        let embeddings = self
+            .embedding_model
+            .embed_texts(vec![query_text])
+            .await
+            .map_err(|e| CoreError::ProcessingError(format!("查询向量化失败: {e}")))?;
+
+        let query_vec = embeddings
+            .first()
+            .ok_or_else(|| CoreError::ProcessingError("查询向量化返回空结果".into()))?;
+
+        self.search_by_vector(&query_vec.vec, top_k).await
     }
 
     /// Retrieve neighbor chunks within a sub_index range for a given page_id.
@@ -502,23 +512,15 @@ impl VectorStoreManager {
             .map_err(|e| CoreError::DatabaseError(format!("查询邻居分块失败: {e}")))
     }
 
-    /// Search with window expansion: search -> expand -> dedup -> order -> trim.
-    ///
-    /// Returns enriched context chunks that include neighbor chunks around seed hits,
-    /// respecting budget limits. Old data (row_index = -1 or chunk_count = NULL) degrades
-    /// gracefully to seed-only results.
-    pub async fn search_with_expansion(
+    /// Internal: window expansion on seed hits.
+    /// Expands seed hits by fetching neighbor chunks, then deduplicates and trims.
+    async fn expand_window(
         &self,
-        query: &str,
-        top_k: usize,
+        seed_hits: Vec<SearchResult>,
         window_size: usize,
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
     ) -> Result<Vec<SearchResult>, CoreError> {
-        // Step 1: Search — get seed hits via vector similarity
-        let seed_hits = self.search(query, top_k).await?;
-
-        // Edge case: empty results or no expansion needed
         if seed_hits.is_empty() || window_size == 0 {
             return Ok(seed_hits);
         }
@@ -590,6 +592,103 @@ impl VectorStoreManager {
         Ok(result)
     }
 
+    /// Search with window expansion: search -> expand -> dedup -> order -> trim.
+    ///
+    /// Returns enriched context chunks that include neighbor chunks around seed hits,
+    /// respecting budget limits. Old data (row_index = -1 or chunk_count = NULL) degrades
+    /// gracefully to seed-only results.
+    pub async fn search_with_expansion(
+        &self,
+        query: &str,
+        top_k: usize,
+        window_size: usize,
+        max_chunks_per_row: usize,
+        max_total_context_chunks: usize,
+    ) -> Result<Vec<SearchResult>, CoreError> {
+        let seed_hits = self.search(query, top_k).await?;
+        self.expand_window(
+            seed_hits,
+            window_size,
+            max_chunks_per_row,
+            max_total_context_chunks,
+        )
+        .await
+    }
+
+    /// Multi-query search with RRF fusion and window expansion.
+    ///
+    /// 1. Batch embed all queries
+    /// 2. Search each query independently via search_by_vector
+    /// 3. RRF fuse all results
+    /// 4. Window expansion on fused seed hits
+    pub async fn search_multi_query(
+        &self,
+        queries: &[String],
+        top_k_per_query: usize,
+        window_size: usize,
+        max_chunks_per_row: usize,
+        max_total_context_chunks: usize,
+        rrf_k: u64,
+    ) -> Result<Vec<SearchResult>, CoreError> {
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Single query: delegate to search_with_expansion directly
+        if queries.len() == 1 {
+            return self
+                .search_with_expansion(
+                    &queries[0],
+                    top_k_per_query,
+                    window_size,
+                    max_chunks_per_row,
+                    max_total_context_chunks,
+                )
+                .await;
+        }
+
+        // Step 1: Batch embed all queries
+        let all_embeddings = self
+            .embedding_model
+            .embed_texts(queries.to_vec())
+            .await
+            .map_err(|e| CoreError::ProcessingError(format!("批量查询向量化失败: {e}")))?;
+
+        // Step 2: Search each query sequentially (sqlite-vec single-connection serialization)
+        let mut all_results: Vec<Vec<SearchResult>> = Vec::with_capacity(queries.len());
+        for (i, embedding) in all_embeddings.iter().enumerate() {
+            match self.search_by_vector(&embedding.vec, top_k_per_query).await {
+                Ok(results) => {
+                    tracing::debug!("query {} returned {} results", i, results.len());
+                    all_results.push(results);
+                }
+                Err(e) => {
+                    tracing::warn!("query {} search failed: {e}, skipping", i);
+                }
+            }
+        }
+
+        if all_results.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 3: RRF fusion
+        let fused = rrf_fuse(&all_results, rrf_k, top_k_per_query);
+
+        if fused.is_empty() || window_size == 0 {
+            return Ok(fused);
+        }
+
+        // Step 4: Window expansion on fused seed hits
+        self.expand_window(
+            fused,
+            window_size,
+            max_chunks_per_row,
+            max_total_context_chunks,
+        )
+        .await
+    }
+
     /// Check if the vector store has any embeddings.
     pub async fn is_empty(&self) -> bool {
         self.conn
@@ -645,6 +744,39 @@ impl VectorStoreManager {
 
         Ok(())
     }
+}
+
+/// Reciprocal Rank Fusion: merge multiple ranked result lists by chunk_id,
+/// compute RRF score, and return top-K deduplicated results.
+pub(crate) fn rrf_fuse(
+    result_lists: &[Vec<SearchResult>],
+    k: u64,
+    top_k: usize,
+) -> Vec<SearchResult> {
+    let mut scores: std::collections::HashMap<String, (f64, SearchResult)> =
+        std::collections::HashMap::new();
+
+    for results in result_lists {
+        for (rank, result) in results.iter().enumerate() {
+            let rrf_score = 1.0 / (k as f64 + rank as f64 + 1.0);
+            let entry = scores
+                .entry(result.chunk_id.clone())
+                .or_insert_with(|| (0.0, result.clone()));
+            entry.0 += rrf_score;
+        }
+    }
+
+    let mut ranked: Vec<_> = scores.into_values().collect();
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.truncate(top_k);
+
+    ranked
+        .into_iter()
+        .map(|(score, mut result)| {
+            result.score = score;
+            result
+        })
+        .collect()
 }
 
 /// Merge seed hits with neighbor chunks, deduplicating by (page_id, sub_index).
@@ -1332,5 +1464,106 @@ mod tests {
 
         assert_eq!(result.len(), 1, "old data should pass through as seed-only");
         assert_eq!(result[0].chunk_id, "old_seed");
+    }
+
+    // --- rrf_fuse tests ---
+
+    fn make_rrf_result(chunk_id: &str, page_id: &str, score: f64) -> SearchResult {
+        SearchResult {
+            chunk_id: chunk_id.to_string(),
+            content: format!("content for {chunk_id}"),
+            score,
+            document_id: "doc".to_string(),
+            page_id: page_id.to_string(),
+            sub_index: Some(0),
+            chunk_count: Some(3),
+            title: String::new(),
+            locale: None,
+            link: None,
+            tags: Vec::new(),
+            section: None,
+        }
+    }
+
+    #[test]
+    fn rrf_fuse_single_list_preserves_order() {
+        let list = vec![
+            make_rrf_result("a", "p1", 0.9),
+            make_rrf_result("b", "p1", 0.8),
+            make_rrf_result("c", "p1", 0.7),
+        ];
+        let result = rrf_fuse(&[list], 60, 10);
+        assert_eq!(result.len(), 3, "single list should return all items");
+        assert_eq!(result[0].chunk_id, "a", "rank 0 should be first");
+        assert_eq!(result[1].chunk_id, "b", "rank 1 should be second");
+        assert_eq!(result[2].chunk_id, "c", "rank 2 should be third");
+    }
+
+    #[test]
+    fn rrf_fuse_two_lists_dedup_by_chunk_id() {
+        let list1 = vec![
+            make_rrf_result("a", "p1", 0.9),
+            make_rrf_result("b", "p1", 0.8),
+        ];
+        let list2 = vec![
+            make_rrf_result("b", "p1", 0.95), // overlap with list1
+            make_rrf_result("c", "p2", 0.7),
+        ];
+        let result = rrf_fuse(&[list1, list2], 60, 10);
+        assert_eq!(result.len(), 3, "should dedup 'b' to 3 unique items");
+
+        // 'b' appears in list1 at rank 1 and list2 at rank 0, should have highest RRF score
+        assert_eq!(
+            result[0].chunk_id, "b",
+            "overlapping item should rank first"
+        );
+
+        // Verify RRF score calculation for 'b': 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
+        let expected_b_score = 1.0 / 62.0 + 1.0 / 61.0;
+        assert!(
+            (result[0].score - expected_b_score).abs() < 1e-10,
+            "RRF score for 'b' should be 1/62 + 1/61, got {}",
+            result[0].score
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_empty_input_returns_empty() {
+        let result = rrf_fuse(&[], 60, 10);
+        assert!(result.is_empty(), "empty input should return empty");
+    }
+
+    #[test]
+    fn rrf_fuse_empty_lists_return_empty() {
+        let result = rrf_fuse(&[vec![], vec![]], 60, 10);
+        assert!(result.is_empty(), "empty lists should return empty");
+    }
+
+    #[test]
+    fn rrf_fuse_truncates_to_top_k() {
+        let list = vec![
+            make_rrf_result("a", "p1", 0.9),
+            make_rrf_result("b", "p1", 0.8),
+            make_rrf_result("c", "p2", 0.7),
+            make_rrf_result("d", "p2", 0.6),
+        ];
+        let result = rrf_fuse(&[list], 60, 2);
+        assert_eq!(result.len(), 2, "should truncate to top_k=2");
+        assert_eq!(result[0].chunk_id, "a");
+        assert_eq!(result[1].chunk_id, "b");
+    }
+
+    #[test]
+    fn rrf_fuse_updates_score_field() {
+        let list1 = vec![make_rrf_result("a", "p1", 0.9)];
+        let list2 = vec![make_rrf_result("a", "p1", 0.8)];
+        let result = rrf_fuse(&[list1, list2], 60, 10);
+        assert_eq!(result.len(), 1);
+        // Score should be 1/(60+0+1) + 1/(60+0+1) = 2/61
+        let expected = 2.0 / 61.0;
+        assert!(
+            (result[0].score - expected).abs() < 1e-10,
+            "score field should be updated to RRF score"
+        );
     }
 }

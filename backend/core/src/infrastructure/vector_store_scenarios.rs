@@ -1,14 +1,24 @@
-//! Scenario tests for RAG search filtering by document publish status.
+//! Scenario tests for RAG search filtering by document publish status
+//! and RRF fusion correctness.
 //!
-//! Covers: search() and get_neighbor_chunks() only return chunks from
-//! published documents. Chunks from draft, processing, and failed documents
-//! are excluded from search results.
+//! Covers:
+//! - search() and get_neighbor_chunks() only return chunks from published documents.
+//!   Chunks from draft, processing, and failed documents are excluded from search results.
+//! - rrf_fuse pure function: multi-list fusion, dedup, score computation, truncation.
 //!
-//! User Stories: US-CORE-002, US-CORE-008, US-CORE-009
+//! User Stories: US-CORE-002, US-CORE-008, US-CORE-009, US-CORE-019, US-CORE-022
+//!
+//! DEFERRED: search_multi_query integration tests require a working embedding API
+//! (the dummy in-memory store cannot produce real embeddings). The rrf_fuse pure
+//! function tests below cover the core algorithm logic. Full integration tests for
+//! search_multi_query (multi-query dispatch, embedding, parallel search, window
+//! expansion) should be added in the accept slot or a manual integration environment.
 
 use std::sync::Arc;
 
 use super::embedding_model::AppEmbeddingModel;
+use super::vector_store::rrf_fuse;
+use super::vector_store::SearchResult;
 use super::vector_store::VectorStoreManager;
 use rig::client::EmbeddingsClient;
 use std::sync::Once;
@@ -401,4 +411,312 @@ async fn publishing_document_makes_chunks_searchable() {
     );
     assert_eq!(published_results[0].chunk_id, "lc_chunk_0");
     assert_eq!(published_results[1].chunk_id, "lc_chunk_1");
+}
+
+// ---------------------------------------------------------------------------
+// RRF fusion scenario tests
+// ---------------------------------------------------------------------------
+
+/// Helper to construct a SearchResult for rrf_fuse pure function tests.
+/// These tests exercise rrf_fuse directly and need no database.
+fn make_rrf_search_result(
+    chunk_id: &str,
+    content: &str,
+    score: f64,
+    page_id: &str,
+) -> SearchResult {
+    SearchResult {
+        chunk_id: chunk_id.to_string(),
+        content: content.to_string(),
+        score,
+        document_id: "test-doc".to_string(),
+        page_id: page_id.to_string(),
+        sub_index: None,
+        chunk_count: None,
+        title: "Test Title".to_string(),
+        locale: None,
+        link: None,
+        tags: vec![],
+        section: None,
+    }
+}
+
+// User Story: US-CORE-019
+// Covers: When only one query produces results, RRF fusion should return results
+//         in the same order as input (rank-ordered pass-through). The RRF scores
+//         should follow the formula 1/(k + rank + 1) for each position.
+//         This validates the single-query pass-through path in search_multi_query,
+//         where no actual fusion is needed but the scoring must still be consistent.
+#[test]
+fn rrf_fuse_single_list_preserves_order_with_correct_scores() {
+    let list = vec![
+        make_rrf_search_result("a", "content a", 0.9, "p1"),
+        make_rrf_search_result("b", "content b", 0.8, "p1"),
+        make_rrf_search_result("c", "content c", 0.7, "p1"),
+    ];
+    let result = rrf_fuse(&[list], 60, 5);
+
+    assert_eq!(result.len(), 3, "single list should return all 3 items");
+    assert_eq!(result[0].chunk_id, "a", "rank 0 should be first");
+    assert_eq!(result[1].chunk_id, "b", "rank 1 should be second");
+    assert_eq!(result[2].chunk_id, "c", "rank 2 should be third");
+
+    // Verify RRF scores: 1/(k+1), 1/(k+2), 1/(k+3) with k=60
+    let expected_a = 1.0 / (60.0 + 0.0 + 1.0); // rank 0: 1/61
+    let expected_b = 1.0 / (60.0 + 1.0 + 1.0); // rank 1: 1/62
+    let expected_c = 1.0 / (60.0 + 2.0 + 1.0); // rank 2: 1/63
+    assert!(
+        (result[0].score - expected_a).abs() < 1e-12,
+        "rank 0 RRF score should be 1/61, got {}",
+        result[0].score
+    );
+    assert!(
+        (result[1].score - expected_b).abs() < 1e-12,
+        "rank 1 RRF score should be 1/62, got {}",
+        result[1].score
+    );
+    assert!(
+        (result[2].score - expected_c).abs() < 1e-12,
+        "rank 2 RRF score should be 1/63, got {}",
+        result[2].score
+    );
+}
+
+// User Story: US-CORE-019
+// Covers: Core RRF behavior -- when two queries return overlapping chunks,
+//         the shared chunk gets a higher combined score. chunk_id deduplication
+//         works correctly: the chunk appearing in both lists accumulates scores
+//         from both, ensuring the most broadly relevant results surface first.
+//         This is the primary scenario for multi-query search quality.
+#[test]
+fn rrf_fuse_two_overlapping_lists_dedup_with_combined_scores() {
+    let list1 = vec![
+        make_rrf_search_result("A", "content A", 0.9, "p1"),
+        make_rrf_search_result("B", "content B", 0.8, "p1"),
+        make_rrf_search_result("C", "content C", 0.7, "p1"),
+    ];
+    let list2 = vec![
+        make_rrf_search_result("B", "content B", 0.95, "p1"), // overlaps with list1
+        make_rrf_search_result("D", "content D", 0.85, "p2"),
+    ];
+    let result = rrf_fuse(&[list1, list2], 60, 10);
+
+    assert_eq!(
+        result.len(),
+        4,
+        "should have 4 unique chunk_ids (B deduped)"
+    );
+
+    // B appears at rank 1 in list1 and rank 0 in list2
+    // B's combined score: 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
+    let expected_b = 1.0 / 62.0 + 1.0 / 61.0;
+    assert_eq!(
+        result[0].chunk_id, "B",
+        "B should rank first (highest combined score)"
+    );
+    assert!(
+        (result[0].score - expected_b).abs() < 1e-12,
+        "B's RRF score should be 1/62 + 1/61 = {}, got {}",
+        expected_b,
+        result[0].score
+    );
+
+    // A appears at rank 0 in list1 only: score = 1/(60+0+1) = 1/61
+    assert_eq!(result[1].chunk_id, "A", "A should rank second");
+
+    // Verify no duplicate chunk_ids in output
+    let ids: Vec<&str> = result.iter().map(|r| r.chunk_id.as_str()).collect();
+    let unique_ids: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    assert_eq!(
+        ids.len(),
+        unique_ids.len(),
+        "no duplicate chunk_ids in output"
+    );
+}
+
+// User Story: US-CORE-022
+// Covers: When all queries produce no results, the fusion output is empty.
+//         This validates the edge case where the outer result_lists slice itself
+//         is empty (no query lists at all), ensuring no panic or incorrect output.
+#[test]
+fn rrf_fuse_empty_input_lists_return_empty() {
+    let result = rrf_fuse(&[], 60, 10);
+    assert!(
+        result.is_empty(),
+        "empty input slice should return empty output"
+    );
+}
+
+// User Story: US-CORE-019
+// Covers: When combined results exceed top_k, only the top_k highest-scoring results
+//         are returned. This ensures the output size is bounded even when multiple
+//         queries each contribute many results, preventing context overflow downstream.
+#[test]
+fn rrf_fuse_results_truncated_to_top_k() {
+    let list1: Vec<SearchResult> = (0..5)
+        .map(|i| {
+            make_rrf_search_result(
+                &format!("a{}", i),
+                &format!("content a{}", i),
+                0.9 - i as f64 * 0.1,
+                "p1",
+            )
+        })
+        .collect();
+    let list2: Vec<SearchResult> = (0..5)
+        .map(|i| {
+            make_rrf_search_result(
+                &format!("b{}", i),
+                &format!("content b{}", i),
+                0.85 - i as f64 * 0.1,
+                "p2",
+            )
+        })
+        .collect();
+
+    let result = rrf_fuse(&[list1, list2], 60, 3);
+
+    assert_eq!(result.len(), 3, "should truncate to top_k=3");
+    // Verify descending score order
+    for window in result.windows(2) {
+        assert!(
+            window[0].score >= window[1].score,
+            "results should be sorted by descending RRF score: {} >= {}",
+            window[0].score,
+            window[1].score
+        );
+    }
+}
+
+// User Story: US-CORE-019
+// Covers: Verify the RRF formula score = sum over all lists of 1/(k + rank + 1)
+//         for each chunk_id. Uses a 3-list input with partial overlaps to exercise
+//         multi-list accumulation. This is the definitive correctness test for the
+//         core algorithm: any deviation in the formula breaks multi-query search quality.
+#[test]
+fn rrf_fuse_score_computation_correct_for_three_lists() {
+    // List 1: X at rank 0, Y at rank 1
+    let list1 = vec![
+        make_rrf_search_result("X", "content X", 0.95, "p1"),
+        make_rrf_search_result("Y", "content Y", 0.85, "p1"),
+    ];
+    // List 2: Y at rank 0, Z at rank 1
+    let list2 = vec![
+        make_rrf_search_result("Y", "content Y", 0.90, "p2"),
+        make_rrf_search_result("Z", "content Z", 0.80, "p2"),
+    ];
+    // List 3: X at rank 0, Z at rank 1, W at rank 2
+    let list3 = vec![
+        make_rrf_search_result("X", "content X", 0.88, "p1"),
+        make_rrf_search_result("Z", "content Z", 0.75, "p3"),
+        make_rrf_search_result("W", "content W", 0.60, "p3"),
+    ];
+
+    let result = rrf_fuse(&[list1, list2, list3], 60, 10);
+    let k = 60.0_f64;
+
+    // Manually compute expected RRF scores:
+    // X: rank 0 in list1 + rank 0 in list3 = 1/(60+0+1) + 1/(60+0+1) = 2/61
+    let expected_x = 1.0 / (k + 0.0 + 1.0) + 1.0 / (k + 0.0 + 1.0);
+    // Y: rank 1 in list1 + rank 0 in list2 = 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
+    let expected_y = 1.0 / (k + 1.0 + 1.0) + 1.0 / (k + 0.0 + 1.0);
+    // Z: rank 1 in list2 + rank 1 in list3 = 1/(60+1+1) + 1/(60+1+1) = 2/62
+    let expected_z = 1.0 / (k + 1.0 + 1.0) + 1.0 / (k + 1.0 + 1.0);
+    // W: rank 2 in list3 = 1/(60+2+1) = 1/63
+    let expected_w = 1.0 / (k + 2.0 + 1.0);
+
+    assert_eq!(result.len(), 4, "should return all 4 unique chunks");
+
+    // Verify each chunk's score within floating point tolerance
+    let tolerance = 1e-12;
+    for r in &result {
+        let expected = match r.chunk_id.as_str() {
+            "X" => expected_x,
+            "Y" => expected_y,
+            "Z" => expected_z,
+            "W" => expected_w,
+            other => panic!("unexpected chunk_id: {other}"),
+        };
+        assert!(
+            (r.score - expected).abs() < tolerance,
+            "RRF score for {} should be {}, got {}",
+            r.chunk_id,
+            expected,
+            r.score
+        );
+    }
+
+    // Expected ranking order: X (2/61) > Y (1/61+1/62) > Z (2/62) > W (1/63)
+    assert_eq!(result[0].chunk_id, "X", "X should rank first");
+    assert_eq!(result[1].chunk_id, "Y", "Y should rank second");
+    assert_eq!(result[2].chunk_id, "Z", "Z should rank third");
+    assert_eq!(result[3].chunk_id, "W", "W should rank fourth");
+}
+
+// User Story: US-CORE-022
+// Covers: result_lists = [[], []] -- all queries returned empty results.
+//         This validates that rrf_fuse handles inner empty lists without panic,
+//         producing an empty output. This can occur when all queries match nothing
+//         in the vector store.
+#[test]
+fn rrf_fuse_all_empty_inner_lists_return_empty() {
+    let result = rrf_fuse(&[vec![], vec![]], 60, 10);
+    assert!(
+        result.is_empty(),
+        "all empty inner lists should return empty output"
+    );
+}
+
+// User Story: US-CORE-019
+// Covers: When some queries produce results and others don't, the fusion uses
+//         only the available results. This models the real-world scenario where
+//         one rewrite query returns matches but another returns nothing. The
+//         non-empty list's results should appear with correct single-list RRF scores.
+#[test]
+fn rrf_fuse_one_empty_one_nonempty_returns_nonempty_results() {
+    let list2 = vec![
+        make_rrf_search_result("A", "content A", 0.9, "p1"),
+        make_rrf_search_result("B", "content B", 0.8, "p1"),
+        make_rrf_search_result("C", "content C", 0.7, "p1"),
+    ];
+    let result = rrf_fuse(&[vec![], list2], 60, 10);
+
+    assert_eq!(
+        result.len(),
+        3,
+        "should return the 3 results from the non-empty list"
+    );
+
+    // Verify correct RRF scores from the single non-empty list
+    let expected_a = 1.0 / (60.0 + 0.0 + 1.0); // rank 0: 1/61
+    let expected_b = 1.0 / (60.0 + 1.0 + 1.0); // rank 1: 1/62
+    let expected_c = 1.0 / (60.0 + 2.0 + 1.0); // rank 2: 1/63
+
+    assert_eq!(
+        result[0].chunk_id, "A",
+        "rank 0 from non-empty list should be first"
+    );
+    assert!(
+        (result[0].score - expected_a).abs() < 1e-12,
+        "A score should be 1/61, got {}",
+        result[0].score
+    );
+    assert_eq!(
+        result[1].chunk_id, "B",
+        "rank 1 from non-empty list should be second"
+    );
+    assert!(
+        (result[1].score - expected_b).abs() < 1e-12,
+        "B score should be 1/62, got {}",
+        result[1].score
+    );
+    assert_eq!(
+        result[2].chunk_id, "C",
+        "rank 2 from non-empty list should be third"
+    );
+    assert!(
+        (result[2].score - expected_c).abs() < 1e-12,
+        "C score should be 1/63, got {}",
+        result[2].score
+    );
 }

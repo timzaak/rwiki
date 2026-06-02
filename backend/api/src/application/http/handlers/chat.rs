@@ -10,6 +10,7 @@ use rig::streaming::StreamingChat;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -18,6 +19,13 @@ use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
 use rwiki_core::domain::chat::{evict_expired_sessions, ChatMessage};
 use rwiki_core::infrastructure::vector_store::SearchResult;
+
+/// Rewrite LLM call timeout (ms)
+const REWRITE_TIMEOUT_MS: u64 = 8000;
+/// Max number of query variants from rewrite
+const REWRITE_MAX_QUERIES: usize = 2;
+/// RRF fusion parameter k
+const RRF_K: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -80,7 +88,13 @@ pub(crate) fn build_rewrite_prompt(history: &[ChatMessage], user_message: &str) 
         .map(|msg| format!("{}: {}", msg.role, msg.content))
         .collect::<Vec<_>>()
         .join("\n");
-    format!("对话历史:\n{history_text}\n\n当前用户追问: {user_message}\n\n请将用户的追问改写为一个独立的、自包含的查询，使其在不依赖对话历史的情况下也能被理解。")
+    format!(
+        "对话历史:\n{history_text}\n\n当前用户追问: {user_message}\n\n\
+         请将用户的追问改写为一个独立的、自包含的查询。\n\
+         输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
+         最多生成 {REWRITE_MAX_QUERIES} 条查询变体。如果只有一个查询，也用数组包裹。\n\
+         只输出 JSON，不要输出其他内容。"
+    )
 }
 
 /// 构建摘要压缩提示词。将已有的摘要（如有）与待压缩的旧消息拼接，
@@ -100,6 +114,66 @@ pub(crate) fn build_compact_prompt(
         .join("\n");
     parts.push(format!("待压缩的对话历史:\n{messages_text}"));
     parts.join("\n\n")
+}
+
+/// Build the first-turn rewrite prompt. Extends short/ambiguous queries
+/// into more specific, searchable forms with JSON output constraint.
+pub(crate) fn build_first_turn_rewrite_prompt(user_message: &str) -> String {
+    format!(
+        "用户查询: {user_message}\n\n\
+         请将这个查询改写为更具体、更可检索的形式。\n\
+         如果查询使用了非正式术语或缩写，替换为对应的正式术语。\n\
+         如果查询包含多个独立的子问题，将每个子问题分别列出。\n\
+         输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
+         最多生成 {REWRITE_MAX_QUERIES} 条查询。如果只有一个查询，也用数组包裹。\n\
+         只输出 JSON，不要输出其他内容。"
+    )
+}
+
+/// Parse the LLM rewrite response into a list of queries.
+/// Three-level degradation:
+///   1. Parse JSON {"queries": [...]} (with optional ```json fence stripping)
+///   2. If JSON parse fails, use raw trimmed output as single query
+///   3. Caller handles LLM failure by providing original query
+pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
+    // 1. Strip optional ```json ... ``` fence
+    let trimmed = raw.trim();
+    let json_str = if trimmed.starts_with("```json") {
+        trimmed
+            .strip_prefix("```json")
+            .unwrap_or(trimmed)
+            .strip_suffix("```")
+            .unwrap_or(trimmed)
+            .trim()
+    } else if trimmed.starts_with("```") {
+        trimmed
+            .strip_prefix("```")
+            .unwrap_or(trimmed)
+            .strip_suffix("```")
+            .unwrap_or(trimmed)
+            .trim()
+    } else {
+        trimmed
+    };
+
+    // 2. Try parsing JSON
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(arr) = val.get("queries").and_then(|v| v.as_array()) {
+            let queries: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .take(REWRITE_MAX_QUERIES)
+                .collect();
+            if !queries.is_empty() {
+                return queries;
+            }
+        }
+    }
+
+    // 3. Fallback: use entire output as single query
+    tracing::debug!("rewrite response is not valid JSON, using raw output as single query");
+    vec![raw.trim().to_string()]
 }
 
 // ---------------------------------------------------------------------------
@@ -153,32 +227,73 @@ pub async fn chat(
         }
     };
 
-    // Query rewriting: if history is non-empty, rewrite the user query for RAG
-    let search_query = if history.is_empty() {
-        req.message.clone()
-    } else {
-        let rewrite_prompt = build_rewrite_prompt(&history, &req.message);
+    // Query rewriting: always rewrite (unconditional)
+    let search_queries = {
+        let (rewrite_preamble, rewrite_prompt) =
+            if history.is_empty() {
+                (
+                    "你是一个查询改写助手。将用户的短/模糊查询扩展为更具体、更可检索的形式。",
+                    build_first_turn_rewrite_prompt(&req.message),
+                )
+            } else {
+                ("你是一个查询改写助手。根据对话历史，将用户当前的追问改写为独立的、自包含的查询。",
+             build_rewrite_prompt(&history, &req.message))
+            };
+
         let rewrite_agent = state
             .llm_client
             .agent(&state.llm_model)
-            .preamble("你是一个查询改写助手。根据对话历史，将用户当前的追问改写为一个独立的、自包含的查询。")
-            .max_tokens(100)
+            .preamble(rewrite_preamble)
+            .max_tokens(200)
             .build();
-        match rewrite_agent.prompt(&rewrite_prompt).await {
-            Ok(rewritten) => rewritten,
-            Err(e) => {
+
+        match tokio::time::timeout(
+            Duration::from_millis(REWRITE_TIMEOUT_MS),
+            rewrite_agent.prompt(&rewrite_prompt),
+        )
+        .await
+        {
+            Ok(Ok(raw_response)) => parse_rewrite_response(&raw_response),
+            Ok(Err(e)) => {
                 tracing::warn!("query rewriting failed: {e}, falling back to original query");
-                req.message.clone()
+                vec![req.message.clone()]
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "query rewriting timed out after {REWRITE_TIMEOUT_MS}ms, falling back to original query"
+                );
+                vec![req.message.clone()]
             }
         }
     };
 
-    // Search vector store for relevant context with window expansion
-    let search_results = state
-        .vector_store
-        .search_with_expansion(&search_query, 5, 1, 3, 12)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    // Multi-query search with RRF fusion
+    let search_results = if search_queries.len() == 1 {
+        // Single query: use existing path
+        state
+            .vector_store
+            .search_with_expansion(&search_queries[0], 5, 1, 3, 12)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    } else {
+        // Multi-query: RRF fusion + window expansion
+        let results = state
+            .vector_store
+            .search_multi_query(&search_queries, 5, 1, 3, 12, RRF_K)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        // Fallback: if all rewrite queries returned empty, retry with original query
+        if results.is_empty() {
+            tracing::warn!("all rewrite queries returned empty, falling back to original query");
+            state
+                .vector_store
+                .search_with_expansion(&req.message, 5, 1, 3, 12)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+        } else {
+            results
+        }
+    };
 
     let context_text = search_results
         .iter()
@@ -737,6 +852,131 @@ mod tests {
         assert!(
             prompt.contains("user: What is Rust?"),
             "should include old message content"
+        );
+    }
+
+    // --- build_first_turn_rewrite_prompt tests ---
+
+    #[test]
+    fn build_first_turn_rewrite_prompt_includes_user_message() {
+        let prompt = build_first_turn_rewrite_prompt("内存");
+        assert!(
+            prompt.contains("用户查询: 内存"),
+            "should include user message"
+        );
+        assert!(
+            prompt.contains("JSON"),
+            "should include JSON format constraint"
+        );
+        assert!(
+            prompt.contains(&format!("最多生成 {REWRITE_MAX_QUERIES} 条查询")),
+            "should reference REWRITE_MAX_QUERIES constant"
+        );
+    }
+
+    #[test]
+    fn build_first_turn_rewrite_prompt_references_max_queries_constant() {
+        let prompt = build_first_turn_rewrite_prompt("test");
+        assert!(
+            prompt.contains("最多生成 2 条查询"),
+            "should embed the REWRITE_MAX_QUERIES value"
+        );
+    }
+
+    // --- parse_rewrite_response tests ---
+
+    #[test]
+    fn parse_rewrite_response_valid_json() {
+        let result = parse_rewrite_response(r#"{"queries": ["query one", "query two"]}"#);
+        assert_eq!(result, vec!["query one", "query two"]);
+    }
+
+    #[test]
+    fn parse_rewrite_response_json_with_code_fence() {
+        let raw = "```json\n{\"queries\": [\"q1\", \"q2\"]}\n```";
+        let result = parse_rewrite_response(raw);
+        assert_eq!(result, vec!["q1", "q2"]);
+    }
+
+    #[test]
+    fn parse_rewrite_response_plain_code_fence() {
+        let raw = "```\n{\"queries\": [\"q1\"]}\n```";
+        let result = parse_rewrite_response(raw);
+        assert_eq!(result, vec!["q1"]);
+    }
+
+    #[test]
+    fn parse_rewrite_response_empty_queries_array_falls_back() {
+        let result = parse_rewrite_response("{\"queries\": []}");
+        assert_eq!(
+            result.len(),
+            1,
+            "empty array should fall back to raw output"
+        );
+        assert_eq!(result[0], "{\"queries\": []}");
+    }
+
+    #[test]
+    fn parse_rewrite_response_missing_queries_field_falls_back() {
+        let result = parse_rewrite_response("{\"result\": \"something\"}");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "{\"result\": \"something\"}");
+    }
+
+    #[test]
+    fn parse_rewrite_response_plain_text_falls_back() {
+        let result = parse_rewrite_response("This is just plain text");
+        assert_eq!(result, vec!["This is just plain text"]);
+    }
+
+    #[test]
+    fn parse_rewrite_response_truncates_to_max_queries() {
+        let result = parse_rewrite_response(r#"{"queries": ["q1", "q2", "q3", "q4"]}"#);
+        assert_eq!(
+            result.len(),
+            REWRITE_MAX_QUERIES,
+            "should truncate to REWRITE_MAX_QUERIES"
+        );
+    }
+
+    #[test]
+    fn parse_rewrite_response_filters_empty_strings() {
+        let result = parse_rewrite_response(r#"{"queries": ["q1", "", "  ", "q2"]}"#);
+        assert_eq!(result, vec!["q1", "q2"]);
+    }
+
+    #[test]
+    fn parse_rewrite_response_single_query_in_array() {
+        let result = parse_rewrite_response("{\"queries\": [\"single query\"]}");
+        assert_eq!(result, vec!["single query"]);
+    }
+
+    // --- modified build_rewrite_prompt JSON constraint test ---
+
+    #[test]
+    fn build_rewrite_prompt_includes_json_format_constraint() {
+        let history = vec![
+            ChatMessage {
+                role: "user".into(),
+                content: "What is Rust?".into(),
+            },
+            ChatMessage {
+                role: "assistant".into(),
+                content: "Rust is a systems language.".into(),
+            },
+        ];
+        let prompt = build_rewrite_prompt(&history, "How does it handle memory?");
+        assert!(
+            prompt.contains("JSON"),
+            "modified prompt should include JSON format constraint"
+        );
+        assert!(
+            prompt.contains("queries"),
+            "modified prompt should reference queries array"
+        );
+        assert!(
+            prompt.contains("How does it handle memory?"),
+            "should still include user message"
         );
     }
 }

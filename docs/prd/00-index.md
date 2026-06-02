@@ -36,3 +36,4 @@
 | chat | 多轮对话 Hybrid 记忆管理 | [chat/multi-turn-conversation-hybrid-memory.md](chat/multi-turn-conversation-hybrid-memory.md) | Implemented | 多轮记忆策略和用户可见对话行为 |
 | integration | 可嵌入 Chat Widget (JS) | [integration/chat-widget-embeddable-js.md](integration/chat-widget-embeddable-js.md) | Implemented | Widget 集成契约、加载生命周期和限制 |
 | integration | API 调用编排 Agent | [integration/api-orchestrator-agent.md](integration/api-orchestrator-agent.md) | Draft | OpenAPI 规范管理、调用计划生成、审批执行、结果展示 |
+| chat | 查询改写与扩展 | [chat/query-rewrite.md](chat/query-rewrite.md) | Draft | 首轮改写、多查询扩展、RRF 融合、降级保障 |
