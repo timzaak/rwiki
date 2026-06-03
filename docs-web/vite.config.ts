@@ -5,6 +5,15 @@ import mdx from "fumadocs-mdx/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 
+const OPENAPI_SLUGS = ["chat", "delete_document", "health_check", "list_documents", "publish_document", "unpublish_document", "upload_document"];
+
+function openapiPages() {
+  return OPENAPI_SLUGS.flatMap((slug) => [
+    { path: `/docs/openapi/${slug}` },
+    { path: `/zh/docs/openapi/${slug}` },
+  ]);
+}
+
 export default defineConfig({
   define: {
     "import.meta.env.VITE_RWIKI_API_URL": JSON.stringify(
@@ -33,6 +42,15 @@ export default defineConfig({
         {
           path: "/zh/docs",
         },
+        // Locale root pages (client-side redirect to docs)
+        {
+          path: "/zh",
+        },
+        {
+          path: "/en",
+        },
+        // OpenAPI pages (crawler doesn't discover these from virtual pages)
+        ...openapiPages(),
         {
           path: "/api/search",
         },
