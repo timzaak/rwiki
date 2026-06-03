@@ -10,6 +10,7 @@ const OPENAPI_SLUGS = ["chat", "delete_document", "health_check", "list_document
 function openapiPages() {
   return OPENAPI_SLUGS.flatMap((slug) => [
     { path: `/docs/openapi/${slug}` },
+    { path: `/en/docs/openapi/${slug}` },
     { path: `/zh/docs/openapi/${slug}` },
   ]);
 }
