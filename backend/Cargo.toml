@@ -50,7 +50,7 @@ dotenv = "0.15"
 md5 = "0.7"
 
 # RAG / LLM
-rig = { version = "0.37", features = ["derive"] }
+rig = { version = "0.38.1", features = ["derive"] }
 calamine = "0.26"
 
 # Text splitting

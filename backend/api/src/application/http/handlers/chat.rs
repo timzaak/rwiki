@@ -364,7 +364,9 @@ pub async fn chat(
         while let Some(item) = stream.next().await {
             match item {
                 Ok(rig::agent::MultiTurnStreamItem::StreamAssistantItem(
-                    rig::streaming::StreamedAssistantContent::Text(rig::message::Text { text }),
+                    rig::streaming::StreamedAssistantContent::Text(rig::message::Text {
+                        text, ..
+                    }),
                 )) => {
                     assistant_text.push_str(&text);
                     let chunk_event = ChunkEvent { content: text };
