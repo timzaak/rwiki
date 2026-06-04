@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use super::embedding_model::AppEmbeddingModel;
 use super::vector_store::rrf_fuse;
+use super::vector_store::sanitize_fts_query;
+use super::vector_store::tokenize_fallback;
 use super::vector_store::SearchResult;
 use super::vector_store::VectorStoreManager;
 use rig::client::EmbeddingsClient;
@@ -718,5 +720,1096 @@ fn rrf_fuse_one_empty_one_nonempty_returns_nonempty_results() {
         (result[2].score - expected_c).abs() < 1e-12,
         "C score should be 1/63, got {}",
         result[2].score
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FTS index lifecycle scenario tests
+// ---------------------------------------------------------------------------
+
+/// Insert a row into the fts_chunks FTS5 index for an existing chunk_metadata row.
+/// Tokenizes the content using jieba and inserts with the chunk's rowid.
+async fn insert_fts_row(store: &VectorStoreManager, chunk_id: &str, content: &str) {
+    let cid = chunk_id.to_string();
+    let content_owned = content.to_string();
+    store
+        .conn
+        .call(move |conn| {
+            let rowid: i64 = conn.query_row(
+                "SELECT rowid FROM chunk_metadata WHERE chunk_id = ?",
+                rusqlite::params![cid],
+                |row| row.get(0),
+            )?;
+            let tokens = super::vector_store::tokenize_for_fts(&content_owned);
+            conn.execute(
+                "INSERT OR IGNORE INTO fts_chunks(rowid, tokens) VALUES (?, ?)",
+                rusqlite::params![rowid, tokens],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("insert_fts_row should succeed");
+}
+
+// User Story: US-CORE-002
+// Covers: fts_chunks FTS5 virtual table exists after migrations run.
+//         If this table is missing, all keyword search fails silently or errors.
+//         This test catches migration regressions where the FTS5 DDL is dropped.
+//         Uses sqlite_master to check existence, since FTS5 external-content tables
+//         cannot be queried with SELECT COUNT(*) without a MATCH clause.
+#[tokio::test]
+async fn fts_virtual_table_exists_after_migration() {
+    let store = make_sql_only_store();
+
+    // Check via sqlite_master that the fts_chunks virtual table exists
+    let exists: bool = store
+        .conn
+        .call(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fts_chunks'",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok::<bool, rusqlite::Error>(count > 0)
+        })
+        .await
+        .expect("querying sqlite_master should succeed");
+
+    assert!(
+        exists,
+        "fts_chunks virtual table should exist after migration"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: After inserting a document, chunk, and FTS index row, search_by_keyword
+//         finds the chunk via BM25 ranking. This verifies the end-to-end FTS pipeline:
+//         tokenize -> insert -> MATCH query -> JOIN with published status -> result.
+#[tokio::test]
+async fn fts_index_searchable_after_chunk_insert() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_fts_search", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_search",
+        "fts_chunk_0",
+        "这是一段关于内存管理的测试文本",
+        "page_fts_search",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "fts_chunk_0", "这是一段关于内存管理的测试文本").await;
+
+    let results = store
+        .search_by_keyword("内存管理", 5)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(results.len(), 1, "should find 1 result for '内存管理'");
+    assert_eq!(results[0].chunk_id, "fts_chunk_0");
+    assert!(
+        results[0].score > 0.0,
+        "BM25 score should be positive, got {}",
+        results[0].score
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: Deleting a document via remove_document removes all associated FTS entries.
+//         After deletion, search_by_keyword returns empty for previously indexed content.
+//         This verifies the FTS cleanup in remove_document (DELETE FROM fts_chunks).
+#[tokio::test]
+async fn deleting_document_removes_fts_entries() {
+    let store = make_sql_only_store();
+
+    let doc_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    insert_test_document(&store, "00000000-0000-0000-0000-000000000001", "published").await;
+    insert_test_chunk(
+        &store,
+        "00000000-0000-0000-0000-000000000001",
+        "del_chunk_0",
+        "关于部署流程的详细说明文档",
+        "page_del",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "del_chunk_0", "关于部署流程的详细说明文档").await;
+
+    // Verify it is searchable before deletion
+    let before = store
+        .search_by_keyword("部署流程", 5)
+        .await
+        .expect("search should succeed");
+    assert_eq!(before.len(), 1, "should find chunk before deletion");
+
+    // Delete the document
+    store
+        .remove_document(&doc_id)
+        .await
+        .expect("remove_document should succeed");
+
+    // Verify FTS entries are gone
+    let after = store
+        .search_by_keyword("部署流程", 5)
+        .await
+        .expect("search should succeed after deletion");
+    assert!(
+        after.is_empty(),
+        "should find nothing after document deletion"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: search_by_keyword excludes chunks from draft documents.
+//         Draft documents represent in-progress content that must not be surfaced
+//         to users querying the knowledge base. The SQL JOIN on d.status = 'published'
+//         in search_by_keyword enforces this at the query level.
+#[tokio::test]
+async fn fts_search_excludes_draft_documents() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_fts_draft", "draft").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_draft",
+        "draft_fts_chunk",
+        "草稿文档中的网络协议分析内容",
+        "page_fts_draft",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "draft_fts_chunk", "草稿文档中的网络协议分析内容").await;
+
+    let results = store
+        .search_by_keyword("网络协议", 5)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert!(
+        results.is_empty(),
+        "draft document chunks should not appear in keyword search, got {} results",
+        results.len()
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: search_by_keyword includes chunks from published documents.
+//         This is the baseline positive case -- published content must be findable
+//         via keyword search. Without this guarantee, the knowledge base is useless.
+#[tokio::test]
+async fn fts_search_includes_published_documents() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_fts_pub", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_pub",
+        "pub_fts_chunk",
+        "已发布文档中的数据库优化策略",
+        "page_fts_pub",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "pub_fts_chunk", "已发布文档中的数据库优化策略").await;
+
+    let results = store
+        .search_by_keyword("数据库优化", 5)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(results.len(), 1, "published document should be found");
+    assert_eq!(results[0].chunk_id, "pub_fts_chunk");
+}
+
+// User Story: US-CORE-002
+// Covers: When both published and draft documents have chunks matching a keyword query,
+//         only the published document's chunks are returned. This is the critical
+//         access control guarantee: draft content never leaks to search users,
+//         even when the FTS index contains tokens from both documents.
+#[tokio::test]
+async fn fts_search_filters_mixed_status_returns_only_published() {
+    let store = make_sql_only_store();
+
+    // Published document
+    insert_test_document(&store, "doc_fts_mixed_pub", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_mixed_pub",
+        "mixed_pub_chunk",
+        "容器编排与微服务部署最佳实践",
+        "page_mixed_pub",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "mixed_pub_chunk", "容器编排与微服务部署最佳实践").await;
+
+    // Draft document with overlapping content
+    insert_test_document(&store, "doc_fts_mixed_drf", "draft").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_mixed_drf",
+        "mixed_draft_chunk",
+        "容器编排的草稿版本微服务部署计划",
+        "page_mixed_drf",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(
+        &store,
+        "mixed_draft_chunk",
+        "容器编排的草稿版本微服务部署计划",
+    )
+    .await;
+
+    let results = store
+        .search_by_keyword("容器编排", 10)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "only published document should be returned"
+    );
+    assert_eq!(
+        results[0].chunk_id, "mixed_pub_chunk",
+        "only the published chunk should appear"
+    );
+    assert!(
+        !results.iter().any(|r| r.chunk_id == "mixed_draft_chunk"),
+        "draft chunk must not appear in results"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: Full FTS lifecycle -- write (insert doc+chunk+fts), search (find it),
+//         delete (remove_document), search again (empty). This end-to-end test
+//         verifies that all three phases interact correctly: indexing populates FTS,
+//         search reads FTS with status filter, and deletion cleans up FTS entries.
+//         Any break in this chain causes the final assertion to fail.
+#[tokio::test]
+async fn fts_lifecycle_write_search_delete_search_empty() {
+    let store = make_sql_only_store();
+
+    let doc_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+
+    // Phase 1: Write -- insert document, chunk, and FTS index
+    insert_test_document(&store, "00000000-0000-0000-0000-000000000002", "published").await;
+    insert_test_chunk(
+        &store,
+        "00000000-0000-0000-0000-000000000002",
+        "lifecycle_chunk",
+        "全文检索生命周期的集成测试内容",
+        "page_lifecycle",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "lifecycle_chunk", "全文检索生命周期的集成测试内容").await;
+
+    // Phase 2: Search -- verify content is findable
+    let search_after_write = store
+        .search_by_keyword("全文检索", 5)
+        .await
+        .expect("search after write should succeed");
+    assert_eq!(
+        search_after_write.len(),
+        1,
+        "should find 1 result after writing"
+    );
+    assert_eq!(search_after_write[0].chunk_id, "lifecycle_chunk");
+
+    // Phase 3: Delete -- remove the document
+    store
+        .remove_document(&doc_id)
+        .await
+        .expect("remove_document should succeed");
+
+    // Phase 4: Search again -- should return empty
+    let search_after_delete = store
+        .search_by_keyword("全文检索", 5)
+        .await
+        .expect("search after delete should succeed");
+    assert!(
+        search_after_delete.is_empty(),
+        "should find nothing after deleting the document, got {} results",
+        search_after_delete.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Keyword search tokenization and sanitization scenario tests
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-002
+// Covers: Chinese keyword exact match via FTS. After inserting a document, chunk,
+//         and FTS row with Chinese content "Rust 语言的内存管理", searching for the
+//         single token "内存" must find the chunk. This validates that jieba tokenization
+//         splits Chinese text into individual tokens and FTS5 BM25 matches on them.
+#[tokio::test]
+async fn chinese_keyword_exact_match_via_fts() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_cn_exact", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_cn_exact",
+        "cn_exact_chunk",
+        "Rust 语言的内存管理",
+        "page_cn_exact",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "cn_exact_chunk", "Rust 语言的内存管理").await;
+
+    let results = store
+        .search_by_keyword("内存", 5)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "should find 1 result for Chinese token '内存'"
+    );
+    assert_eq!(results[0].chunk_id, "cn_exact_chunk");
+}
+
+// User Story: US-CORE-002
+// Covers: English keyword exact match via FTS. After inserting a document, chunk,
+//         and FTS row with English content "Kubernetes deployment guide", searching for
+//         "Kubernetes" must find the chunk. This validates that English words are
+//         tokenized as whole tokens and FTS5 can match them.
+#[tokio::test]
+async fn english_keyword_exact_match_via_fts() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_en_exact", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_en_exact",
+        "en_exact_chunk",
+        "Kubernetes deployment guide",
+        "page_en_exact",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "en_exact_chunk", "Kubernetes deployment guide").await;
+
+    let results = store
+        .search_by_keyword("Kubernetes", 5)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "should find 1 result for English token 'Kubernetes'"
+    );
+    assert_eq!(results[0].chunk_id, "en_exact_chunk");
+}
+
+// User Story: US-CORE-002
+// Covers: Mixed Chinese-English content is searchable by both Chinese and English tokens.
+//         Content "Rust 语言的内存管理" must be findable by both "Rust" and "内存".
+//         This validates that jieba tokenization correctly separates Chinese and English
+//         segments, and that each produces independent searchable tokens in the FTS index.
+#[tokio::test]
+async fn mixed_chinese_english_tokenization_searchable() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_mixed", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_mixed",
+        "mixed_chunk",
+        "Rust 语言的内存管理",
+        "page_mixed",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "mixed_chunk", "Rust 语言的内存管理").await;
+
+    // Search by English token
+    let en_results = store
+        .search_by_keyword("Rust", 5)
+        .await
+        .expect("search_by_keyword for 'Rust' should succeed");
+    assert_eq!(
+        en_results.len(),
+        1,
+        "should find chunk via English token 'Rust'"
+    );
+    assert_eq!(en_results[0].chunk_id, "mixed_chunk");
+
+    // Search by Chinese token
+    let cn_results = store
+        .search_by_keyword("内存", 5)
+        .await
+        .expect("search_by_keyword for '内存' should succeed");
+    assert_eq!(
+        cn_results.len(),
+        1,
+        "should find chunk via Chinese token '内存'"
+    );
+    assert_eq!(cn_results[0].chunk_id, "mixed_chunk");
+}
+
+// User Story: US-CORE-002
+// Covers: sanitize_fts_query strips FTS5 operators (AND, OR, NOT) and special characters
+//         (quotes, asterisks, parentheses) to prevent injection or syntax errors in
+//         the MATCH clause. If these were not stripped, a user query containing them
+//         could break the FTS5 query or change its semantics.
+#[test]
+fn sanitize_fts_query_strips_operators_and_special_chars() {
+    // FTS5 operators should be removed
+    assert_eq!(
+        sanitize_fts_query("memory AND management"),
+        "memory management",
+        "AND operator should be stripped"
+    );
+    assert_eq!(
+        sanitize_fts_query("memory OR cpu"),
+        "memory cpu",
+        "OR operator should be stripped"
+    );
+    assert_eq!(
+        sanitize_fts_query("memory NOT leak"),
+        "memory leak",
+        "NOT operator should be stripped"
+    );
+
+    // Special characters should be removed
+    assert_eq!(
+        sanitize_fts_query("\"quoted\""),
+        "quoted",
+        "double quotes should be stripped"
+    );
+    assert_eq!(
+        sanitize_fts_query("wild*card"),
+        "wildcard",
+        "asterisks should be stripped"
+    );
+    assert_eq!(
+        sanitize_fts_query("(grouped)"),
+        "grouped",
+        "parentheses should be stripped"
+    );
+
+    // Combined operators and special chars
+    assert_eq!(
+        sanitize_fts_query("test\" AND (OR) *end"),
+        "test end",
+        "all operators and special chars should be stripped together"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: sanitize_fts_query preserves valid Chinese and mixed tokens after sanitization.
+//         Chinese characters, English words, and mixed tokens must pass through unchanged.
+//         If the sanitizer were too aggressive (e.g. stripping non-ASCII), Chinese keyword
+//         search would break entirely.
+#[test]
+fn sanitize_fts_query_preserves_valid_tokens() {
+    // Pure Chinese tokens
+    assert_eq!(
+        sanitize_fts_query("内存 管理"),
+        "内存 管理",
+        "Chinese tokens should be preserved"
+    );
+
+    // Mixed Chinese and English
+    assert_eq!(
+        sanitize_fts_query("Rust 语言"),
+        "Rust 语言",
+        "mixed Chinese-English tokens should be preserved"
+    );
+
+    // Single Chinese token
+    assert_eq!(
+        sanitize_fts_query("部署"),
+        "部署",
+        "single Chinese token should be preserved"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: sanitize_fts_query handles edge cases: empty string, whitespace-only, and
+//         input that becomes empty after stripping operators. These cases must return
+//         an empty string so that search_by_keyword can short-circuit to an empty result
+//         rather than passing an invalid MATCH clause to FTS5.
+#[test]
+fn sanitize_fts_query_handles_empty_and_whitespace() {
+    assert_eq!(
+        sanitize_fts_query(""),
+        "",
+        "empty input should return empty string"
+    );
+    assert_eq!(
+        sanitize_fts_query("   "),
+        "",
+        "whitespace-only input should return empty string"
+    );
+    assert_eq!(
+        sanitize_fts_query("AND OR NOT"),
+        "",
+        "operators-only input should return empty string"
+    );
+    assert_eq!(
+        sanitize_fts_query("  AND  OR  "),
+        "",
+        "whitespace with operators should return empty string"
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: search_by_keyword returns Ok(empty) when no FTS content matches the query.
+//         This must not be an error -- it is a normal "no results" case. If this returned
+//         Err, callers would need to distinguish "no match" from "system error", adding
+//         unnecessary complexity.
+#[tokio::test]
+async fn fts_search_no_match_returns_empty_not_error() {
+    let store = make_sql_only_store();
+
+    // No documents or chunks inserted at all
+    let results = store
+        .search_by_keyword("完全不相关的查询内容", 5)
+        .await
+        .expect("search_by_keyword should return Ok even with no matches");
+
+    assert!(
+        results.is_empty(),
+        "no-match query should return empty Vec, got {} results",
+        results.len()
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: tokenize_fallback produces non-empty output for edge cases where jieba
+//         might fail (special encoding, unusual characters). It splits on non-alphanumeric
+//         characters, so it must always produce at least one token for alphanumeric input
+//         and handle empty/whitespace gracefully. This is the safety net for tokenization.
+#[test]
+fn tokenization_fallback_produces_output_for_edge_cases() {
+    // Normal input
+    let result = tokenize_fallback("hello world");
+    assert!(
+        !result.is_empty(),
+        "should produce tokens for 'hello world'"
+    );
+    assert!(result.contains("hello"), "should contain 'hello'");
+    assert!(result.contains("world"), "should contain 'world'");
+
+    // Mixed alphanumeric and special chars
+    let result = tokenize_fallback("key-value_pair");
+    assert!(
+        result.contains("key") && result.contains("value") && result.contains("pair"),
+        "should split on hyphens and underscores, got: {result}"
+    );
+
+    // Empty input
+    let result = tokenize_fallback("");
+    assert!(result.is_empty(), "empty input should produce empty output");
+
+    // Whitespace-only input
+    let result = tokenize_fallback("   ");
+    assert!(
+        result.is_empty(),
+        "whitespace-only should produce empty output"
+    );
+
+    // Non-alphanumeric only (e.g. all symbols)
+    let result = tokenize_fallback("---***");
+    assert!(
+        result.is_empty(),
+        "non-alphanumeric only should produce empty output, got: {result}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid search RRF fusion scenario tests
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-019
+// Covers: When FTS and vector result lists share an overlapping chunk, rrf_fuse must
+//         deduplicate by chunk_id and assign the combined RRF score. Chunk B appearing
+//         in both lists should appear once with accumulated score, ranked higher than
+//         chunks from only one list. This is the core dedup guarantee for hybrid search.
+#[test]
+fn hybrid_search_rrf_fusion_no_duplicate_chunks() {
+    let fts_results = vec![
+        make_rrf_search_result("A", "fts content A", 0.9, "p1"),
+        make_rrf_search_result("B", "shared content B", 0.8, "p1"),
+        make_rrf_search_result("C", "fts content C", 0.7, "p2"),
+    ];
+    let vec_results = vec![
+        make_rrf_search_result("B", "shared content B", 0.95, "p1"),
+        make_rrf_search_result("D", "vec content D", 0.85, "p3"),
+    ];
+
+    let fused = rrf_fuse(&[fts_results, vec_results], 60, 10);
+
+    // Verify no duplicate chunk_ids
+    let ids: Vec<&str> = fused.iter().map(|r| r.chunk_id.as_str()).collect();
+    let unique_ids: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    assert_eq!(
+        ids.len(),
+        unique_ids.len(),
+        "fused results must not contain duplicate chunk_ids, got {:?}",
+        ids
+    );
+
+    // Should have exactly 4 unique chunks
+    assert_eq!(fused.len(), 4, "should have 4 unique chunks (A, B, C, D)");
+
+    // B should rank first because it appears in both lists
+    assert_eq!(
+        fused[0].chunk_id, "B",
+        "B should rank first (appears in both FTS and vector)"
+    );
+
+    // B's combined score: rank 1 in fts_results + rank 0 in vec_results
+    // = 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
+    let expected_b = 1.0 / 62.0 + 1.0 / 61.0;
+    assert!(
+        (fused[0].score - expected_b).abs() < 1e-12,
+        "B's combined RRF score should be 1/62 + 1/61 = {}, got {}",
+        expected_b,
+        fused[0].score
+    );
+}
+
+// User Story: US-CORE-019
+// Covers: When FTS returns nothing (e.g. query has no FTS tokens or no FTS index exists)
+//         but vector search produces results, rrf_fuse should return the vector results
+//         with correct single-list RRF scores. This models the degradation path where
+//         keyword search contributes nothing and the system falls back to vector-only.
+#[test]
+fn hybrid_search_with_empty_fts_returns_vector_results() {
+    let fts_results: Vec<SearchResult> = vec![];
+    let vec_results = vec![
+        make_rrf_search_result("V1", "vector content 1", 0.9, "p1"),
+        make_rrf_search_result("V2", "vector content 2", 0.8, "p2"),
+    ];
+
+    let fused = rrf_fuse(&[fts_results, vec_results], 60, 10);
+
+    assert_eq!(fused.len(), 2, "should return 2 vector results");
+    assert_eq!(fused[0].chunk_id, "V1");
+    assert_eq!(fused[1].chunk_id, "V2");
+
+    // Verify single-list RRF scores
+    let expected_v1 = 1.0 / (60.0 + 0.0 + 1.0); // rank 0: 1/61
+    let expected_v2 = 1.0 / (60.0 + 1.0 + 1.0); // rank 1: 1/62
+    assert!(
+        (fused[0].score - expected_v1).abs() < 1e-12,
+        "V1 RRF score should be 1/61, got {}",
+        fused[0].score
+    );
+    assert!(
+        (fused[1].score - expected_v2).abs() < 1e-12,
+        "V2 RRF score should be 1/62, got {}",
+        fused[1].score
+    );
+}
+
+// User Story: US-CORE-019
+// Covers: When vector search returns nothing (e.g. no embeddings indexed) but FTS
+//         produces results, rrf_fuse should return the FTS results with correct
+//         single-list RRF scores. This models the degradation path where semantic
+//         search contributes nothing and keyword search carries the query.
+#[test]
+fn hybrid_search_with_empty_vector_returns_fts_results() {
+    let fts_results = vec![
+        make_rrf_search_result("F1", "keyword content 1", 0.9, "p1"),
+        make_rrf_search_result("F2", "keyword content 2", 0.8, "p2"),
+    ];
+    let vec_results: Vec<SearchResult> = vec![];
+
+    let fused = rrf_fuse(&[fts_results, vec_results], 60, 10);
+
+    assert_eq!(fused.len(), 2, "should return 2 FTS results");
+    assert_eq!(fused[0].chunk_id, "F1");
+    assert_eq!(fused[1].chunk_id, "F2");
+
+    // Verify single-list RRF scores
+    let expected_f1 = 1.0 / (60.0 + 0.0 + 1.0); // rank 0: 1/61
+    let expected_f2 = 1.0 / (60.0 + 1.0 + 1.0); // rank 1: 1/62
+    assert!(
+        (fused[0].score - expected_f1).abs() < 1e-12,
+        "F1 RRF score should be 1/61, got {}",
+        fused[0].score
+    );
+    assert!(
+        (fused[1].score - expected_f2).abs() < 1e-12,
+        "F2 RRF score should be 1/62, got {}",
+        fused[1].score
+    );
+}
+
+// User Story: US-CORE-002
+// Covers: backfill_fts_index populates fts_chunks for existing chunk_metadata rows
+//         that were inserted via raw SQL (bypassing FTS sync), simulating a pre-M3
+//         database state. After backfill, search_by_keyword must find the content.
+//         This validates the startup migration path for upgrading existing databases.
+#[tokio::test]
+async fn startup_backfill_populates_fts_index_from_existing_chunks() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_backfill", "published").await;
+
+    // Insert chunks via raw SQL directly into chunk_metadata only (no FTS row),
+    // simulating pre-FTS state where chunks exist but have no FTS index entries.
+    let ndims = store.ndims();
+    let doc_id = "doc_backfill".to_string();
+    let cid = "bf_chunk_0".to_string();
+    let content = "回填测试内容关于负载均衡策略".to_string();
+    let pid = "page_bf".to_string();
+    let ndims_copy = ndims;
+    store
+        .conn
+        .call(move |conn| {
+            let dummy_embedding = vec![0u8; ndims_copy * 4];
+            conn.execute(
+                "INSERT INTO chunk_metadata (document_id, chunk_id, content, title, locale, link, tags, section, page_id, sub_index, chunk_count, content_hash, embedding_model) \
+                 VALUES (?, ?, ?, '', NULL, NULL, '', NULL, ?, 0, 1, NULL, NULL)",
+                rusqlite::params![doc_id, cid, content, pid],
+            )?;
+            let rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                rusqlite::params![rowid, dummy_embedding],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("raw SQL insert should succeed");
+
+    // Verify FTS is empty before backfill -- search should return nothing
+    let results_before = store
+        .search_by_keyword("负载均衡", 5)
+        .await
+        .expect("search before backfill should succeed");
+    assert!(
+        results_before.is_empty(),
+        "keyword search should return nothing before backfill"
+    );
+
+    // Run backfill
+    store
+        .backfill_fts_index()
+        .await
+        .expect("backfill_fts_index should succeed");
+
+    // Verify the chunk is now findable via keyword search
+    let results = store
+        .search_by_keyword("负载均衡", 5)
+        .await
+        .expect("search_by_keyword should succeed after backfill");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "backfill should make chunk findable via keyword search"
+    );
+    assert_eq!(results[0].chunk_id, "bf_chunk_0");
+}
+
+// User Story: US-CORE-002
+// Covers: backfill_fts_index is idempotent -- running it multiple times must not create
+//         duplicate FTS entries. This is critical because backfill runs on every startup;
+//         if it were not idempotent, each restart would accumulate duplicate index rows,
+//         inflating BM25 scores and corrupting search ranking.
+#[tokio::test]
+async fn backfill_idempotent_multiple_runs_no_duplicates() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_idempotent", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_idempotent",
+        "idem_chunk",
+        "幂等性测试关于并发控制机制",
+        "page_idem",
+        Some(0),
+        Some(1),
+    )
+    .await;
+
+    // No FTS row yet -- backfill will create it
+    store
+        .backfill_fts_index()
+        .await
+        .expect("first backfill should succeed");
+
+    let results_after_first = store
+        .search_by_keyword("并发控制", 5)
+        .await
+        .expect("search after first backfill should succeed");
+    assert_eq!(
+        results_after_first.len(),
+        1,
+        "should find 1 result after first backfill"
+    );
+
+    // Run backfill again
+    store
+        .backfill_fts_index()
+        .await
+        .expect("second backfill should succeed");
+
+    // Verify no duplicate results -- still exactly 1, not 2
+    let results_after_second = store
+        .search_by_keyword("并发控制", 5)
+        .await
+        .expect("search after second backfill should succeed");
+    assert_eq!(
+        results_after_second.len(),
+        1,
+        "second backfill should not create duplicates, still 1 result"
+    );
+    assert_eq!(results_after_second[0].chunk_id, "idem_chunk");
+}
+
+// User Story: US-CORE-002
+// Covers: If the fts_chunks table is dropped or corrupted, search_by_keyword must degrade
+//         gracefully by returning Ok(empty) rather than Err. This is the resilience
+//         guarantee for hybrid search: FTS failure does not crash the system, it degrades
+//         to vector-only. The design in search_hybrid wraps FTS in a match with a warning
+//         log, and search_by_keyword itself should also handle the missing table case.
+//         NOTE: If the current search_by_keyword returns Err when fts_chunks is missing,
+//         this test will fail at runtime. That outcome is acceptable for the authoring phase;
+//         the runner phase will verify actual behavior and adjust if needed.
+#[tokio::test]
+async fn fts_failure_degrades_gracefully_not_error() {
+    let store = make_sql_only_store();
+
+    insert_test_document(&store, "doc_fts_fail", "published").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_fail",
+        "fts_fail_chunk",
+        "容错测试关于缓存穿透防护",
+        "page_fts_fail",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "fts_fail_chunk", "容错测试关于缓存穿透防护").await;
+
+    // Drop the fts_chunks table to simulate FTS corruption/absence
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute_batch("DROP TABLE IF EXISTS fts_chunks;")?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("dropping fts_chunks should succeed");
+
+    // search_by_keyword should return Ok(empty) rather than Err
+    let result = store.search_by_keyword("缓存穿透", 5).await;
+
+    match result {
+        Ok(results) => {
+            assert!(
+                results.is_empty(),
+                "FTS failure should degrade to empty results, got {} results",
+                results.len()
+            );
+        }
+        Err(e) => {
+            // If search_by_keyword currently returns Err when fts_chunks is missing,
+            // this test documents the behavior gap. The runner phase will determine
+            // if this needs a production code fix to return Ok(empty) instead.
+            panic!("search_by_keyword returned Err on missing fts_chunks, expected Ok(empty): {e}");
+        }
+    }
+}
+
+// User Story: US-CORE-002
+// Covers: backfill indexes all chunks regardless of document status, but search_by_keyword
+//         only returns chunks from published documents. This separation of concerns is
+//         critical: backfill must not skip drafts (they may be published later), and
+//         search must never surface drafts. After updating a draft to published, the
+//         previously invisible chunks must appear in search results.
+#[tokio::test]
+async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
+    let store = make_sql_only_store();
+
+    // Insert a published document with a chunk (via raw SQL, no FTS sync)
+    let ndims = store.ndims();
+    let pub_doc_id = "doc_bf_pub".to_string();
+    let pub_cid = "bf_pub_chunk".to_string();
+    let pub_content = "已发布文档的API网关配置说明".to_string();
+    let pub_pid = "page_bf_pub".to_string();
+    let ndims_pub = ndims;
+    store
+        .conn
+        .call(move |conn| {
+            let dummy_embedding = vec![0u8; ndims_pub * 4];
+            conn.execute(
+                "INSERT INTO documents (id, file_name, status, row_count) VALUES (?, 'pub.xlsx', 'published', 1)",
+                rusqlite::params![pub_doc_id],
+            )?;
+            conn.execute(
+                "INSERT INTO chunk_metadata (document_id, chunk_id, content, title, locale, link, tags, section, page_id, sub_index, chunk_count, content_hash, embedding_model) \
+                 VALUES (?, ?, ?, '', NULL, NULL, '', NULL, ?, 0, 1, NULL, NULL)",
+                rusqlite::params![pub_doc_id, pub_cid, pub_content, pub_pid],
+            )?;
+            let rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                rusqlite::params![rowid, dummy_embedding],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("insert published doc+chunk should succeed");
+
+    // Insert a draft document with a chunk (via raw SQL, no FTS sync)
+    let draft_doc_id = "doc_bf_draft".to_string();
+    let draft_cid = "bf_draft_chunk".to_string();
+    let draft_content = "草稿文档的API网关设计计划".to_string();
+    let draft_pid = "page_bf_draft".to_string();
+    let ndims_draft = ndims;
+    store
+        .conn
+        .call(move |conn| {
+            let dummy_embedding = vec![0u8; ndims_draft * 4];
+            conn.execute(
+                "INSERT INTO documents (id, file_name, status, row_count) VALUES (?, 'draft.xlsx', 'draft', 1)",
+                rusqlite::params![draft_doc_id],
+            )?;
+            conn.execute(
+                "INSERT INTO chunk_metadata (document_id, chunk_id, content, title, locale, link, tags, section, page_id, sub_index, chunk_count, content_hash, embedding_model) \
+                 VALUES (?, ?, ?, '', NULL, NULL, '', NULL, ?, 0, 1, NULL, NULL)",
+                rusqlite::params![draft_doc_id, draft_cid, draft_content, draft_pid],
+            )?;
+            let rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                rusqlite::params![rowid, dummy_embedding],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("insert draft doc+chunk should succeed");
+
+    // Run backfill -- indexes all chunks regardless of status
+    store
+        .backfill_fts_index()
+        .await
+        .expect("backfill should succeed");
+
+    // Search should only return the published document's chunk
+    let results = store
+        .search_by_keyword("API网关", 10)
+        .await
+        .expect("search_by_keyword should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "should find only 1 result (published), got {}",
+        results.len()
+    );
+    assert_eq!(
+        results[0].chunk_id, "bf_pub_chunk",
+        "only published chunk should appear"
+    );
+    assert!(
+        !results.iter().any(|r| r.chunk_id == "bf_draft_chunk"),
+        "draft chunk must not appear in search results"
+    );
+
+    // Verify FTS index has both chunks (backfill does not filter by status).
+    // We cannot SELECT COUNT(*) from an FTS5 external-content table without MATCH,
+    // so instead we temporarily publish the draft doc and verify both chunks appear.
+    let doc_id_to_temp_publish = "doc_bf_draft".to_string();
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE documents SET status = 'published' WHERE id = ?",
+                rusqlite::params![doc_id_to_temp_publish],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("temp publish should succeed");
+
+    let all_results = store
+        .search_by_keyword("API网关", 10)
+        .await
+        .expect("search for all chunks should succeed");
+    assert_eq!(
+        all_results.len(),
+        2,
+        "fts_chunks should have both chunks indexed (backfill does not filter by status), got {}",
+        all_results.len()
+    );
+
+    // Revert the draft status for the rest of the test
+    let doc_id_to_revert = "doc_bf_draft".to_string();
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE documents SET status = 'draft' WHERE id = ?",
+                rusqlite::params![doc_id_to_revert],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("revert draft should succeed");
+
+    // Now publish the draft document
+    let doc_id_to_publish = "doc_bf_draft".to_string();
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE documents SET status = 'published' WHERE id = ?",
+                rusqlite::params![doc_id_to_publish],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("update status should succeed");
+
+    // Search again -- now both chunks should be returned
+    let results_after_publish = store
+        .search_by_keyword("API网关", 10)
+        .await
+        .expect("search_by_keyword should succeed after publishing");
+
+    assert_eq!(
+        results_after_publish.len(),
+        2,
+        "both published chunks should be found after status update, got {}",
+        results_after_publish.len()
+    );
+    let found_ids: Vec<&str> = results_after_publish
+        .iter()
+        .map(|r| r.chunk_id.as_str())
+        .collect();
+    assert!(
+        found_ids.contains(&"bf_pub_chunk"),
+        "published chunk should still be found"
+    );
+    assert!(
+        found_ids.contains(&"bf_draft_chunk"),
+        "newly published chunk should now be found"
     );
 }

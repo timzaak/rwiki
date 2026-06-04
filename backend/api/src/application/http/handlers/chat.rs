@@ -267,19 +267,19 @@ pub async fn chat(
         }
     };
 
-    // Multi-query search with RRF fusion
+    // Hybrid search with keyword + vector fusion
     let search_results = if search_queries.len() == 1 {
-        // Single query: use existing path
+        // Single query: direct hybrid search
         state
             .vector_store
-            .search_with_expansion(&search_queries[0], 5, 1, 3, 12)
+            .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?
     } else {
-        // Multi-query: RRF fusion + window expansion
+        // Multi-query: hybrid search per query + RRF fusion
         let results = state
             .vector_store
-            .search_multi_query(&search_queries, 5, 1, 3, 12, RRF_K)
+            .search_multi_query_hybrid(&search_queries, 5, 1, 3, 12, RRF_K)
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
         // Fallback: if all rewrite queries returned empty, retry with original query
@@ -287,7 +287,7 @@ pub async fn chat(
             tracing::warn!("all rewrite queries returned empty, falling back to original query");
             state
                 .vector_store
-                .search_with_expansion(&req.message, 5, 1, 3, 12)
+                .search_hybrid(&req.message, 5, 1, 3, 12, RRF_K)
                 .await
                 .map_err(|e| ApiError::internal(e.to_string()))?
         } else {

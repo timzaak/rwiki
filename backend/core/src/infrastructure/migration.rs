@@ -42,5 +42,13 @@ pub fn migrations(ndims: usize) -> Migrations<'static> {
             CREATE INDEX IF NOT EXISTS idx_chunk_metadata_page_sub ON chunk_metadata(page_id, sub_index);",
         ),
         M::up(vec_sql),
+        M::up(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(\
+                tokens,\
+                content='chunk_metadata',\
+                content_rowid='rowid',\
+                tokenize=\"unicode61\"\
+            );",
+        ),
     ])
 }

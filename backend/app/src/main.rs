@@ -264,6 +264,16 @@ async fn main() -> Result<()> {
         });
     }
 
+    // 后台补齐 FTS 索引
+    {
+        let vs = vector_store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = vs.backfill_fts_index().await {
+                tracing::error!("FTS backfill failed: {}", e);
+            }
+        });
+    }
+
     // 创建 LLM 客户端
     let llm_client = rig::providers::openai::CompletionsClient::builder()
         .api_key(&config.llm.api_key)

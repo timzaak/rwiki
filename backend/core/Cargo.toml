@@ -36,6 +36,9 @@ calamine = { workspace = true }
 text-splitter = { workspace = true }
 pulldown-cmark = "0.13"
 
+# Chinese word segmentation
+jieba-rs = { workspace = true }
+
 [dev-dependencies]
 rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
