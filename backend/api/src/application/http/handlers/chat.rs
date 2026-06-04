@@ -268,6 +268,7 @@ pub async fn chat(
     };
 
     // Hybrid search with keyword + vector fusion
+    tracing::debug!("search queries: {:?}", search_queries);
     let search_results = if search_queries.len() == 1 {
         // Single query: direct hybrid search
         state
@@ -294,6 +295,21 @@ pub async fn chat(
             results
         }
     };
+    tracing::debug!(
+        "search returned {} chunks for queries={:?}",
+        search_results.len(),
+        search_queries
+    );
+    for r in &search_results {
+        tracing::debug!(
+            "  context chunk: chunk_id={}, page_id={}, sub_index={:?}, title={:?}, score={:.4}",
+            r.chunk_id,
+            r.page_id,
+            r.sub_index,
+            r.title,
+            r.score,
+        );
+    }
 
     let context_text = search_results
         .iter()

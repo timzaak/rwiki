@@ -22,10 +22,8 @@ const { provider } = defineI18nUI(i18n, {
 function useLocale() {
   const location = useLocation();
   const segments = location.pathname.split("/").filter(Boolean);
-  // Match /zh/... pattern (locale prefix before path)
   if (
     segments.length > 0 &&
-    segments[0] !== i18n.defaultLanguage &&
     i18n.languages.includes(segments[0] as (typeof i18n.languages)[number])
   ) {
     return segments[0];

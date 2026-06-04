@@ -9,7 +9,6 @@ const OPENAPI_SLUGS = ["chat", "delete_document", "health_check", "list_document
 
 function openapiPages() {
   return OPENAPI_SLUGS.flatMap((slug) => [
-    { path: `/docs/openapi/${slug}` },
     { path: `/en/docs/openapi/${slug}` },
     { path: `/zh/docs/openapi/${slug}` },
   ]);
@@ -41,14 +40,17 @@ export default defineConfig({
           path: "/docs",
         },
         {
+          path: "/en/docs",
+        },
+        {
           path: "/zh/docs",
         },
-        // Locale root pages (client-side redirect to docs)
-        {
-          path: "/zh",
-        },
+        // Locale root pages
         {
           path: "/en",
+        },
+        {
+          path: "/zh",
         },
         // OpenAPI pages (crawler doesn't discover these from virtual pages)
         ...openapiPages(),

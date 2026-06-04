@@ -264,15 +264,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 后台补齐 FTS 索引
-    {
-        let vs = vector_store.clone();
-        tokio::spawn(async move {
-            if let Err(e) = vs.backfill_fts_index().await {
-                tracing::error!("FTS backfill failed: {}", e);
-            }
-        });
-    }
+    // FTS backfill: 暂未上线，无历史数据需要补齐。上线后取消注释。
+    // {
+    //     let vs = vector_store.clone();
+    //     tokio::spawn(async move {
+    //         if let Err(e) = vs.backfill_fts_index().await {
+    //             tracing::error!("FTS backfill failed: {}", e);
+    //         }
+    //     });
+    // }
 
     // 创建 LLM 客户端
     let llm_client = rig::providers::openai::CompletionsClient::builder()

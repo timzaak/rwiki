@@ -18,9 +18,8 @@ export const source = loader(
     baseUrl: docsRoute,
     i18n,
     url(slugs, locale) {
-      if (locale)
-        return `/${[locale, "docs", ...slugs.filter(Boolean)].join("/")}`;
-      return `/${["docs", ...slugs.filter(Boolean)].join("/")}`;
+      const loc = locale || i18n.defaultLanguage;
+      return `/${[loc, "docs", ...slugs.filter(Boolean)].join("/")}`;
     },
     plugins: [lucideIconsPlugin(), openapiPlugin()],
   },

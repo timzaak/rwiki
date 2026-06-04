@@ -1012,7 +1012,22 @@ impl VectorStoreManager {
             .clone();
 
         let fts_results = match self.search_by_keyword(query, top_k).await {
-            Ok(results) => results,
+            Ok(results) => {
+                tracing::debug!(
+                    "hybrid search FTS hits: {} for query={:?}",
+                    results.len(),
+                    query
+                );
+                for r in &results {
+                    tracing::debug!(
+                        "  FTS hit: chunk_id={}, score={:.4}, title={:?}",
+                        r.chunk_id,
+                        r.score,
+                        r.title,
+                    );
+                }
+                results
+            }
             Err(e) => {
                 tracing::warn!("FTS search failed, degrading to vector-only: {e}");
                 Vec::new()
@@ -1020,8 +1035,25 @@ impl VectorStoreManager {
         };
 
         let vec_results = self.search_by_vector(&query_vec, top_k).await?;
+        tracing::debug!(
+            "hybrid search vector hits: {} for query={:?}",
+            vec_results.len(),
+            query
+        );
+        for r in &vec_results {
+            tracing::debug!(
+                "  vec hit: chunk_id={}, score={:.4}, title={:?}",
+                r.chunk_id,
+                r.score,
+                r.title,
+            );
+        }
 
         let fused = rrf_fuse(&[fts_results, vec_results], rrf_k, top_k);
+        tracing::debug!(
+            "hybrid search RRF fused: {} results after expansion",
+            fused.len()
+        );
 
         if fused.is_empty() || window_size == 0 {
             return Ok(fused);
