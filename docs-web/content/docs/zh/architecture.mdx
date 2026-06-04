@@ -24,18 +24,22 @@ flowchart LR
     A[上传文档] --> B[解析 & 分块]
     B --> C[Embedding 向量化]
     C --> D[存入 sqlite-vec]
-    D --> E{管理员发布}
-    E -->|status: published| F[可被检索]
-    E -->|status: draft| G[等待审核]
+    C --> E[jieba 分词写入 FTS5]
+    D --> F{管理员发布}
+    E --> F
+    F -->|status: published| G[可被检索]
+    F -->|status: draft| H[等待审核]
 
-    H[用户提问] --> I{有历史?}
-    I -->|是| J[查询改写]
-    I -->|否| K[原始查询]
-    J --> L[向量检索 + 窗口扩展]
-    K --> L
-    L --> M[构建 preamble]
-    M --> N[LLM 流式生成]
-    N --> O[SSE 事件流]
+    I[用户提问] --> J[查询改写]
+    J --> K[多查询扩展]
+    K --> L1[FTS5 关键词检索]
+    K --> L2[向量相似度检索]
+    L1 --> M[RRF 融合]
+    L2 --> M
+    M --> N[窗口扩展]
+    N --> O[构建 preamble]
+    O --> P[LLM 流式生成]
+    P --> Q[SSE 事件流]
 ```
 
 ### 上传与解析
@@ -50,6 +54,8 @@ flowchart LR
 ### 向量化与存储
 
 每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。相同内容会自动去重，跳过重复的 API 调用。
+
+同时，每个 chunk 的文本会用 [jieba](https://github.com/messense/jieba-rs)（中文分词）进行分词，写入 FTS5 虚拟表（`fts_chunks`）。这样检索时可以同时做 BM25 关键词搜索和向量相似度搜索，两种结果通过 Reciprocal Rank Fusion（RRF）融合排序。
 
 ### 文档状态
 
@@ -66,6 +72,10 @@ flowchart LR
 用户通过 `POST /api/chat` 发起对话（无需鉴权）：
 
 1. **会话管理**：请求携带可选的 `sessionId`，没有则生成新的
-2. **查询改写**：如果有历史消息，先用 LLM 把追问改写为独立查询
-3. **向量检索 + 窗口扩展**：用查询做向量搜索取 top-5，然后根据 page_id 和 sub_index 向前后扩展相邻 chunk，拿到完整上下文
-4. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`
+2. **查询改写**：所有查询（不只是追问）都会经过改写。首轮查询时，LLM 会把短或模糊的输入扩展为更具体、更可检索的形式；追问时则结合对话历史解析代词和上下文。改写输出最多 2 条查询变体（JSON 格式），有 8 秒超时——超时或失败时回退到原始查询
+3. **混合检索**：对每条查询变体，并行执行两种搜索：
+   - **FTS5 关键词搜索**：BM25 排序的全文检索，用 jieba 分词的内容做匹配。擅长精确关键词命中和中文分词
+   - **向量相似度搜索**：sqlite-vec 中的余弦距离搜索。擅长语义匹配，即使措辞不同也能命中
+4. **RRF 融合**：关键词和向量搜索的结果通过 Reciprocal Rank Fusion 合并（`score = Σ 1/(k + rank)`，`k=60`）。按 `chunk_id` 去重后输出一份统一排序列表
+5. **窗口扩展**：对排名靠前的结果，根据相同 `page_id` 和相邻 `sub_index` 获取上下文 chunk，给 LLM 提供完整上下文
+6. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`

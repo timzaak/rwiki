@@ -32,7 +32,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `bind_address` | string | Yes | — | Listen address, e.g. `"0.0.0.0:8080"` |
 | `log_level` | string | Yes | — | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 | `app_env` | string | Yes | — | Environment: `development`, `demo`, `test` |
-| `static_dir` | string | Yes | — | Frontend static files directory (production mode), e.g. `"../frontend/dist"` |
+| `static_dir` | string | No | — | Frontend static files directory (production mode), e.g. `"../frontend/dist"`. Omit to skip static file serving. |
 | `enable_openapi` | bool | Yes | — | Enable Swagger docs at `/swagger` |
 
 ## SQLite

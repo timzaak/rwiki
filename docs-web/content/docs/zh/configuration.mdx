@@ -32,7 +32,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `bind_address` | string | 是 | — | 监听地址，如 `"0.0.0.0:8080"` |
 | `log_level` | string | 是 | — | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
 | `app_env` | string | 是 | — | 运行环境：`development`、`demo`、`test` |
-| `static_dir` | string | 是 | — | 前端静态文件目录（生产模式使用），如 `"../frontend/dist"` |
+| `static_dir` | string | 否 | — | 前端静态文件目录（生产模式使用），如 `"../frontend/dist"`。省略则不托管静态文件 |
 | `enable_openapi` | bool | 是 | — | 是否启用 Swagger 文档（`/swagger`） |
 
 ## SQLite

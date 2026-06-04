@@ -24,18 +24,22 @@ flowchart LR
     A[Upload document] --> B[Parse & chunk]
     B --> C[Embedding vectorization]
     C --> D[Store in sqlite-vec]
-    D --> E{Admin publishes}
-    E -->|status: published| F[Retrievable]
-    E -->|status: draft| G[Awaiting review]
+    C --> E[FTS5 index with jieba tokens]
+    D --> F{Admin publishes}
+    E --> F
+    F -->|status: published| G[Retrievable]
+    F -->|status: draft| H[Awaiting review]
 
-    H[User question] --> I{Has history?}
-    I -->|Yes| J[Query rewrite]
-    I -->|No| K[Original query]
-    J --> L[Vector search + window expansion]
-    K --> L
-    L --> M[Build preamble]
-    M --> N[LLM stream generation]
-    N --> O[SSE event stream]
+    I[User question] --> J[Query rewrite]
+    J --> K[Multi-query expansion]
+    K --> L1[FTS5 keyword search]
+    K --> L2[Vector similarity search]
+    L1 --> M[RRF fusion]
+    L2 --> M
+    M --> N[Window expansion]
+    N --> O[Build preamble]
+    O --> P[LLM stream generation]
+    P --> Q[SSE event stream]
 ```
 
 ### Upload & Parsing
@@ -50,6 +54,8 @@ Overlong chunks are further split at Markdown semantic boundaries.
 ### Vectorization & Storage
 
 Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Identical content is deduplicated, skipping redundant API calls.
+
+In parallel, each chunk's text is tokenized with [jieba](https://github.com/messense/jieba-rs) (Chinese word segmentation) and indexed into an FTS5 virtual table (`fts_chunks`). This enables BM25 keyword search alongside vector similarity search — the two are fused via Reciprocal Rank Fusion (RRF) at retrieval time.
 
 ### Document States
 
@@ -66,6 +72,10 @@ The draft state exists because data quality is unpredictable — a manual review
 Users chat via `POST /api/chat` (no auth required):
 
 1. **Session management**: Request carries an optional `sessionId`. If absent, a new one is generated.
-2. **Query rewrite**: If there's conversation history, the LLM rewrites follow-up questions into standalone queries.
-3. **Vector search + window expansion**: Vector search returns top-5 results, then adjacent chunks are fetched by `page_id` and `sub_index` to get complete context.
-4. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`.
+2. **Query rewrite**: Every query (not just follow-ups) goes through rewrite. For first-turn queries, the LLM expands short or ambiguous inputs into more specific, searchable forms. For follow-ups, conversation history is used to resolve pronouns and context. The rewrite produces up to 2 query variants in JSON format, with an 8-second timeout — on failure, the original query is used as fallback.
+3. **Hybrid search**: For each query variant, two parallel searches run:
+   - **FTS5 keyword search**: BM25-ranked full-text search using jieba-tokenized content. Handles exact keyword matching and Chinese word segmentation.
+   - **Vector similarity search**: Cosine distance search in sqlite-vec. Handles semantic similarity even when wording differs.
+4. **RRF fusion**: Results from keyword and vector searches are merged using Reciprocal Rank Fusion (`score = Σ 1/(k + rank)` where `k=60`). This de-duplicates by `chunk_id` and produces a single ranked list that combines the strengths of both approaches.
+5. **Window expansion**: Top results are expanded by fetching adjacent chunks (same `page_id`, nearby `sub_index`) to provide complete context to the LLM.
+6. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`.
