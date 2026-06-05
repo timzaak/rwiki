@@ -5,8 +5,11 @@ import os
 import sys
 import time
 
+from lib import docker
 from lib.paths import LOG_DIR
 from lib.proc import kill_process_by_port, wait_process_exit
+
+JAEGER_CONTAINER = "demo-jaeger"
 
 
 def main() -> int:
@@ -17,6 +20,12 @@ def main() -> int:
 
     for port in (backend_port, frontend_port, docs_web_port):
         kill_process_by_port(port)
+
+    # Stop Jaeger container
+    if docker.container_exists(JAEGER_CONTAINER):
+        docker.stop_container(JAEGER_CONTAINER)
+        docker.rm_container(JAEGER_CONTAINER)
+        print(f"Stopped {JAEGER_CONTAINER}")
 
     # Give processes time to release file handles
     time.sleep(1)

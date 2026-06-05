@@ -10,8 +10,9 @@ use rig::streaming::StreamingChat;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -74,9 +75,9 @@ pub(crate) fn build_preamble(
 ) -> String {
     let mut parts = vec![system_prompt.to_string()];
     if let Some(s) = summary {
-        parts.push(format!("\n对话摘要:\n{s}"));
+        parts.push(format!("\nConversation Summary:\n{s}"));
     }
-    parts.push(format!("\n上下文:\n{rag_context}"));
+    parts.push(format!("\nContext:\n{rag_context}"));
     parts.join("\n")
 }
 
@@ -157,15 +158,10 @@ pub(crate) fn build_first_turn_rewrite_prompt(
     prompt
 }
 
-/// Parse the LLM rewrite response into a list of queries.
-/// Three-level degradation:
-///   1. Parse JSON {"queries": [...]} (with optional ```json fence stripping)
-///   2. If JSON parse fails, use raw trimmed output as single query
-///   3. Caller handles LLM failure by providing original query
-pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
-    // 1. Strip optional ```json ... ``` fence
+/// Strip optional ```json ... ``` or ``` ... ``` fences from a raw LLM response.
+fn strip_markdown_fences(raw: &str) -> &str {
     let trimmed = raw.trim();
-    let json_str = if trimmed.starts_with("```json") {
+    if trimmed.starts_with("```json") {
         trimmed
             .strip_prefix("```json")
             .unwrap_or(trimmed)
@@ -181,7 +177,16 @@ pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
             .trim()
     } else {
         trimmed
-    };
+    }
+}
+
+/// Parse the LLM rewrite response into a list of queries.
+/// Three-level degradation:
+///   1. Parse JSON {"queries": [...]} (with optional ```json fence stripping)
+///   2. If JSON parse fails, use raw trimmed output as single query
+///   3. Caller handles LLM failure by providing original query
+pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
+    let json_str = strip_markdown_fences(raw);
 
     // 2. Try parsing JSON
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -201,6 +206,25 @@ pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
     // 3. Fallback: use entire output as single query
     tracing::debug!("rewrite response is not valid JSON, using raw output as single query");
     vec![raw.trim().to_string()]
+}
+
+fn preview_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+/// Check whether raw response contains valid JSON with at least one non-empty query.
+fn has_valid_rewrite_json(raw: &str) -> bool {
+    let json_str = strip_markdown_fences(raw);
+    serde_json::from_str::<serde_json::Value>(json_str)
+        .ok()
+        .and_then(|val| {
+            val.get("queries").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .any(|s| !s.trim().is_empty())
+            })
+        })
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +264,19 @@ pub async fn chat(
     }
 
     // Determine session ID
+    let is_new_session = req.session_id.is_none();
     let session_id = req.session_id.unwrap_or_else(|| Uuid::now_v7().to_string());
+    let chat_span = tracing::info_span!(
+        "chat_request",
+        session_id = %session_id,
+        user_message_preview = %preview_chars(&req.message, 50),
+        user_message_len = req.message.chars().count(),
+        is_new_session,
+        error = tracing::field::Empty,
+        error.message = tracing::field::Empty,
+    );
+
+    async move {
 
     // Get session state: summary + history (with eviction + touch), then release lock
     let (summary, history) = {
@@ -256,6 +292,20 @@ pub async fn chat(
 
     // Query rewriting: always rewrite (unconditional)
     let search_queries = {
+        let query_rewrite_span = tracing::info_span!(
+            "query_rewrite",
+            original_query_preview = %preview_chars(&req.message, 50),
+            original_query_len = req.message.chars().count(),
+            is_first_turn = history.is_empty(),
+            timed_out = tracing::field::Empty,
+            fallback_reason = tracing::field::Empty,
+            rewrite_count = tracing::field::Empty,
+            rewritten_queries_preview = tracing::field::Empty,
+            error = tracing::field::Empty,
+            error.message = tracing::field::Empty,
+        );
+
+        async {
         let content_language = state
             .chat_config
             .content_language
@@ -264,11 +314,11 @@ pub async fn chat(
         let (rewrite_preamble, rewrite_prompt) =
             if history.is_empty() {
                 (
-                    "你是一个查询改写助手。将用户的短/模糊查询扩展为更具体、更可检索的形式。",
+                    "You are a query rewriting assistant. Expand short or vague queries into more specific, retrievable forms.",
                     build_first_turn_rewrite_prompt(&req.message, content_language),
                 )
             } else {
-                ("你是一个查询改写助手。根据对话历史，将用户当前的追问改写为独立的、自包含的查询。",
+                ("You are a query rewriting assistant. Based on conversation history, rewrite the user's follow-up into a standalone, self-contained query.",
              build_rewrite_prompt(&history, &req.message, content_language))
             };
 
@@ -279,54 +329,133 @@ pub async fn chat(
             .max_tokens(200)
             .build();
 
-        match tokio::time::timeout(
+        let current_span = tracing::Span::current();
+        let queries = match tokio::time::timeout(
             Duration::from_millis(REWRITE_TIMEOUT_MS),
             rewrite_agent.prompt(&rewrite_prompt),
         )
         .await
         {
-            Ok(Ok(raw_response)) => parse_rewrite_response(&raw_response),
+            Ok(Ok(raw_response)) => {
+                current_span.record("timed_out", false);
+                let queries = parse_rewrite_response(&raw_response);
+                let json_str = strip_markdown_fences(&raw_response);
+                let fallback_reason = if has_valid_rewrite_json(&raw_response) {
+                    "none"
+                } else if serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
+                    "empty_queries"
+                } else {
+                    "invalid_json"
+                };
+                current_span.record("fallback_reason", fallback_reason);
+                queries
+            }
             Ok(Err(e)) => {
                 tracing::warn!("query rewriting failed: {e}, falling back to original query");
+                current_span.record("timed_out", false);
+                current_span.record("fallback_reason", "llm_error");
+                current_span.record("error.message", e.to_string());
                 vec![req.message.clone()]
             }
             Err(_) => {
                 tracing::warn!(
                     "query rewriting timed out after {REWRITE_TIMEOUT_MS}ms, falling back to original query"
                 );
+                current_span.record("timed_out", true);
+                current_span.record("fallback_reason", "timeout");
+                current_span.record(
+                    "error.message",
+                    format!("query rewriting timed out after {REWRITE_TIMEOUT_MS}ms"),
+                );
                 vec![req.message.clone()]
             }
+        };
+        current_span.record("rewrite_count", queries.len());
+        current_span.record(
+            "rewritten_queries_preview",
+            preview_chars(&queries.join(", "), 200),
+        );
+        queries
         }
+        .instrument(query_rewrite_span)
+        .await
     };
 
     // Hybrid search with keyword + vector fusion
     tracing::debug!("search queries: {:?}", search_queries);
-    let search_results = if search_queries.len() == 1 {
-        // Single query: direct hybrid search
-        state
-            .vector_store
-            .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
-    } else {
-        // Multi-query: hybrid search per query + RRF fusion
-        let results = state
-            .vector_store
-            .search_multi_query_hybrid(&search_queries, 5, 1, 3, 12, RRF_K)
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?;
-        // Fallback: if all rewrite queries returned empty, retry with original query
-        if results.is_empty() {
-            tracing::warn!("all rewrite queries returned empty, falling back to original query");
+    let chat_request_span = tracing::Span::current();
+    let retrieval_span = tracing::info_span!(
+        "retrieval",
+        query_count = search_queries.len(),
+        total_results = tracing::field::Empty,
+        top_scores = tracing::field::Empty,
+        result_titles = tracing::field::Empty,
+        error = tracing::field::Empty,
+        error.message = tracing::field::Empty,
+    );
+    let search_results = async {
+        let current_span = tracing::Span::current();
+        let results = if search_queries.len() == 1 {
+            // Single query: direct hybrid search
             state
                 .vector_store
-                .search_hybrid(&req.message, 5, 1, 3, 12, RRF_K)
+                .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
                 .await
-                .map_err(|e| ApiError::internal(e.to_string()))?
         } else {
-            results
+            // Multi-query: hybrid search per query + RRF fusion
+            let results = state
+                .vector_store
+                .search_multi_query_hybrid(&search_queries, 5, 1, 3, 12, RRF_K)
+                .await?;
+            // Fallback: if all rewrite queries returned empty, retry with original query
+            if results.is_empty() {
+                tracing::warn!("all rewrite queries returned empty, falling back to original query");
+                state
+                    .vector_store
+                    .search_hybrid(&req.message, 5, 1, 3, 12, RRF_K)
+                    .await
+            } else {
+                Ok(results)
+            }
+        };
+
+        match results {
+            Ok(results) => {
+                current_span.record("total_results", results.len());
+                current_span.record(
+                    "top_scores",
+                    results
+                        .iter()
+                        .take(5)
+                        .map(|r| format!("{:.4}", r.score))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                current_span.record(
+                    "result_titles",
+                    preview_chars(
+                        &results
+                            .iter()
+                            .take(5)
+                            .map(|r| r.title.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        200,
+                    ),
+                );
+                Ok(results)
+            }
+            Err(e) => {
+                current_span.record("error", true);
+                current_span.record("error.message", e.to_string());
+                chat_request_span.record("error", true);
+                chat_request_span.record("error.message", e.to_string());
+                Err(ApiError::internal(e.to_string()))
+            }
         }
-    };
+    }
+    .instrument(retrieval_span)
+    .await?;
     tracing::debug!(
         "search returned {} chunks for queries={:?}",
         search_results.len(),
@@ -343,11 +472,17 @@ pub async fn chat(
         );
     }
 
-    let context_text = search_results
-        .iter()
-        .map(format_context_block)
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let context_text = format!(
+        "<documents>\n{}\n</documents>",
+        search_results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format_context_block(i + 1, r))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let context_chunks = search_results.len();
+    let context_chars = context_text.chars().count();
 
     // Build preamble with system_prompt + optional summary + RAG context
     let preamble = build_preamble(
@@ -389,11 +524,27 @@ pub async fn chat(
     // Extract config values before spawn (state moves into the closure)
     let compact_threshold = state.chat_config.compact_threshold;
     let token_budget = state.chat_config.token_budget;
+    let llm_model_for_span = state.llm_model.clone();
 
     // Spawn a task to stream LLM response
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
 
-    tokio::spawn(async move {
+    let chat_span = tracing::Span::current();
+    tokio::spawn(
+        async move {
+            let chat_request_span = tracing::Span::current();
+            let llm_span = tracing::info_span!(
+                "llm_generate",
+                model = %llm_model_for_span,
+                context_chunks,
+                context_chars,
+                output_chars = tracing::field::Empty,
+                first_token_latency_ms = tracing::field::Empty,
+                error = tracing::field::Empty,
+                error.message = tracing::field::Empty,
+            );
+
+            async move {
         // Send session event
         let session_event = SessionEvent {
             session_id: session_id.clone(),
@@ -406,6 +557,8 @@ pub async fn chat(
         }
 
         // Stream LLM response using stream_chat (with original user message)
+        let llm_started_at = Instant::now();
+        let mut first_text_chunk_seen = false;
         let mut stream = agent.stream_chat(user_message.clone(), chat_history).await;
         let mut assistant_text = String::new();
 
@@ -416,12 +569,21 @@ pub async fn chat(
                         text, ..
                     }),
                 )) => {
+                    if !first_text_chunk_seen {
+                        first_text_chunk_seen = true;
+                        tracing::Span::current().record(
+                            "first_token_latency_ms",
+                            llm_started_at.elapsed().as_millis() as u64,
+                        );
+                    }
                     assistant_text.push_str(&text);
                     let chunk_event = ChunkEvent { content: text };
                     let event = Event::default()
                         .event("chunk")
                         .data(serde_json::to_string(&chunk_event).unwrap_or_default());
                     if tx.send(Ok(event)).await.is_err() {
+                        tracing::Span::current()
+                            .record("output_chars", assistant_text.chars().count());
                         return;
                     }
                 }
@@ -439,6 +601,10 @@ pub async fn chat(
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {e}");
+                    tracing::Span::current().record("error", true);
+                    tracing::Span::current().record("error.message", e.to_string());
+                    chat_request_span.record("error", true);
+                    chat_request_span.record("error.message", e.to_string());
                     let error_event = ErrorEvent {
                         message: "回答生成失败，请稍后重试".to_string(),
                     };
@@ -446,10 +612,13 @@ pub async fn chat(
                         .event("error")
                         .data(serde_json::to_string(&error_event).unwrap_or_default());
                     let _ = tx.send(Ok(event)).await;
+                    tracing::Span::current()
+                        .record("output_chars", assistant_text.chars().count());
                     return;
                 }
             }
         }
+        tracing::Span::current().record("output_chars", assistant_text.chars().count());
 
         // Persist user message and assistant response to session
         {
@@ -501,44 +670,63 @@ pub async fn chat(
                 }
             }
         }
-    });
+            }
+            .instrument(llm_span)
+            .await;
+        }
+        .instrument(chat_span),
+    );
 
-    let stream = ReceiverStream::new(rx);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+        let stream = ReceiverStream::new(rx);
+        Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    }
+    .instrument(chat_span)
+    .await
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn format_context_block(result: &SearchResult) -> String {
-    let mut lines = Vec::new();
+fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
 
-    // Source line: Title / Section
-    let source = match &result.section {
-        Some(s) if !s.is_empty() => format!("{} / {}", result.title, s),
-        _ => result.title.clone(),
-    };
-    lines.push(format!("[Source: {source}]"));
+fn format_context_block(index: usize, result: &SearchResult) -> String {
+    let mut tags = Vec::new();
 
-    // Link line (only if present and non-empty)
+    tags.push(format!(r#"<document index="{}">"#, index));
+    tags.push(format!("<title>{}</title>", escape_xml(&result.title)));
+
+    if let Some(section) = &result.section {
+        if !section.is_empty() {
+            tags.push(format!("<section>{}</section>", escape_xml(section)));
+        }
+    }
+
     if let Some(link) = &result.link {
         if !link.is_empty() {
-            lines.push(format!("Link: {link}"));
+            tags.push(format!("<link>{}</link>", escape_xml(link)));
         }
     }
 
-    // Locale line (only if present and non-empty)
     if let Some(locale) = &result.locale {
         if !locale.is_empty() {
-            lines.push(format!("Locale: {locale}"));
+            tags.push(format!("<locale>{}</locale>", escape_xml(locale)));
         }
     }
 
-    // Content
-    lines.push(result.content.clone());
+    tags.push(format!(
+        "<content>\n{}\n</content>",
+        escape_xml(&result.content)
+    ));
+    tags.push("</document>".to_string());
 
-    lines.join("\n")
+    tags.join("\n")
 }
 
 #[cfg(test)]
@@ -580,23 +768,32 @@ mod tests {
             Some("zh-CN"),
             "Install via cargo.",
         );
-        let output = format_context_block(&result);
+        let output = format_context_block(1, &result);
         assert!(
-            output.contains("[Source: Getting Started / Installation]"),
-            "should contain Source line with title and section"
+            output.contains(r#"<document index="1">"#),
+            "should contain document tag with index 1"
         );
         assert!(
-            output.contains("Link: https://example.com/docs"),
-            "should contain Link line"
+            output.contains("<title>Getting Started</title>"),
+            "should contain title tag"
         );
         assert!(
-            output.contains("Locale: zh-CN"),
-            "should contain Locale line"
+            output.contains("<section>Installation</section>"),
+            "should contain section tag"
         );
         assert!(
-            output.contains("Install via cargo."),
-            "should contain content"
+            output.contains("<link>https://example.com/docs</link>"),
+            "should contain link tag"
         );
+        assert!(
+            output.contains("<locale>zh-CN</locale>"),
+            "should contain locale tag"
+        );
+        assert!(
+            output.contains("<content>\nInstall via cargo.\n</content>"),
+            "should contain content with blank lines"
+        );
+        assert!(output.contains("</document>"), "should close document tag");
     }
 
     #[test]
@@ -608,18 +805,22 @@ mod tests {
             None,
             "Install via cargo.",
         );
-        let output = format_context_block(&result);
+        let output = format_context_block(1, &result);
         assert!(
-            output.contains("[Source: Getting Started / Installation]"),
-            "should contain Source line"
+            output.contains("<title>Getting Started</title>"),
+            "should contain title tag"
         );
         assert!(
-            !output.contains("Link:"),
-            "should NOT contain Link line when link is None"
+            output.contains("<section>Installation</section>"),
+            "should contain section tag"
         );
         assert!(
-            !output.contains("Locale:"),
-            "should NOT contain Locale line when locale is None"
+            !output.contains("<link>"),
+            "should NOT contain link tag when link is None"
+        );
+        assert!(
+            !output.contains("<locale>"),
+            "should NOT contain locale tag when locale is None"
         );
         assert!(output.contains("Install via cargo."));
     }
@@ -633,31 +834,37 @@ mod tests {
             None,
             "Some content.",
         );
-        let output = format_context_block(&result);
-        assert_eq!(
-            output.lines().next().unwrap(),
-            "[Source: Getting Started]",
-            "should show title only when no section"
+        let output = format_context_block(1, &result);
+        assert!(
+            output.contains("<title>Getting Started</title>"),
+            "should contain title tag"
         );
         assert!(
-            output.contains("Link: https://example.com/docs"),
-            "should contain Link line"
+            !output.contains("<section>"),
+            "should NOT contain section tag when section is None"
+        );
+        assert!(
+            output.contains("<link>https://example.com/docs</link>"),
+            "should contain link tag"
         );
     }
 
     #[test]
     fn format_context_block_no_section_no_link() {
         let result = make_result("Getting Started", None, None, None, "Content here.");
-        let output = format_context_block(&result);
-        assert_eq!(
-            output.lines().next().unwrap(),
-            "[Source: Getting Started]",
-            "should show title only"
-        );
-        assert!(!output.contains("Link:"), "should NOT contain Link line");
+        let output = format_context_block(1, &result);
         assert!(
-            !output.contains("Locale:"),
-            "should NOT contain Locale line"
+            output.contains("<title>Getting Started</title>"),
+            "should contain title tag"
+        );
+        assert!(!output.contains("<link>"), "should NOT contain link tag");
+        assert!(
+            !output.contains("<locale>"),
+            "should NOT contain locale tag"
+        );
+        assert!(
+            !output.contains("<section>"),
+            "should NOT contain section tag"
         );
         assert!(output.contains("Content here."));
     }
@@ -671,10 +878,10 @@ mod tests {
             None,
             "Content.",
         );
-        let output = format_context_block(&result);
+        let output = format_context_block(1, &result);
         assert!(
-            !output.contains("Link:"),
-            "empty string link should NOT produce Link line"
+            !output.contains("<link>"),
+            "empty string link should NOT produce link tag"
         );
     }
 
@@ -687,10 +894,10 @@ mod tests {
             Some(""),
             "Content.",
         );
-        let output = format_context_block(&result);
+        let output = format_context_block(1, &result);
         assert!(
-            !output.contains("Locale:"),
-            "empty string locale should NOT produce Locale line"
+            !output.contains("<locale>"),
+            "empty string locale should NOT produce locale tag"
         );
     }
 
@@ -714,36 +921,56 @@ mod tests {
             ),
         ];
 
-        let blocks: Vec<String> = results.iter().map(format_context_block).collect();
+        let blocks: Vec<String> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format_context_block(i + 1, r))
+            .collect();
 
-        // First result: has link and locale
+        // First result (index 1): has link and locale
         assert!(
-            blocks[0].contains("Link: https://a.com"),
-            "first result should have Link line"
+            blocks[0].contains(r#"<document index="1">"#),
+            "first result should have index 1"
         );
         assert!(
-            blocks[0].contains("Locale: en"),
-            "first result should have Locale line"
-        );
-
-        // Second result: no link, no locale
-        assert!(
-            !blocks[1].contains("Link:"),
-            "second result should NOT have Link line"
+            blocks[0].contains("<link>https://a.com</link>"),
+            "first result should have link tag"
         );
         assert!(
-            !blocks[1].contains("Locale:"),
-            "second result should NOT have Locale line"
+            blocks[0].contains("<locale>en</locale>"),
+            "first result should have locale tag"
         );
 
-        // Third result: has link but no locale
+        // Second result (index 2): no link, no locale, no section
         assert!(
-            blocks[2].contains("Link: https://c.com"),
-            "third result should have Link line"
+            blocks[1].contains(r#"<document index="2">"#),
+            "second result should have index 2"
         );
         assert!(
-            !blocks[2].contains("Locale:"),
-            "third result should NOT have Locale line"
+            !blocks[1].contains("<link>"),
+            "second result should NOT have link tag"
+        );
+        assert!(
+            !blocks[1].contains("<locale>"),
+            "second result should NOT have locale tag"
+        );
+        assert!(
+            !blocks[1].contains("<section>"),
+            "second result should NOT have section tag"
+        );
+
+        // Third result (index 3): has link but no locale
+        assert!(
+            blocks[2].contains(r#"<document index="3">"#),
+            "third result should have index 3"
+        );
+        assert!(
+            blocks[2].contains("<link>https://c.com</link>"),
+            "third result should have link tag"
+        );
+        assert!(
+            !blocks[2].contains("<locale>"),
+            "third result should NOT have locale tag"
         );
     }
 
@@ -757,11 +984,11 @@ mod tests {
             "should contain system prompt"
         );
         assert!(
-            preamble.contains("上下文:\nRAG context."),
+            preamble.contains("Context:\nRAG context."),
             "should contain RAG context"
         );
         assert!(
-            !preamble.contains("对话摘要"),
+            !preamble.contains("Conversation Summary"),
             "should NOT contain summary section when summary is None"
         );
     }
@@ -774,7 +1001,7 @@ mod tests {
             "RAG context.",
         );
         assert!(
-            preamble.contains("对话摘要:\nPreviously discussed Rust generics."),
+            preamble.contains("Conversation Summary:\nPreviously discussed Rust generics."),
             "should include summary between system_prompt and RAG context"
         );
         assert!(
@@ -782,7 +1009,7 @@ mod tests {
             "should contain system prompt"
         );
         assert!(
-            preamble.contains("上下文:\nRAG context."),
+            preamble.contains("Context:\nRAG context."),
             "should contain RAG context"
         );
     }
@@ -800,7 +1027,7 @@ mod tests {
     fn build_preamble_with_empty_system_prompt_still_produces_structure() {
         let preamble = build_preamble("", None, "Some context.");
         assert!(
-            preamble.contains("上下文:\nSome context."),
+            preamble.contains("Context:\nSome context."),
             "preamble should preserve context even when system_prompt is empty"
         );
     }
@@ -810,8 +1037,120 @@ mod tests {
         let system_prompt = "Line one.\nLine two.\nLine three.";
         let preamble = build_preamble(system_prompt, None, "Context.");
         assert!(
-            preamble.contains("上下文:\nContext."),
+            preamble.contains("Context:\nContext."),
             "separator must exist even with multi-line system_prompt"
+        );
+    }
+
+    // --- escape_xml tests ---
+
+    #[test]
+    fn escape_xml_escapes_all_special_chars() {
+        let input = "&<>\"'";
+        let output = escape_xml(input);
+        assert_eq!(
+            output, "&amp;&lt;&gt;&quot;&apos;",
+            "should escape all 5 XML special characters"
+        );
+    }
+
+    #[test]
+    fn escape_xml_no_double_escape() {
+        // After escaping < and >, the & in &lt; and &gt; should NOT be re-escaped
+        let input = "<hello>";
+        let output = escape_xml(input);
+        assert_eq!(
+            output, "&lt;hello&gt;",
+            "should not double-escape: & first, then < and >"
+        );
+    }
+
+    // --- format_context_block XML escape tests ---
+
+    #[test]
+    fn format_context_block_xml_escape_in_title() {
+        let result = make_result(
+            "<script>alert('xss')</script>",
+            None,
+            None,
+            None,
+            "Normal content.",
+        );
+        let output = format_context_block(1, &result);
+        assert!(
+            output.contains("<title>&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;</title>"),
+            "title with <, >, ' should be escaped"
+        );
+        assert!(
+            !output.contains("<title><script>"),
+            "raw unescaped < should not appear in title"
+        );
+    }
+
+    #[test]
+    fn format_context_block_xml_escape_in_content() {
+        let result = make_result("Title", None, None, None, "A & B < C > D");
+        let output = format_context_block(1, &result);
+        assert!(
+            output.contains("A &amp; B &lt; C &gt; D"),
+            "content with &, <, > should be escaped"
+        );
+    }
+
+    #[test]
+    fn format_context_block_numbering_starts_at_one() {
+        let result = make_result("Title", None, None, None, "Content.");
+        let output = format_context_block(1, &result);
+        assert!(
+            output.contains(r#"<document index="1">"#),
+            "index should start at 1"
+        );
+
+        let output2 = format_context_block(3, &result);
+        assert!(
+            output2.contains(r#"<document index="3">"#),
+            "index should reflect the passed value"
+        );
+    }
+
+    #[test]
+    fn format_context_block_wrapped_in_documents_tag() {
+        let results = [
+            make_result("Doc A", Some("Sec A"), None, None, "Content A."),
+            make_result("Doc B", None, None, None, "Content B."),
+        ];
+
+        // Reproduce the call-site logic to test <documents> wrapper
+        let context_text = format!(
+            "<documents>\n{}\n</documents>",
+            results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| format_context_block(i + 1, r))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        assert!(
+            context_text.starts_with("<documents>\n"),
+            "should start with <documents> tag"
+        );
+        assert!(
+            context_text.ends_with("\n</documents>"),
+            "should end with </documents> tag"
+        );
+        assert!(
+            context_text.contains(r#"<document index="1">"#),
+            "first document should have index 1"
+        );
+        assert!(
+            context_text.contains(r#"<document index="2">"#),
+            "second document should have index 2"
+        );
+        // Internal separator is \n, not \n\n
+        assert!(
+            !context_text.contains("</document>\n\n<document"),
+            "documents should be separated by single newline, not double"
         );
     }
 

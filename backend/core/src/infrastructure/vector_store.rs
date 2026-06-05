@@ -1034,7 +1034,9 @@ impl VectorStoreManager {
             }
         };
 
+        let fts_hit_count = fts_results.len();
         let vec_results = self.search_by_vector(&query_vec, top_k).await?;
+        let vector_hit_count = vec_results.len();
         tracing::debug!(
             "hybrid search vector hits: {} for query={:?}",
             vec_results.len(),
@@ -1050,6 +1052,11 @@ impl VectorStoreManager {
         }
 
         let fused = rrf_fuse(&[fts_results, vec_results], rrf_k, top_k);
+        let current_span = tracing::Span::current();
+        current_span.record("fts.hit_count", fts_hit_count);
+        current_span.record("vector.hit_count", vector_hit_count);
+        current_span.record("rrf.fused_count", fused.len());
+        current_span.record("rrf.k", rrf_k);
         tracing::debug!(
             "hybrid search RRF fused: {} results after expansion",
             fused.len()
@@ -1108,10 +1115,13 @@ impl VectorStoreManager {
             .map_err(|e| CoreError::ProcessingError(format!("批量查询向量化失败: {e}")))?;
 
         let mut all_results: Vec<Vec<SearchResult>> = Vec::with_capacity(queries.len() * 2);
+        let mut fts_hit_count = 0usize;
+        let mut vector_hit_count = 0usize;
 
         for (i, query) in queries.iter().enumerate() {
             match self.search_by_keyword(query, top_k_per_query).await {
                 Ok(fts_results) if !fts_results.is_empty() => {
+                    fts_hit_count += fts_results.len();
                     all_results.push(fts_results);
                 }
                 Ok(_) => {}
@@ -1123,6 +1133,7 @@ impl VectorStoreManager {
             if let Some(embedding) = all_embeddings.get(i) {
                 match self.search_by_vector(&embedding.vec, top_k_per_query).await {
                     Ok(vec_results) => {
+                        vector_hit_count += vec_results.len();
                         all_results.push(vec_results);
                     }
                     Err(e) => {
@@ -1133,10 +1144,20 @@ impl VectorStoreManager {
         }
 
         if all_results.is_empty() {
+            let current_span = tracing::Span::current();
+            current_span.record("fts.hit_count", fts_hit_count);
+            current_span.record("vector.hit_count", vector_hit_count);
+            current_span.record("rrf.fused_count", 0usize);
+            current_span.record("rrf.k", rrf_k);
             return Ok(Vec::new());
         }
 
         let fused = rrf_fuse(&all_results, rrf_k, top_k_per_query);
+        let current_span = tracing::Span::current();
+        current_span.record("fts.hit_count", fts_hit_count);
+        current_span.record("vector.hit_count", vector_hit_count);
+        current_span.record("rrf.fused_count", fused.len());
+        current_span.record("rrf.k", rrf_k);
 
         if fused.is_empty() || window_size == 0 {
             return Ok(fused);

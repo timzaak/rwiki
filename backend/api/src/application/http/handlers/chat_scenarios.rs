@@ -109,19 +109,20 @@ fn preamble_with_summary_includes_summary_between_system_and_context() {
         "preamble must include system prompt"
     );
     assert!(
-        preamble.contains("对话摘要:\nUser previously asked about Rust memory management."),
+        preamble
+            .contains("Conversation Summary:\nUser previously asked about Rust memory management."),
         "preamble must include summary section when summary is provided"
     );
     assert!(
-        preamble.contains("上下文:\nRAG result: Rust uses ownership and borrowing."),
+        preamble.contains("Context:\nRAG result: Rust uses ownership and borrowing."),
         "preamble must include RAG context"
     );
     // Verify ordering: system_prompt comes before summary, summary before context
     let sys_pos = preamble
         .find("You are a knowledge base assistant.")
         .unwrap();
-    let summary_pos = preamble.find("对话摘要").unwrap();
-    let ctx_pos = preamble.find("上下文").unwrap();
+    let summary_pos = preamble.find("Conversation Summary").unwrap();
+    let ctx_pos = preamble.find("Context").unwrap();
     assert!(
         sys_pos < summary_pos && summary_pos < ctx_pos,
         "system prompt must precede summary, which must precede RAG context"
@@ -142,11 +143,11 @@ fn preamble_without_summary_omits_summary_section() {
         "preamble must include system prompt"
     );
     assert!(
-        preamble.contains("上下文:\nRAG context."),
+        preamble.contains("Context:\nRAG context."),
         "preamble must include RAG context"
     );
     assert!(
-        !preamble.contains("对话摘要"),
+        !preamble.contains("Conversation Summary"),
         "preamble must NOT contain summary section when summary is None"
     );
 }
@@ -166,7 +167,7 @@ fn preamble_with_empty_rag_context_produces_valid_structure() {
         "preamble must start with system prompt even when rag_context is empty"
     );
     assert!(
-        preamble.contains("上下文:\n"),
+        preamble.contains("Context:\n"),
         "preamble must include context header even when rag_context is empty"
     );
 }

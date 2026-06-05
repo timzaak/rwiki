@@ -252,10 +252,50 @@ def seed_openapi(base_url: str) -> bool:
     return _upload_and_publish_openapi(base_url, api_token, openapi_path)
 
 
+JAEGER_CONTAINER = "demo-jaeger"
+
+
+def _start_jaeger() -> None:
+    """Start Jaeger all-in-one container for OTLP trace collection."""
+    require_executable("docker")
+
+    if docker.container_running(JAEGER_CONTAINER):
+        print(f"Jaeger already running ({JAEGER_CONTAINER})")
+        return
+
+    if docker.container_exists(JAEGER_CONTAINER):
+        docker.rm_force_container(JAEGER_CONTAINER)
+
+    print("Starting Jaeger all-in-one ...")
+    ok = docker.run_detached([
+        "--name", JAEGER_CONTAINER,
+        "-p", "16686:16686",   # Jaeger UI
+        "-p", "4317:4317",     # OTLP gRPC
+        "--restart", "unless-stopped",
+        "jaegertracing/jaeger:2.18.0",
+    ])
+    if not ok:
+        print("WARNING: Jaeger container failed to start, continuing without tracing")
+        return
+
+    print(f"Jaeger UI: http://localhost:16686")
+
+
+def _stop_jaeger() -> None:
+    """Stop and remove Jaeger container."""
+    if docker.container_exists(JAEGER_CONTAINER):
+        docker.stop_container(JAEGER_CONTAINER)
+        docker.rm_container(JAEGER_CONTAINER)
+        print(f"Stopped {JAEGER_CONTAINER}")
+
+
 def main() -> int:
     ensure_dir(LOG_DIR)
     backend_log = LOG_DIR / "backend-demo.log"
     frontend_log = LOG_DIR / "frontend-demo.log"
+
+    # Jaeger (before backend so OTLP endpoint is available)
+    _start_jaeger()
 
     # Backend
     cargo = require_executable("cargo")
