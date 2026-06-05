@@ -277,7 +277,7 @@ event: session
 data: {"sessionId":"0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"}
 
 event: chunk
-data: {"content":"RWiki 支持以下文件格式："}
+data: {"content":"RWiki 支持以下文件格式 [Source 1]："}
 
 event: chunk
 data: {"content":"Markdown（.md / .mdx）和 Excel（.xlsx）。"}
@@ -381,13 +381,19 @@ VITE_RWIKI_API_URL=http://localhost:8080 npm run dev
 
 ### 一键启动 Demo
 
-`demo-start.py` 脚本自动完成整个流程——后端、widget 构建、docs-web、文档种子：
+`demo-start.py` 脚本自动完成整个流程——Jaeger 追踪、后端、widget 构建、docs-web、文档种子：
 
 ```bash
 uv run scripts/demo-start.py
 ```
 
-这会在 18080 端口启动后端，构建 widget 并复制到 `docs-web/public/`，启动前端和 docs-web 开发服务器，并把教程文档导入知识库。
+这会启动 Jaeger 容器用于 OTLP 追踪（UI 地址 `http://localhost:16686`），在 18080 端口启动后端，构建 widget 并复制到 `docs-web/public/`，启动前端和 docs-web 开发服务器，并把教程文档导入知识库。
+
+停止所有 demo 服务：
+
+```bash
+uv run scripts/demo-stop.py
+```
 
 ## AI 辅助开发
 

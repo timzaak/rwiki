@@ -277,7 +277,7 @@ event: session
 data: {"sessionId":"0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"}
 
 event: chunk
-data: {"content":"RWiki supports the following file formats:"}
+data: {"content":"RWiki supports the following file formats [Source 1]:"}
 
 event: chunk
 data: {"content":" Markdown (.md / .mdx) and Excel (.xlsx)."}
@@ -381,13 +381,19 @@ The component handles: script loading (idempotent), init with your API URL, and 
 
 ### One-command demo
 
-The `demo-start.py` script automates the full flow — backend, widget build, docs-web, and document seeding:
+The `demo-start.py` script automates the full flow — Jaeger tracing, backend, widget build, docs-web, and document seeding:
 
 ```bash
 uv run scripts/demo-start.py
 ```
 
-This starts the backend on port 18080, builds the widget, copies it to `docs-web/public/`, starts both frontend and docs-web dev servers, and seeds the tutorial docs into the knowledge base.
+This starts a Jaeger container for OTLP tracing (UI at `http://localhost:16686`), starts the backend on port 18080, builds the widget, copies it to `docs-web/public/`, starts both frontend and docs-web dev servers, and seeds the tutorial docs into the knowledge base.
+
+To stop all demo services:
+
+```bash
+uv run scripts/demo-stop.py
+```
 
 ## AI-Assisted Development
 

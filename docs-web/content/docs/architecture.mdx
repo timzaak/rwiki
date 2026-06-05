@@ -78,4 +78,5 @@ Users chat via `POST /api/chat` (no auth required):
    - **Vector similarity search**: Cosine distance search in sqlite-vec. Handles semantic similarity even when wording differs.
 4. **RRF fusion**: Results from keyword and vector searches are merged using Reciprocal Rank Fusion (`score = Σ 1/(k + rank)` where `k=60`). This de-duplicates by `chunk_id` and produces a single ranked list that combines the strengths of both approaches.
 5. **Window expansion**: Top results are expanded by fetching adjacent chunks (same `page_id`, nearby `sub_index`) to provide complete context to the LLM.
-6. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`.
+6. **Context assembly**: Search results are formatted as structured XML and wrapped in a `<documents>` block. Each result becomes a `<document index="N">` element with `<title>`, `<section>`, `<link>`, `<locale>`, and `<content>` tags. This gives the LLM a clear, machine-parseable context that supports indexed citations.
+7. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`. The default system prompt instructs the LLM to cite sources using `[Source N]` format, where N maps to the document index in the XML context.
