@@ -1,6 +1,6 @@
 # 查询语言感知改写 (Query Language-Aware Rewrite) 产品需求文档 (PRD)
 
-**状态**: Draft
+**状态**: Implemented
 **创建时间**: 2026-06-05
 **优先级**: P1
 **权威范围**: 知识库内容语言配置、语言感知查询改写 prompt、多轮持续语言改写、向后兼容

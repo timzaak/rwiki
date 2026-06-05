@@ -25,7 +25,7 @@ And 调用文档列表 API 可查看到该文档
 ```gherkin
 Given 用户准备上传文件
 When 调用上传 API 上传一个 .pdf 或 .csv 文件
-Then API 返回 400 错误，提示"仅支持 xlsx 格式文件"
+Then API 返回 400 错误，提示"不支持的文件格式，支持 xlsx/md/mdx/json"
 ```
 
 **场景 3：上传空文件或无数据的工作表**
