@@ -33,6 +33,8 @@ dist-ssr/
 # AI / tooling
 .ai/
 .agent/
+.agents/
+.vite/
 
 # HuggingFace model cache
 .cache/
