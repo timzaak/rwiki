@@ -38,3 +38,4 @@
 | integration | API 调用编排 Agent | [integration/api-orchestrator-agent.md](integration/api-orchestrator-agent.md) | Draft | OpenAPI 规范管理、调用计划生成、审批执行、结果展示 |
 | chat | 查询改写与扩展 | [chat/query-rewrite.md](chat/query-rewrite.md) | Draft | 首轮改写、多查询扩展、RRF 融合、降级保障 |
 | document | 关键词搜索支持 | [document/keyword-search-support.md](document/keyword-search-support.md) | Draft | FTS5 全文搜索、jieba-rs 分词、混合检索、RRF 融合、降级保障 |
+| chat | 查询语言感知改写 | [chat/query-language-aware-rewrite.md](chat/query-language-aware-rewrite.md) | Draft | 知识库内容语言配置、语言感知查询改写、多轮持续语言改写、向后兼容 |

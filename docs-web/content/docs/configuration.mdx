@@ -136,6 +136,7 @@ Authorization: Bearer your-secret-token
 | `sliding_window_size` | number | No | `6` | Keep the last N messages for context |
 | `compact_threshold` | number | No | `8` | Trigger compaction check when message count exceeds this |
 | `token_budget` | number | No | `8000` | Trigger compaction when estimated token count exceeds this |
+| `content_language` | string | No | — | Primary language of knowledge base documents (e.g. `"English"`, `"Chinese"`). When set, the query rewrite prompt instructs the LLM to translate queries into this language for cross-language retrieval. Omit to disable language-aware rewriting. |
 
 ### Sliding window & compaction
 
@@ -161,6 +162,7 @@ Rules:
 sliding_window_size = 10
 compact_threshold = 12
 token_budget = 12000
+# content_language = "English"  # Uncomment if docs are primarily in English
 ```
 
 ## OpenTelemetry

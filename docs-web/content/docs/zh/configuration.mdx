@@ -136,6 +136,7 @@ Authorization: Bearer your-secret-token
 | `sliding_window_size` | number | 否 | `6` | 滑动窗口保留最近 N 条消息用于上下文 |
 | `compact_threshold` | number | 否 | `8` | 消息数超过此阈值时触发压缩检查 |
 | `token_budget` | number | 否 | `8000` | 估算 token 数超过此阈值时触发压缩 |
+| `content_language` | string | 否 | — | 知识库文档的主要语言（如 `"English"`、`"中文"`）。设置后，查询改写会将用户查询翻译为该语言，以提升跨语言检索命中率。省略时不做语言转换 |
 
 ### 滑动窗口与压缩机制
 
@@ -161,6 +162,7 @@ system_prompt = """
 sliding_window_size = 10
 compact_threshold = 12
 token_budget = 12000
+# content_language = "English"  # 知识库文档主要为英文时取消注释
 ```
 
 ## OpenTelemetry

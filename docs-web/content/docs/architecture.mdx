@@ -72,7 +72,7 @@ The draft state exists because data quality is unpredictable — a manual review
 Users chat via `POST /api/chat` (no auth required):
 
 1. **Session management**: Request carries an optional `sessionId`. If absent, a new one is generated.
-2. **Query rewrite**: Every query (not just follow-ups) goes through rewrite. For first-turn queries, the LLM expands short or ambiguous inputs into more specific, searchable forms. For follow-ups, conversation history is used to resolve pronouns and context. The rewrite produces up to 2 query variants in JSON format, with an 8-second timeout — on failure, the original query is used as fallback.
+2. **Query rewrite**: Every query (not just follow-ups) goes through rewrite. For first-turn queries, the LLM expands short or ambiguous inputs into more specific, searchable forms. For follow-ups, conversation history is used to resolve pronouns and context. When `content_language` is configured (e.g. `"English"`), the rewrite prompt instructs the LLM to translate queries into that language, enabling cross-language retrieval for both FTS5 keyword search and vector similarity search. The rewrite produces up to 2 query variants in JSON format, with an 8-second timeout — on failure, the original query is used as fallback.
 3. **Hybrid search**: For each query variant, two parallel searches run:
    - **FTS5 keyword search**: BM25-ranked full-text search using jieba-tokenized content. Handles exact keyword matching and Chinese word segmentation.
    - **Vector similarity search**: Cosine distance search in sqlite-vec. Handles semantic similarity even when wording differs.

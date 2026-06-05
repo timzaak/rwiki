@@ -82,19 +82,33 @@ pub(crate) fn build_preamble(
 
 /// 构建查询改写提示词。将对话历史与用户当前追问拼接，
 /// 引导 LLM 将追问改写为独立的、自包含的查询。
-pub(crate) fn build_rewrite_prompt(history: &[ChatMessage], user_message: &str) -> String {
+pub(crate) fn build_rewrite_prompt(
+    history: &[ChatMessage],
+    user_message: &str,
+    content_language: Option<&str>,
+) -> String {
     let history_text = history
         .iter()
         .map(|msg| format!("{}: {}", msg.role, msg.content))
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
+    let mut prompt = format!(
         "对话历史:\n{history_text}\n\n当前用户追问: {user_message}\n\n\
-         请将用户的追问改写为一个独立的、自包含的查询。\n\
-         输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
+         请将用户的追问改写为一个独立的、自包含的查询。\n"
+    );
+    if let Some(lang) = content_language {
+        if !lang.is_empty() {
+            prompt.push_str(&format!(
+                "知识库文档主要使用 {lang} 语言。请将查询改写为 {lang}，以确保检索能命中相关文档。\n"
+            ));
+        }
+    }
+    prompt.push_str(&format!(
+        "输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
          最多生成 {REWRITE_MAX_QUERIES} 条查询变体。如果只有一个查询，也用数组包裹。\n\
          只输出 JSON，不要输出其他内容。"
-    )
+    ));
+    prompt
 }
 
 /// 构建摘要压缩提示词。将已有的摘要（如有）与待压缩的旧消息拼接，
@@ -118,16 +132,29 @@ pub(crate) fn build_compact_prompt(
 
 /// Build the first-turn rewrite prompt. Extends short/ambiguous queries
 /// into more specific, searchable forms with JSON output constraint.
-pub(crate) fn build_first_turn_rewrite_prompt(user_message: &str) -> String {
-    format!(
+pub(crate) fn build_first_turn_rewrite_prompt(
+    user_message: &str,
+    content_language: Option<&str>,
+) -> String {
+    let mut prompt = format!(
         "用户查询: {user_message}\n\n\
          请将这个查询改写为更具体、更可检索的形式。\n\
          如果查询使用了非正式术语或缩写，替换为对应的正式术语。\n\
-         如果查询包含多个独立的子问题，将每个子问题分别列出。\n\
-         输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
+         如果查询包含多个独立的子问题，将每个子问题分别列出。\n"
+    );
+    if let Some(lang) = content_language {
+        if !lang.is_empty() {
+            prompt.push_str(&format!(
+                "知识库文档主要使用 {lang} 语言。请将查询改写为 {lang}，以确保检索能命中相关文档。\n"
+            ));
+        }
+    }
+    prompt.push_str(&format!(
+        "输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
          最多生成 {REWRITE_MAX_QUERIES} 条查询。如果只有一个查询，也用数组包裹。\n\
          只输出 JSON，不要输出其他内容。"
-    )
+    ));
+    prompt
 }
 
 /// Parse the LLM rewrite response into a list of queries.
@@ -229,15 +256,20 @@ pub async fn chat(
 
     // Query rewriting: always rewrite (unconditional)
     let search_queries = {
+        let content_language = state
+            .chat_config
+            .content_language
+            .as_deref()
+            .filter(|s| !s.is_empty());
         let (rewrite_preamble, rewrite_prompt) =
             if history.is_empty() {
                 (
                     "你是一个查询改写助手。将用户的短/模糊查询扩展为更具体、更可检索的形式。",
-                    build_first_turn_rewrite_prompt(&req.message),
+                    build_first_turn_rewrite_prompt(&req.message, content_language),
                 )
             } else {
                 ("你是一个查询改写助手。根据对话历史，将用户当前的追问改写为独立的、自包含的查询。",
-             build_rewrite_prompt(&history, &req.message))
+             build_rewrite_prompt(&history, &req.message, content_language))
             };
 
         let rewrite_agent = state
@@ -797,7 +829,7 @@ mod tests {
                 content: "Rust is a systems language.".into(),
             },
         ];
-        let prompt = build_rewrite_prompt(&history, "How does it handle memory?");
+        let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
         assert!(
             prompt.contains("user: What is Rust?"),
             "should include user history"
@@ -816,7 +848,7 @@ mod tests {
     #[test]
     fn build_rewrite_prompt_with_empty_history_produces_valid_prompt() {
         let history: Vec<ChatMessage> = vec![];
-        let prompt = build_rewrite_prompt(&history, "What is Rust?");
+        let prompt = build_rewrite_prompt(&history, "What is Rust?", None);
         assert!(
             prompt.contains("当前用户追问: What is Rust?"),
             "should include user message even with empty history"
@@ -877,7 +909,7 @@ mod tests {
 
     #[test]
     fn build_first_turn_rewrite_prompt_includes_user_message() {
-        let prompt = build_first_turn_rewrite_prompt("内存");
+        let prompt = build_first_turn_rewrite_prompt("内存", None);
         assert!(
             prompt.contains("用户查询: 内存"),
             "should include user message"
@@ -894,7 +926,7 @@ mod tests {
 
     #[test]
     fn build_first_turn_rewrite_prompt_references_max_queries_constant() {
-        let prompt = build_first_turn_rewrite_prompt("test");
+        let prompt = build_first_turn_rewrite_prompt("test", None);
         assert!(
             prompt.contains("最多生成 2 条查询"),
             "should embed the REWRITE_MAX_QUERIES value"
@@ -983,7 +1015,7 @@ mod tests {
                 content: "Rust is a systems language.".into(),
             },
         ];
-        let prompt = build_rewrite_prompt(&history, "How does it handle memory?");
+        let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
         assert!(
             prompt.contains("JSON"),
             "modified prompt should include JSON format constraint"
@@ -995,6 +1027,152 @@ mod tests {
         assert!(
             prompt.contains("How does it handle memory?"),
             "should still include user message"
+        );
+    }
+
+    // --- content_language injection tests ---
+
+    #[test]
+    fn build_first_turn_rewrite_prompt_includes_language_instruction_when_set() {
+        let prompt = build_first_turn_rewrite_prompt("memory management", Some("Chinese"));
+        assert!(
+            prompt.contains("知识库文档主要使用 Chinese 语言"),
+            "should include language instruction when content_language is set"
+        );
+        assert!(
+            prompt.contains("请将查询改写为 Chinese"),
+            "should instruct rewriting to target language"
+        );
+    }
+
+    #[test]
+    fn build_rewrite_prompt_includes_language_instruction_when_set() {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: "test".into(),
+        }];
+        let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
+        assert!(
+            prompt.contains("知识库文档主要使用 English 语言"),
+            "should include language instruction when content_language is set"
+        );
+    }
+
+    #[test]
+    fn build_first_turn_rewrite_prompt_no_language_instruction_when_none() {
+        let prompt = build_first_turn_rewrite_prompt("test", None);
+        assert!(
+            !prompt.contains("知识库文档主要使用"),
+            "should NOT include language instruction when content_language is None"
+        );
+    }
+
+    #[test]
+    fn build_rewrite_prompt_no_language_instruction_when_none() {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: "test".into(),
+        }];
+        let prompt = build_rewrite_prompt(&history, "test", None);
+        assert!(
+            !prompt.contains("知识库文档主要使用"),
+            "should NOT include language instruction when content_language is None"
+        );
+    }
+
+    // --- content_language edge-case prompt tests (BE-T01) ---
+
+    // Covers: Design 5.1 — empty string content_language suppresses language instruction.
+    // User Story: Query language aware rewrite — empty string is treated as "no language" by prompt builders.
+    #[test]
+    fn build_first_turn_rewrite_prompt_empty_string_no_language_instruction() {
+        let prompt = build_first_turn_rewrite_prompt("test query", Some(""));
+        assert!(
+            !prompt.contains("知识库文档主要使用"),
+            "empty string content_language should NOT produce language instruction"
+        );
+    }
+
+    // Covers: Design 5.1 — empty string content_language suppresses language instruction in multi-turn.
+    // User Story: Query language aware rewrite — empty string treated as absent in rewrite prompt.
+    #[test]
+    fn build_rewrite_prompt_empty_string_no_language_instruction() {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: "test".into(),
+        }];
+        let prompt = build_rewrite_prompt(&history, "follow up", Some(""));
+        assert!(
+            !prompt.contains("知识库文档主要使用"),
+            "empty string content_language should NOT produce language instruction"
+        );
+    }
+
+    // Covers: Design 5.1 — Chinese language value produces correct instruction text.
+    // User Story: Query language aware rewrite — Chinese content_language injects both context and rewrite instruction.
+    #[test]
+    fn build_first_turn_rewrite_prompt_chinese_language_value() {
+        let prompt = build_first_turn_rewrite_prompt("memory management", Some("中文"));
+        assert!(
+            prompt.contains("知识库文档主要使用 中文 语言"),
+            "should include Chinese language instruction with Chinese value"
+        );
+        assert!(
+            prompt.contains("请将查询改写为 中文"),
+            "should instruct rewriting to 中文"
+        );
+    }
+
+    // Covers: Design 5.1 — Chinese language value in multi-turn prompt.
+    // User Story: Query language aware rewrite — Chinese content_language works in follow-up rewrite.
+    #[test]
+    fn build_rewrite_prompt_chinese_language_value() {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: "test".into(),
+        }];
+        let prompt = build_rewrite_prompt(&history, "follow up", Some("中文"));
+        assert!(
+            prompt.contains("知识库文档主要使用 中文 语言"),
+            "should include Chinese language instruction in multi-turn prompt"
+        );
+    }
+
+    // Covers: Design 5.1 — language instruction appears before JSON constraint in first-turn prompt.
+    // User Story: Query language aware rewrite — prompt ordering ensures LLM sees language context before output format.
+    #[test]
+    fn build_first_turn_rewrite_prompt_language_before_json_constraint() {
+        let prompt = build_first_turn_rewrite_prompt("test", Some("English"));
+        let lang_pos = prompt
+            .find("知识库文档主要使用")
+            .expect("should contain language instruction");
+        let json_pos = prompt
+            .find("只输出 JSON")
+            .expect("should contain JSON constraint");
+        assert!(
+            lang_pos < json_pos,
+            "language instruction should appear BEFORE JSON constraint"
+        );
+    }
+
+    // Covers: Design 5.1 — language instruction appears before JSON constraint in multi-turn prompt.
+    // User Story: Query language aware rewrite — prompt ordering consistent across first-turn and follow-up.
+    #[test]
+    fn build_rewrite_prompt_language_before_json_constraint() {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: "test".into(),
+        }];
+        let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
+        let lang_pos = prompt
+            .find("知识库文档主要使用")
+            .expect("should contain language instruction");
+        let json_pos = prompt
+            .find("只输出 JSON")
+            .expect("should contain JSON constraint");
+        assert!(
+            lang_pos < json_pos,
+            "language instruction should appear BEFORE JSON constraint in multi-turn prompt"
         );
     }
 }

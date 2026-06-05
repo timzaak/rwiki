@@ -108,6 +108,11 @@ pub struct ChatConfig {
     /// Token 预算：估算 token 数超过此值时触发压缩
     #[serde(default = "default_token_budget")]
     pub token_budget: usize,
+    /// 知识库文档的主要语言（如 "Chinese"、"English"）。
+    /// 设置后，查询改写会将用户查询翻译为该语言，以提升跨语言检索命中率。
+    /// 省略时不做语言转换。
+    #[serde(default)]
+    pub content_language: Option<String>,
 }
 
 fn default_system_prompt() -> String {
@@ -133,6 +138,7 @@ impl Default for ChatConfig {
             sliding_window_size: default_sliding_window_size(),
             compact_threshold: default_compact_threshold(),
             token_budget: default_token_budget(),
+            content_language: None,
         }
     }
 }
@@ -444,5 +450,96 @@ mod tests {
         assert_eq!(config.otel.endpoint, "https://tracing.example.com:8090");
         assert_eq!(config.otel.license_key, "my-key");
         assert_eq!(config.otel.service_name, "custom-name");
+    }
+
+    // --- content_language config parsing tests (BE-T01) ---
+
+    // Covers: Design 5.1 — content_language parses from TOML with English value.
+    // User Story: Query language aware rewrite — English content_language deserializes correctly.
+    #[test]
+    fn chat_config_parses_content_language_english() {
+        let toml_str = r#"
+            content_language = "English"
+        "#;
+        let config: ChatConfig = toml::from_str(toml_str).expect("chat config should deserialize");
+        assert_eq!(
+            config.content_language,
+            Some("English".to_string()),
+            "content_language should parse as Some(\"English\")"
+        );
+    }
+
+    // Covers: Design 5.1 — content_language parses from TOML with Chinese value.
+    // User Story: Query language aware rewrite — Chinese content_language deserializes correctly.
+    #[test]
+    fn chat_config_parses_content_language_chinese() {
+        let toml_str = r#"
+            content_language = "中文"
+        "#;
+        let config: ChatConfig = toml::from_str(toml_str).expect("chat config should deserialize");
+        assert_eq!(
+            config.content_language,
+            Some("中文".to_string()),
+            "content_language should parse as Some(\"中文\")"
+        );
+    }
+
+    // Covers: Design 5.1 — content_language parses empty string (handler layer filters to None).
+    // User Story: Query language aware rewrite — empty string stored as-is; handler filters it.
+    #[test]
+    fn chat_config_parses_content_language_empty_string() {
+        let toml_str = r#"
+            content_language = ""
+        "#;
+        let config: ChatConfig = toml::from_str(toml_str).expect("chat config should deserialize");
+        assert_eq!(
+            config.content_language,
+            Some("".to_string()),
+            "content_language should parse as Some(\"\") — handler layer filters empty to None"
+        );
+    }
+
+    // Covers: Design 5.1 — missing content_language field defaults to None.
+    // User Story: Query language aware rewrite — omitted field gives None (no language conversion).
+    #[test]
+    fn chat_config_missing_content_language_defaults_to_none() {
+        let toml_str = r#"
+            system_prompt = "test"
+        "#;
+        let config: ChatConfig = toml::from_str(toml_str).expect("chat config should deserialize");
+        assert_eq!(
+            config.content_language, None,
+            "missing content_language should default to None"
+        );
+    }
+
+    // Covers: Design 5.1 — missing [chat] section gives content_language = None via Default.
+    // User Story: Query language aware rewrite — backward compatible, no [chat] means None.
+    #[test]
+    fn app_config_missing_chat_section_content_language_is_none() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [api]
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).expect("config should deserialize");
+        assert_eq!(
+            config.chat.content_language, None,
+            "missing [chat] section should give content_language = None"
+        );
     }
 }

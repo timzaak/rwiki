@@ -40,7 +40,7 @@ fn rewrite_prompt_includes_history_and_user_message() {
             content: "Rust is a systems programming language.".into(),
         },
     ];
-    let prompt = build_rewrite_prompt(&history, "How does it handle memory?");
+    let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
 
     assert!(
         prompt.contains("user: What is Rust?"),
@@ -70,7 +70,7 @@ fn rewrite_prompt_includes_history_and_user_message() {
 #[test]
 fn rewrite_prompt_with_empty_history_produces_query_only_structure() {
     let history: Vec<ChatMessage> = vec![];
-    let prompt = build_rewrite_prompt(&history, "What is Rust?");
+    let prompt = build_rewrite_prompt(&history, "What is Rust?", None);
 
     assert!(
         prompt.contains("当前用户追问: What is Rust?"),
@@ -366,7 +366,7 @@ fn query_rewriting_failure_fallback_code_structure_verified() {
     let original_query = "How does it handle memory?";
 
     // The prompt builder never fails -- it always produces a String.
-    let prompt = build_rewrite_prompt(&history, original_query);
+    let prompt = build_rewrite_prompt(&history, original_query, None);
     assert!(
         !prompt.is_empty(),
         "build_rewrite_prompt must always produce a non-empty prompt, \
@@ -534,7 +534,7 @@ fn compact_history_success_path_trims_and_sets_summary() {
 
 #[test]
 fn first_turn_rewrite_prompt_includes_user_message_and_json_constraint() {
-    let prompt = build_first_turn_rewrite_prompt("k8s");
+    let prompt = build_first_turn_rewrite_prompt("k8s", None);
 
     assert!(
         prompt.contains("用户查询: k8s"),
@@ -565,7 +565,7 @@ fn first_turn_rewrite_prompt_includes_user_message_and_json_constraint() {
 
 #[test]
 fn first_turn_rewrite_prompt_with_empty_user_message_produces_valid_structure() {
-    let prompt = build_first_turn_rewrite_prompt("");
+    let prompt = build_first_turn_rewrite_prompt("", None);
 
     assert!(
         !prompt.is_empty(),
@@ -604,7 +604,7 @@ fn rewrite_prompt_includes_json_output_format_constraint() {
             content: "Kubernetes is a container orchestration platform.".into(),
         },
     ];
-    let prompt = build_rewrite_prompt(&history, "How does it handle memory?");
+    let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
 
     assert!(
         prompt.contains("JSON"),
@@ -639,7 +639,7 @@ fn rewrite_prompt_retains_history_context_for_coreference_resolution() {
             content: "Rust is a systems programming language.".into(),
         },
     ];
-    let prompt = build_rewrite_prompt(&history, "it");
+    let prompt = build_rewrite_prompt(&history, "it", None);
 
     // Verify history is preserved for pronoun resolution
     assert!(
@@ -844,7 +844,7 @@ fn first_turn_rewrite_triggers_code_structure_verified() {
     //
     // Key guarantee: build_first_turn_rewrite_prompt is infallible (returns
     // String, not Result), so the handler can always call it without guards.
-    let prompt = build_first_turn_rewrite_prompt(user_message);
+    let prompt = build_first_turn_rewrite_prompt(user_message, None);
 
     assert!(
         !prompt.is_empty(),
@@ -879,7 +879,7 @@ fn rewrite_llm_failure_fallback_preserves_original_query_code_structure() {
     let user_message = "deploy";
 
     // The prompt builder embeds the original query.
-    let prompt = build_first_turn_rewrite_prompt(user_message);
+    let prompt = build_first_turn_rewrite_prompt(user_message, None);
 
     assert!(
         prompt.contains(user_message),

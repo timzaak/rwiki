@@ -79,6 +79,9 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # Token 预算：估算 token 数超过此值时触发压缩（默认 8000）
 # token_budget = 8000
 
+# 知识库文档的主要语言（如 "Chinese"、"English"）。设置后查询改写会将用户查询翻译为该语言。
+# content_language = "Chinese"
+
 [otel]
 # OpenTelemetry OTLP tracing 导出配置
 # endpoint 为空时不启用 OTLP tracing（本地开发零开销）
