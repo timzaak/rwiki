@@ -11,6 +11,7 @@ use crate::domain::errors::CoreError;
 
 use super::document_chunk::DocumentChunk;
 use super::embedding_model::AppEmbeddingModel;
+use super::xlsx_parser::ContentType;
 
 static JIEBA: OnceLock<Jieba> = OnceLock::new();
 
@@ -41,6 +42,19 @@ fn tokenize_safe(text: &str) -> String {
         tracing::warn!("jieba tokenize failed, using fallback");
         tokenize_fallback(text)
     })
+}
+
+/// Resolve FTS tokens based on document content type.
+/// Returns precomputed tokens for OpenAPI documents, falls back to tokenize_safe for others.
+pub(crate) fn resolve_fts_tokens(
+    content_type: &ContentType,
+    fts_tokens: &Option<String>,
+    content_text: &str,
+) -> String {
+    match (content_type, fts_tokens) {
+        (ContentType::OpenApi, Some(tokens)) => tokens.clone(),
+        _ => tokenize_safe(content_text),
+    }
 }
 
 /// Sanitize a user query for safe FTS5 MATCH usage.
@@ -311,7 +325,7 @@ impl VectorStoreManager {
                         let rowid = tx.last_insert_rowid();
                         insert_vec.execute(rusqlite::params![rowid, bytes])?;
 
-                        let fts_tokens = tokenize_safe(&content_text);
+                        let fts_tokens = resolve_fts_tokens(&chunk.content_type, &chunk.fts_tokens, &content_text);
                         insert_fts.execute(rusqlite::params![rowid, fts_tokens])?;
                     }
 
@@ -344,7 +358,7 @@ impl VectorStoreManager {
                         let bytes = embedding_to_bytes(&emb.vec);
                         insert_vec.execute(rusqlite::params![rowid, bytes])?;
 
-                        let fts_tokens = tokenize_safe(&content_text);
+                        let fts_tokens = resolve_fts_tokens(&chunk.content_type, &chunk.fts_tokens, &content_text);
                         insert_fts.execute(rusqlite::params![rowid, fts_tokens])?;
                     }
                 }
@@ -2186,6 +2200,73 @@ mod tests {
         assert_eq!(
             count_after_second, 2,
             "should still have 2 FTS entries after second backfill (idempotent)"
+        );
+    }
+
+    // --- FTS routing tests for resolve_fts_tokens ---
+
+    // User Story: US-CORE-027
+    // Covers: resolve_fts_tokens returns precomputed tokens when content_type is OpenApi
+    //         and fts_tokens is Some. Must NOT call tokenize_safe in this case.
+    #[test]
+    fn fts_routing_uses_precomputed_tokens_for_openapi() {
+        let content_type = ContentType::OpenApi;
+        let fts_tokens = Some("POST api documents publish".to_string());
+        let content_text = "## POST /api/documents/{documentId}/publish\n\nSome text.";
+
+        let result = super::resolve_fts_tokens(&content_type, &fts_tokens, content_text);
+
+        assert_eq!(
+            result, "POST api documents publish",
+            "should return precomputed tokens for OpenAPI content, got: {}",
+            result
+        );
+    }
+
+    // User Story: US-CORE-027
+    // Covers: resolve_fts_tokens uses tokenize_safe when content_type is None (default),
+    //         regardless of fts_tokens value.
+    #[test]
+    fn fts_routing_uses_tokenize_safe_for_non_openapi() {
+        let content_type = ContentType::None;
+        let fts_tokens = Some("ignored precomputed tokens".to_string());
+        let content_text = "普通文档的文本内容";
+
+        let result = super::resolve_fts_tokens(&content_type, &fts_tokens, content_text);
+
+        // Should NOT return the precomputed tokens for ContentType::None
+        assert_ne!(
+            result, "ignored precomputed tokens",
+            "should use tokenize_safe for non-OpenAPI content, not precomputed tokens"
+        );
+        // tokenize_safe should produce jieba-segmented output from the content
+        assert!(
+            !result.is_empty(),
+            "tokenize_safe output should not be empty for non-empty input"
+        );
+    }
+
+    // User Story: US-CORE-027
+    // Covers: resolve_fts_tokens degrades gracefully to tokenize_safe when content_type
+    //         is OpenApi but fts_tokens is None (missing precomputed tokens).
+    #[test]
+    fn fts_routing_degrades_to_tokenize_safe_when_tokens_missing() {
+        let content_type = ContentType::OpenApi;
+        let fts_tokens: Option<String> = None;
+        let content_text = "## GET /api/health\n\nHealth check endpoint.";
+
+        let result = super::resolve_fts_tokens(&content_type, &fts_tokens, content_text);
+
+        // Should degrade to tokenize_safe, producing non-empty output from the content
+        assert!(
+            !result.is_empty(),
+            "should degrade to tokenize_safe and produce non-empty output when fts_tokens is None"
+        );
+        // Should contain tokens from the content text (e.g. "GET", "api", "health")
+        assert!(
+            result.contains("health") || result.contains("GET"),
+            "degraded output should contain tokens from content, got: {}",
+            result
         );
     }
 }

@@ -988,3 +988,46 @@ When 语言感知改写调用超时
 Then 系统使用原始查询继续检索并正常回答
 And 用户不感知到改写失败
 ```
+
+---
+
+## 故事 27：用 API 路径或方法名检索到对应端点 [US-CORE-027]
+
+**优先级**: P1
+
+**【用户故事】**
+**作为**：User
+**我希望**：在知识库中查询 API 路径、HTTP 方法或参数名时，系统能精确命中对应的 OpenAPI 端点文档
+**从而**：我可以快速定位到感兴趣的 API 操作，而不需要用与端点描述完全匹配的自然语言
+
+**【验收标准】**
+
+**场景 1：用 API 路径检索到端点**
+```gherkin
+Given 知识库中有已发布的 OpenAPI 文档，包含路径 /api/documents/{documentId}/publish
+When 用户输入查询 "publish" 或 "/api/documents/publish"
+Then 检索结果中包含该端点对应的分块
+And 回答引用该端点的文档内容
+```
+
+**场景 2：用 HTTP 方法名检索到端点**
+```gherkin
+Given 知识库中有已发布的 OpenAPI 文档，包含 POST /api/documents 端点
+When 用户输入查询 "POST documents"
+Then 检索结果中包含该 POST 端点
+And 不遗漏其他 HTTP 方法的同路径端点
+```
+
+**场景 3：用参数名检索到端点**
+```gherkin
+Given 知识库中有已发布的 OpenAPI 文档，某端点包含参数 documentId
+When 用户输入查询 "documentId"
+Then 检索结果中包含使用该参数的端点
+```
+
+**场景 4：非 OpenAPI 文档不受影响**
+```gherkin
+Given 知识库中有已发布的 xlsx 文档和 OpenAPI 文档
+When 用户查询 xlsx 文档相关内容
+Then xlsx 文档的检索结果和回答质量与启用 OpenAPI 专门分词前一致
+```

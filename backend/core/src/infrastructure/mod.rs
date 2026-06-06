@@ -3,6 +3,7 @@ pub mod embedding_model;
 pub mod markdown_parser;
 pub mod migration;
 pub mod openapi_parser;
+pub mod openapi_tokenizer;
 pub mod text_chunker;
 pub mod vector_store;
 pub mod xlsx_parser;

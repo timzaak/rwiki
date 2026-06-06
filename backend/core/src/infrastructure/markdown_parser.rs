@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use super::xlsx_parser::ParsedChunk;
+use super::xlsx_parser::{ContentType, ParsedChunk};
 
 /// Error type for markdown/mdx file parsing.
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +97,8 @@ pub fn parse_markdown_file(
         tags: fm_tags,
         section: None,
         chunk_count: None,
+        content_type: ContentType::None,
+        fts_tokens: None,
     })
 }
 

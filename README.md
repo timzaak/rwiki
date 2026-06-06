@@ -1,8 +1,8 @@
 # RWiki
 
-**Self-hosted knowledge base Q&A powered by RAG. Single binary, zero external databases.**
+**Knowledge base Q&A powered by RAG. Single binary, zero external databases.**
 
-Upload Markdown, XLSX, or OpenAPI specs — RWiki chunks and vectorizes them, then serves streaming answers with source citations. Runs on SQLite, deploys with one command, works with any OpenAI-compatible LLM.
+Upload Markdown, XLSX, or OpenAPI specs — RWiki chunks and vectorizes them, then serves streaming answers with structured citations. Hybrid search (keyword + vector), query rewrite, and local embedding support built in. Runs on SQLite, deploys with one command, works with any OpenAI-compatible LLM.
 
 [中文文档](README.zh-CN.md)
 
@@ -39,12 +39,16 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 
 ## Features
 
-- **Streaming chat Q&A** — Ask questions, get answers with source citations from your documents
+- **Streaming chat Q&A** — Ask questions, get answers with structured citations (title, section, link, tags) from your documents
+- **Hybrid search** — FTS5 full-text + vector similarity with RRF fusion for better recall
+- **Query rewrite & expansion** — Automatic query rewriting with multi-query expansion to handle ambiguous questions
 - **Embeddable chat widget** — Single JS file, Shadow DOM, add to any site with two lines of HTML
 - **Multi-format ingestion** — Markdown files, XLSX spreadsheets, OpenAPI specifications
 - **API documentation assistant** — Upload OpenAPI specs, ask questions about your APIs
 - **Provider-agnostic** — OpenAI, OpenRouter, BigModel, any OpenAI-compatible endpoint
-- **Self-hosted** — Your data stays on your server, no cloud dependency
+- **Local embedding** — Use built-in multilingual embeddings without an external API key
+- **Observability** — OpenTelemetry / Jaeger tracing support for production monitoring
+- **Configurable** — Custom system prompts, content language settings, and conversation memory tuning
 
 ## Deploy
 
@@ -71,24 +75,9 @@ cp config/config.example.toml config/config.toml
 cargo run
 ```
 
-### E2E Tests
-
-```bash
-cd demo
-npm install
-npx playwright install chromium
-npm test
-```
-
 ## Configuration
 
-- **Backend config**: `backend/config/config.toml` (copy from `config.example.toml`)
-- **API keys** (env vars override config):
-  - `OPENROUTER_API_KEY` — LLM provider key
-  - `OPENAI_API_KEY` — Embedding provider key
-- **Embedding providers**: OpenAI (`text-embedding-3-small`), BigModel (`embedding-3`), or any OpenAI-compatible API
-- **OpenAPI docs**: `config.toml` → `server.enable_openapi`
-- **Frontend proxy**: `frontend/vite.config.ts` → `server.proxy`
+Copy `backend/config/config.example.toml` to `config.toml` and edit. All options with comments are documented there.
 
 ## AI-Built
 

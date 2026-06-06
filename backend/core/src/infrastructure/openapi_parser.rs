@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::xlsx_parser::ParsedChunk;
+use super::xlsx_parser::{ContentType, ParsedChunk};
 
 /// Recognized HTTP methods in OpenAPI paths objects.
 const METHODS: &[&str] = &[
@@ -122,6 +122,7 @@ pub fn parse_openapi_file(
 
             // Section: first tag if present
             let section = tags.first().cloned();
+            let fts_tokens = super::openapi_tokenizer::tokenize_openapi_endpoint(&content);
 
             chunks.push(ParsedChunk {
                 content,
@@ -133,6 +134,8 @@ pub fn parse_openapi_file(
                 tags,
                 section,
                 chunk_count: None,
+                content_type: ContentType::OpenApi,
+                fts_tokens: Some(fts_tokens),
             });
         }
     }

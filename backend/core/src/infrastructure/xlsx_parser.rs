@@ -1,7 +1,18 @@
 use calamine::{open_workbook_from_rs, Data, Range, Reader, Xlsx};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
 use uuid::Uuid;
+
+/// Document content type for tokenizer strategy routing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentType {
+    /// Default: use generic jieba tokenization
+    #[default]
+    None,
+    /// OpenAPI 3.x document: use format-aware tokenization
+    OpenApi,
+}
 
 /// Represents one row as a text chunk with header context.
 #[derive(Debug, Clone, Default)]
@@ -20,6 +31,10 @@ pub struct ParsedChunk {
     pub section: Option<String>,
     /// Number of chunks the original row was split into (None for original/unsplit chunks)
     pub chunk_count: Option<usize>,
+    /// Document content type for tokenizer strategy routing
+    pub content_type: ContentType,
+    /// Pre-computed FTS tokenization result; OpenAPI docs fill this at parse time, others are None
+    pub fts_tokens: Option<String>,
 }
 
 /// Structured Wiki page parsed from a single xlsx row.

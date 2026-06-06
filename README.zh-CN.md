@@ -1,8 +1,8 @@
 # RWiki
 
-**基于 RAG 的自托管知识库问答。单个二进制文件，零外部数据库。**
+**基于 RAG 的知识库问答。单个二进制文件，零外部数据库。**
 
-上传 Markdown、XLSX 或 OpenAPI 规格文件 — RWiki 自动分块、向量化，提供带来源引用的流式问答。基于 SQLite 运行，一条命令部署，支持任何 OpenAI 兼容的 LLM。
+上传 Markdown、XLSX 或 OpenAPI 规格文件 — RWiki 自动分块、向量化，提供带结构化引用的流式问答。内置混合搜索（关键词 + 向量）、查询改写和本地 Embedding 支持。基于 SQLite 运行，一条命令部署，支持任何 OpenAI 兼容的 LLM。
 
 [English](README.md)
 
@@ -39,12 +39,16 @@ RWiki 只做一件事 — 知识库问答 — 并把基础设施压缩到一个�
 
 ## 特性
 
-- **流式对话问答** — 提问，获取带来源引用的回答
+- **流式对话问答** — 提问，获取带结构化引用（标题、章节、链接、标签）的回答
+- **混合搜索** — FTS5 全文 + 向量相似度，使用 RRF 融合提升召回率
+- **查询改写与扩展** — 自动查询改写与多查询扩展，处理模糊提问
 - **可嵌入聊天组件** — 单个 JS 文件，Shadow DOM，两行 HTML 嵌入任意网站
 - **多格式导入** — Markdown 文件、XLSX 表格、OpenAPI 规格
 - **API 文档助手** — 上传 OpenAPI 规格，向 API 提问
 - **LLM 无关** — 支持 OpenAI、OpenRouter、BigModel 等任何 OpenAI 兼容接口
-- **完全自托管** — 数据留在你的服务器上，无云端依赖
+- **本地 Embedding** — 内置多语言 Embedding，无需外部 API Key
+- **可观测性** — 支持 OpenTelemetry / Jaeger 链路追踪
+- **可配置** — 自定义系统提示词、内容语言设置、对话记忆参数
 
 ## 部署
 
@@ -71,24 +75,9 @@ cp config/config.example.toml config/config.toml
 cargo run
 ```
 
-### E2E 测试
-
-```bash
-cd demo
-npm install
-npx playwright install chromium
-npm test
-```
-
 ## 配置
 
-- **后端配置**: `backend/config/config.toml`（从 `config.example.toml` 复制）
-- **API Key**（环境变量优先于配置文件）：
-  - `OPENROUTER_API_KEY` — LLM 提供商 Key
-  - `OPENAI_API_KEY` — Embedding 提供商 Key
-- **Embedding 提供商**: OpenAI (`text-embedding-3-small`)、BigModel (`embedding-3`) 或其他 OpenAI 兼容 API
-- **OpenAPI 文档**: `config.toml` → `server.enable_openapi`
-- **前端代理**: `frontend/vite.config.ts` → `server.proxy`
+将 `backend/config/config.example.toml` 复制为 `config.toml` 并编辑。所有选项均有注释说明。
 
 ## AI 构建
 

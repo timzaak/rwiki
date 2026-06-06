@@ -40,3 +40,4 @@
 | document | 关键词搜索支持 | [document/keyword-search-support.md](document/keyword-search-support.md) | Implemented | FTS5 全文搜索、jieba-rs 分词、混合检索、RRF 融合、降级保障 |
 | chat | 查询语言感知改写 | [chat/query-language-aware-rewrite.md](chat/query-language-aware-rewrite.md) | Implemented | 知识库内容语言配置、语言感知查询改写、多轮持续语言改写、向后兼容 |
 | chat | 上下文组装与 Prompt 格式优化 | [chat/chat-context-prompt-assembly.md](chat/chat-context-prompt-assembly.md) | Draft | XML 结构化上下文、来源编号、Preamble 英文化、XML 转义、引用指令增强 |
+| document | OpenAPI 专门分词方案 | [document/openapi-specialized-tokenization.md](document/openapi-specialized-tokenization.md) | Draft | OpenAPI 文档 FTS 格式感知分词、路径层级分词、文档类型传播、向后兼容 |

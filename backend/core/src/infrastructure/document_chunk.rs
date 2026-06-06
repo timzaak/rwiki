@@ -2,7 +2,7 @@ use rig::Embed;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::xlsx_parser::ParsedChunk;
+use super::xlsx_parser::{ContentType, ParsedChunk};
 
 /// Embeddable document chunk for rig-core's vector store.
 ///
@@ -25,6 +25,10 @@ pub struct DocumentChunk {
     pub section: Option<String>,
     /// Number of chunks the original row was split into (None for original/unsplit chunks)
     pub chunk_count: Option<usize>,
+    /// Document content type for tokenizer strategy routing
+    pub content_type: ContentType,
+    /// Pre-computed FTS tokenization result
+    pub fts_tokens: Option<String>,
 }
 
 impl DocumentChunk {
@@ -46,6 +50,8 @@ impl DocumentChunk {
             tags: parsed.tags.clone(),
             section: parsed.section.clone(),
             chunk_count: parsed.chunk_count,
+            content_type: parsed.content_type.clone(),
+            fts_tokens: parsed.fts_tokens.clone(),
         }
     }
 }
@@ -167,5 +173,79 @@ mod tests {
         );
         assert_eq!(chunk.page_id, page_id.to_string());
         assert_eq!(chunk.sub_index, Some(1));
+    }
+
+    // User Story: US-CORE-027
+    // Covers: DocumentChunk::from_parsed() propagates content_type from ParsedChunk.
+    //         A ParsedChunk with content_type: ContentType::OpenApi must produce
+    //         a DocumentChunk with content_type: ContentType::OpenApi.
+    #[test]
+    fn from_parsed_propagates_content_type() {
+        let doc_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3c").unwrap();
+        let page_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3d").unwrap();
+        let parsed = ParsedChunk {
+            content: "## GET /api/health".to_string(),
+            page_id,
+            content_type: ContentType::OpenApi,
+            ..Default::default()
+        };
+
+        let chunk = DocumentChunk::from_parsed(doc_id, &parsed);
+
+        assert_eq!(
+            chunk.content_type,
+            ContentType::OpenApi,
+            "from_parsed must propagate content_type: ContentType::OpenApi from ParsedChunk"
+        );
+    }
+
+    // User Story: US-CORE-027
+    // Covers: DocumentChunk::from_parsed() propagates fts_tokens from ParsedChunk.
+    //         A ParsedChunk with fts_tokens: Some("POST api documents") must produce
+    //         a DocumentChunk with the same fts_tokens value.
+    #[test]
+    fn from_parsed_propagates_fts_tokens() {
+        let doc_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3c").unwrap();
+        let page_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3d").unwrap();
+        let parsed = ParsedChunk {
+            content: "## POST /api/documents".to_string(),
+            page_id,
+            content_type: ContentType::OpenApi,
+            fts_tokens: Some("POST api documents".to_string()),
+            ..Default::default()
+        };
+
+        let chunk = DocumentChunk::from_parsed(doc_id, &parsed);
+
+        assert_eq!(
+            chunk.fts_tokens,
+            Some("POST api documents".to_string()),
+            "from_parsed must propagate fts_tokens from ParsedChunk"
+        );
+    }
+
+    // Covers: A ParsedChunk created with ..Default::default() has content_type: ContentType::None
+    //         and fts_tokens: None. The resulting DocumentChunk must also have these defaults.
+    #[test]
+    fn from_parsed_default_content_type_is_none() {
+        let doc_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3c").unwrap();
+        let page_id = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2b3d").unwrap();
+        let parsed = ParsedChunk {
+            content: "plain text".to_string(),
+            page_id,
+            ..Default::default()
+        };
+
+        let chunk = DocumentChunk::from_parsed(doc_id, &parsed);
+
+        assert_eq!(
+            chunk.content_type,
+            ContentType::None,
+            "default content_type should be ContentType::None"
+        );
+        assert!(
+            chunk.fts_tokens.is_none(),
+            "default fts_tokens should be None"
+        );
     }
 }
