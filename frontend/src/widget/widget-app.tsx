@@ -4,7 +4,7 @@ import { ChatStreamProvider } from '@/components/chat/chat-stream-context';
 import { FloatingButton } from '@/components/chat/floating-button';
 import { ChatModal } from '@/components/chat/chat-modal';
 import { useWidgetChatStream } from '@/widget/use-widget-chat-stream';
-import { matchSuggestedQuestions } from '@/utils/match-suggested-questions';
+import { useWidgetSuggestions } from '@/widget/use-widget-suggestions';
 import type { ValidatedWidgetConfig } from '@/widget/config';
 
 interface WidgetAppProps {
@@ -13,7 +13,7 @@ interface WidgetAppProps {
 
 function WidgetAppContent({ config }: WidgetAppProps) {
   const streamValue = useWidgetChatStream(config.apiUrl);
-  const suggestedQuestions = matchSuggestedQuestions(config.suggestedQuestions, navigator.language);
+  const suggestedQuestions = useWidgetSuggestions(config.apiUrl, config.suggestedQuestions);
 
   return (
     <ChatStreamProvider value={streamValue}>
