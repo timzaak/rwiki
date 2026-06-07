@@ -56,6 +56,7 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
     let app = Router::new()
         .route("/health", get(handlers::health_check))
         .route("/api/chat", post(handlers::chat::chat))
+        .route("/api/chat/suggestions", get(handlers::chat::suggestions))
         .merge(doc_router)
         .layer(cors)
         .with_state(state.clone());

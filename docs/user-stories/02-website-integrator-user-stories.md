@@ -101,3 +101,39 @@ When 再次调用 RWikiChat.init({ apiUrl: '...' })
 Then Widget 重新渲染在页面上
 And 新的配置参数生效
 ```
+
+---
+
+## 故事 4：在 Widget 中配置推荐问题 [US-INTG-004]
+
+**优先级**: P2
+
+**【用户故事】**
+**作为**：Website Integrator
+**我希望**：在嵌入 Widget 时通过配置参数传入推荐问题，让访客看到与我业务相关的引导问题
+**从而**：访客无需构思问题即可快速开始对话，提高 Widget 的首次使用率
+
+**【验收标准】**
+
+**场景 1：配置推荐问题后在 Widget 中展示**
+```gherkin
+Given 网站已引入 rwiki-chat.js
+When 调用 RWikiChat.init({ apiUrl: '...', suggestedQuestions: { default: ['如何注册', '支持哪些支付方式'], en: ['How to register', 'Payment methods'] } })
+Then Widget 打开后在空状态展示匹配访客浏览器语言的推荐问题按钮
+And 访客点击按钮后直接发送问题并获得流式回答
+```
+
+**场景 2：配置为简单数组时正常展示**
+```gherkin
+Given 网站已引入 rwiki-chat.js
+When 调用 RWikiChat.init({ apiUrl: '...', suggestedQuestions: ['如何注册', '支持哪些支付方式', '如何联系客服'] })
+Then Widget 打开后在空状态展示这 3 个推荐问题按钮
+```
+
+**场景 3：未配置推荐问题时 Widget 正常工作**
+```gherkin
+Given 网站已引入 rwiki-chat.js
+When 调用 RWikiChat.init({ apiUrl: '...' }) 未传入 suggestedQuestions
+Then Widget 正常渲染，空状态仅显示欢迎消息
+And 访客可手动输入问题正常对话
+```

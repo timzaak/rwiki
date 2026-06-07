@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
@@ -8,12 +8,13 @@ use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::streaming::StreamingChat;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::application::http::errors::{ApiError, ErrorResponse};
@@ -39,6 +40,16 @@ pub struct ChatRequest {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct SuggestionsQuery {
+    pub locale: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SuggestionsResponse {
+    pub questions: Vec<String>,
+}
+
 // SSE event types -- Serialize only, no ToSchema (utoipa cannot represent SSE schemas)
 
 #[derive(Debug, Serialize)]
@@ -60,6 +71,125 @@ struct DoneEvent {}
 #[serde(rename_all = "camelCase")]
 struct ErrorEvent {
     message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions
+// ---------------------------------------------------------------------------
+
+/// Maximum number of suggested questions to return.
+const MAX_SUGGESTIONS: usize = 10;
+
+/// Validate locale format without regex.
+/// Valid: 2-4 letters, optionally followed by `-` and 2-8 letters. Max 10 chars total.
+/// Invalid formats (empty, digits, special chars, too long) are rejected.
+fn is_valid_locale(locale: &str) -> bool {
+    if locale.is_empty() || locale.len() > 10 {
+        return false;
+    }
+    let bytes = locale.as_bytes();
+    // First segment: 2-4 letters
+    let mut i = 0;
+    let first_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let first_len = i - first_start;
+    if !(2..=4).contains(&first_len) {
+        return false;
+    }
+    if i == bytes.len() {
+        return true; // just the language part, e.g. "en"
+    }
+    // Must be a hyphen
+    if bytes[i] != b'-' {
+        return false;
+    }
+    i += 1;
+    // Second segment: 2-8 letters
+    let second_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let second_len = i - second_start;
+    if !(2..=8).contains(&second_len) {
+        return false;
+    }
+    // No trailing characters allowed
+    i == bytes.len()
+}
+
+/// Match locale against suggested_questions config.
+///
+/// Matching logic: exact match -> longest prefix match (key is a prefix of locale, pick longest)
+/// -> "default" key -> empty vec.
+/// Results are truncated to MAX_SUGGESTIONS.
+pub(crate) fn match_locale(
+    config: &Option<HashMap<String, Vec<String>>>,
+    locale: Option<&str>,
+) -> Vec<String> {
+    let map = match config {
+        Some(m) if !m.is_empty() => m,
+        _ => return Vec::new(),
+    };
+
+    // Validate locale if provided
+    let locale = locale
+        .filter(|l| is_valid_locale(l))
+        .map(|l| l.to_lowercase());
+
+    let questions = if let Some(ref loc) = locale {
+        // 1. Exact match (case-insensitive)
+        if let Some(qs) = map.get(loc) {
+            Some(qs)
+        } else {
+            // 2. Longest prefix match: find keys that are a prefix of the locale, pick longest
+            let mut best_key: Option<&String> = None;
+            let mut best_len = 0;
+            for key in map.keys() {
+                let key_lower = key.to_lowercase();
+                if loc.starts_with(&key_lower)
+                    && key_lower.len() > best_len
+                    && is_valid_locale(&key_lower)
+                {
+                    best_key = Some(key);
+                    best_len = key_lower.len();
+                }
+            }
+            best_key
+                .and_then(|k| map.get(k))
+                .or_else(|| map.get("default"))
+        }
+    } else {
+        // No locale provided, fall back to "default"
+        map.get("default")
+    };
+
+    match questions {
+        Some(qs) => qs.iter().take(MAX_SUGGESTIONS).cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Get suggested questions for a given locale.
+#[utoipa::path(
+    get,
+    path = "/api/chat/suggestions",
+    tag = "chat",
+    params(SuggestionsQuery),
+    responses(
+        (status = 200, description = "Suggested questions", body = SuggestionsResponse)
+    )
+)]
+pub async fn suggestions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SuggestionsQuery>,
+) -> Json<SuggestionsResponse> {
+    let questions = match_locale(
+        &state.chat_config.suggested_questions,
+        params.locale.as_deref(),
+    );
+    Json(SuggestionsResponse { questions })
 }
 
 // ---------------------------------------------------------------------------
@@ -1513,5 +1643,221 @@ mod tests {
             lang_pos < json_pos,
             "language instruction should appear BEFORE JSON constraint in multi-turn prompt"
         );
+    }
+
+    // --- match_locale and is_valid_locale tests (BE-D01) ---
+
+    // Covers: PRD locale validation — valid 2-letter locale accepted.
+    #[test]
+    fn is_valid_locale_two_letters() {
+        assert!(is_valid_locale("en"), "2-letter locale should be valid");
+        assert!(is_valid_locale("zh"), "2-letter locale should be valid");
+    }
+
+    // Covers: PRD locale validation — valid locale with region tag accepted.
+    #[test]
+    fn is_valid_locale_with_region() {
+        assert!(
+            is_valid_locale("zh-CN"),
+            "locale with region should be valid"
+        );
+        assert!(
+            is_valid_locale("en-US"),
+            "locale with region should be valid"
+        );
+        assert!(
+            is_valid_locale("pt-BR"),
+            "locale with region should be valid"
+        );
+    }
+
+    // Covers: PRD locale validation — 3-4 letter language codes accepted.
+    #[test]
+    fn is_valid_locale_three_four_letter_language() {
+        assert!(is_valid_locale("eng"), "3-letter language should be valid");
+        assert!(is_valid_locale("zhcn"), "4-letter language should be valid");
+    }
+
+    // Covers: PRD locale validation — single letter rejected.
+    #[test]
+    fn is_valid_locale_single_letter_rejected() {
+        assert!(
+            !is_valid_locale("e"),
+            "single letter locale should be rejected"
+        );
+    }
+
+    // Covers: PRD locale validation — empty string rejected.
+    #[test]
+    fn is_valid_locale_empty_rejected() {
+        assert!(!is_valid_locale(""), "empty locale should be rejected");
+    }
+
+    // Covers: PRD locale validation — digits rejected.
+    #[test]
+    fn is_valid_locale_with_digits_rejected() {
+        assert!(
+            !is_valid_locale("en123"),
+            "locale with digits should be rejected"
+        );
+        assert!(
+            !is_valid_locale("12"),
+            "all-digit locale should be rejected"
+        );
+    }
+
+    // Covers: PRD locale validation — special characters rejected.
+    #[test]
+    fn is_valid_locale_with_special_chars_rejected() {
+        assert!(
+            !is_valid_locale("en_US"),
+            "underscore is not a valid separator"
+        );
+        assert!(!is_valid_locale("en."), "dot should be rejected");
+        assert!(!is_valid_locale("abc!"), "special char should be rejected");
+    }
+
+    // Covers: PRD locale validation — too long rejected.
+    #[test]
+    fn is_valid_locale_too_long_rejected() {
+        assert!(
+            !is_valid_locale("abcdefghijk"),
+            "locale > 10 chars should be rejected"
+        );
+    }
+
+    // Covers: PRD locale validation — trailing hyphen rejected.
+    #[test]
+    fn is_valid_locale_trailing_hyphen_rejected() {
+        assert!(
+            !is_valid_locale("en-"),
+            "trailing hyphen should be rejected"
+        );
+    }
+
+    // Covers: Design 4.2.2 — config None returns empty vec.
+    #[test]
+    fn match_locale_none_config_returns_empty() {
+        let result = match_locale(&None, Some("en"));
+        assert!(result.is_empty(), "None config should return empty vec");
+    }
+
+    // Covers: Design 4.2.2 — exact match returns matching questions.
+    #[test]
+    fn match_locale_exact_match() {
+        let config = Some(HashMap::from([
+            ("default".to_string(), vec!["Q default".to_string()]),
+            ("zh-CN".to_string(), vec!["Q zh".to_string()]),
+            ("en".to_string(), vec!["Q en".to_string()]),
+        ]));
+        let result = match_locale(&config, Some("zh-CN"));
+        assert_eq!(result, vec!["Q zh"]);
+    }
+
+    // Covers: Design 4.2.2 — case-insensitive exact match.
+    #[test]
+    fn match_locale_case_insensitive() {
+        let config = Some(HashMap::from([(
+            "zh-CN".to_string(),
+            vec!["Q zh".to_string()],
+        )]));
+        let result = match_locale(&config, Some("zh-cn"));
+        assert_eq!(result, vec!["Q zh"]);
+    }
+
+    // Covers: Design 4.2.2 — longest prefix match when no exact match.
+    #[test]
+    fn match_locale_longest_prefix_match() {
+        let config = Some(HashMap::from([
+            ("zh".to_string(), vec!["Q zh short".to_string()]),
+            ("zh-CN".to_string(), vec!["Q zh-CN".to_string()]),
+        ]));
+        // "zh-CN" exact match exists, so it takes priority
+        let result = match_locale(&config, Some("zh-CN"));
+        assert_eq!(result, vec!["Q zh-CN"]);
+
+        // "zh-TW" has no exact match, "zh" is a prefix → prefix match
+        let result = match_locale(&config, Some("zh-TW"));
+        assert_eq!(result, vec!["Q zh short"]);
+    }
+
+    // Covers: Design 4.2.2 — default key fallback when no locale match.
+    #[test]
+    fn match_locale_default_fallback() {
+        let config = Some(HashMap::from([
+            ("default".to_string(), vec!["Q default".to_string()]),
+            ("en".to_string(), vec!["Q en".to_string()]),
+        ]));
+        let result = match_locale(&config, Some("ja"));
+        assert_eq!(result, vec!["Q default"]);
+    }
+
+    // Covers: Design 4.2.2 — no match and no default returns empty vec.
+    #[test]
+    fn match_locale_no_match_no_default_returns_empty() {
+        let config = Some(HashMap::from([(
+            "en".to_string(),
+            vec!["Q en".to_string()],
+        )]));
+        let result = match_locale(&config, Some("ja"));
+        assert!(
+            result.is_empty(),
+            "no match and no default should return empty"
+        );
+    }
+
+    // Covers: Design 4.2.2 — None locale falls back to default.
+    #[test]
+    fn match_locale_none_locale_uses_default() {
+        let config = Some(HashMap::from([
+            ("default".to_string(), vec!["Q default".to_string()]),
+            ("en".to_string(), vec!["Q en".to_string()]),
+        ]));
+        let result = match_locale(&config, None);
+        assert_eq!(result, vec!["Q default"]);
+    }
+
+    // Covers: Design 4.2.2 — None locale without default returns empty.
+    #[test]
+    fn match_locale_none_locale_no_default_returns_empty() {
+        let config = Some(HashMap::from([(
+            "en".to_string(),
+            vec!["Q en".to_string()],
+        )]));
+        let result = match_locale(&config, None);
+        assert!(
+            result.is_empty(),
+            "None locale without default should return empty"
+        );
+    }
+
+    // Covers: PRD — invalid locale falls back to default.
+    #[test]
+    fn match_locale_invalid_locale_uses_default() {
+        let config = Some(HashMap::from([
+            ("default".to_string(), vec!["Q default".to_string()]),
+            ("en".to_string(), vec!["Q en".to_string()]),
+        ]));
+        let result = match_locale(&config, Some("abc123!"));
+        assert_eq!(result, vec!["Q default"]);
+    }
+
+    // Covers: PRD — truncation to max 10 questions.
+    #[test]
+    fn match_locale_truncates_to_max_ten() {
+        let questions: Vec<String> = (1..=15).map(|i| format!("Q{i}")).collect();
+        let config = Some(HashMap::from([("default".to_string(), questions)]));
+        let result = match_locale(&config, None);
+        assert_eq!(result.len(), 10, "should truncate to 10 questions");
+        assert_eq!(result[0], "Q1");
+        assert_eq!(result[9], "Q10");
+    }
+
+    // Covers: PRD — empty config HashMap returns empty vec.
+    #[test]
+    fn match_locale_empty_map_returns_empty() {
+        let config = Some(HashMap::new());
+        let result = match_locale(&config, Some("en"));
+        assert!(result.is_empty(), "empty HashMap should return empty vec");
     }
 }

@@ -82,6 +82,12 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # 知识库文档的主要语言（如 "Chinese"、"English"）。设置后查询改写会将用户查询翻译为该语言。
 # content_language = "Chinese"
 
+# 推荐问题（按语言分组，display 在聊天空状态）。最多展示 10 条。
+# [chat.suggested_questions]
+# default = ["如何快速上手", "系统支持哪些文件格式"]
+# zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
+# en = ["How to get started", "What file formats are supported"]
+
 [otel]
 # OpenTelemetry OTLP tracing 导出配置
 # endpoint 为空时不启用 OTLP tracing（本地开发零开销）

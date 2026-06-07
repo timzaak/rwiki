@@ -41,3 +41,4 @@
 | chat | 查询语言感知改写 | [chat/query-language-aware-rewrite.md](chat/query-language-aware-rewrite.md) | Implemented | 知识库内容语言配置、语言感知查询改写、多轮持续语言改写、向后兼容 |
 | chat | 上下文组装与 Prompt 格式优化 | [chat/chat-context-prompt-assembly.md](chat/chat-context-prompt-assembly.md) | Draft | XML 结构化上下文、来源编号、Preamble 英文化、XML 转义、引用指令增强 |
 | document | OpenAPI 专门分词方案 | [document/openapi-specialized-tokenization.md](document/openapi-specialized-tokenization.md) | Draft | OpenAPI 文档 FTS 格式感知分词、路径层级分词、文档类型传播、向后兼容 |
+| chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Draft | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |

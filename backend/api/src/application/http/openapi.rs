@@ -1,7 +1,7 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
 
-use crate::application::http::handlers::chat::ChatRequest;
+use crate::application::http::handlers::chat::{ChatRequest, SuggestionsResponse};
 use crate::application::http::handlers::document::{
     DocumentListItem, DocumentListResponse, PublishDocumentResponse, UploadDocumentResponse,
 };
@@ -31,6 +31,7 @@ use crate::application::http::handlers::document::{
         crate::application::http::handlers::document::publish_document,
         crate::application::http::handlers::document::unpublish_document,
         crate::application::http::handlers::chat::chat,
+        crate::application::http::handlers::chat::suggestions,
     ),
     components(
         schemas(
@@ -40,6 +41,7 @@ use crate::application::http::handlers::document::{
             DocumentListResponse,
             PublishDocumentResponse,
             ChatRequest,
+            SuggestionsResponse,
         )
     ),
     tags(

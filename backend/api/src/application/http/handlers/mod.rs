@@ -5,6 +5,9 @@ pub mod document;
 mod chat_scenarios;
 
 #[cfg(test)]
+mod chat_suggestions_scenarios;
+
+#[cfg(test)]
 mod document_status_scenarios;
 
 #[cfg(test)]

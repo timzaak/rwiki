@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 
@@ -113,6 +114,11 @@ pub struct ChatConfig {
     /// 省略时不做语言转换。
     #[serde(default)]
     pub content_language: Option<String>,
+    /// 推荐问题（按语言分组）。
+    /// Key 为语言标签（如 "default"、"zh-CN"、"en"），Value 为该语言的推荐问题列表。
+    /// 最多展示 10 条。
+    #[serde(default)]
+    pub suggested_questions: Option<HashMap<String, Vec<String>>>,
 }
 
 fn default_system_prompt() -> String {
@@ -139,6 +145,7 @@ impl Default for ChatConfig {
             compact_threshold: default_compact_threshold(),
             token_budget: default_token_budget(),
             content_language: None,
+            suggested_questions: None,
         }
     }
 }
