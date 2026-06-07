@@ -18,13 +18,14 @@
  * 扩展指南：
  * - 添加全局导航栏 → 在 Outlet 上方添加 <nav> 组件
  * - 添加全局侧边栏 → 在 Outlet 旁添加 sidebar 组件
- * - 添加认证守卫 → 在 beforeLoad 或 loader 中检查认证状态
+ * - 添加认证守卫 → 在 beforeLoad 或 loader 中检查认证
  */
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { createRootRoute, Outlet, useLocation } from '@tanstack/react-router'
 import { FloatingButton } from '@/components/chat/floating-button'
 import { DefaultChatStreamProvider } from '@/components/chat/chat-stream-context'
 import { useChatModalStore } from '@/stores/chat-store'
+import { suggestions } from '@/lib/api-generated/sdk.gen'
 
 const ChatModal = lazy(() =>
   import('@/components/chat/chat-modal').then((module) => ({
@@ -32,10 +33,12 @@ const ChatModal = lazy(() =>
   })),
 )
 
+const suggestionCache = new Map<string, string[]>()
+
 // 创建根路由
 export const Route = createRootRoute({
   // beforeLoad — 在路由加载前执行（适合做认证检查）
-  // loader — 在组件渲染前加载数据
+  // loader — 在路由加载前加载数据
   component: RootComponent,
 })
 
@@ -56,12 +59,32 @@ function RootComponent() {
 
 function LazyChatModalMount() {
   const isModalOpen = useChatModalStore((s) => s.isModalOpen)
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>(() => {
+    const cached = suggestionCache.get(navigator.language)
+    return cached ?? []
+  })
+
+  useEffect(() => {
+    const locale = navigator.language
+    if (suggestionCache.has(locale)) return
+
+    let cancelled = false
+    suggestions({ query: { locale } })
+      .then((result) => {
+        if (!cancelled && result.data) {
+          suggestionCache.set(locale, result.data.questions)
+          setSuggestedQuestions(result.data.questions)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   if (!isModalOpen) return null
 
   return (
     <Suspense fallback={null}>
-      <ChatModal />
+      <ChatModal suggestedQuestions={suggestedQuestions} />
     </Suspense>
   )
 }

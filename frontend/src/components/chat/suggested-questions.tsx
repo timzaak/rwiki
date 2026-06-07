@@ -1,5 +1,3 @@
-import { Button } from '@/components/ui/button'
-
 interface SuggestedQuestionsProps {
   questions: string[]
   onSelect: (question: string) => void
@@ -9,17 +7,16 @@ export function SuggestedQuestions({ questions, onSelect }: SuggestedQuestionsPr
   if (questions.length === 0) return null
 
   return (
-    <div data-testid="suggested-questions" className="flex flex-col gap-2 px-4">
+    <div data-testid="suggested-questions" className="flex flex-wrap gap-1.5 px-4 pt-3">
       {questions.map((question, index) => (
-        <Button
+        <button
           key={index}
-          variant="outline"
-          className="w-full justify-start text-left text-sm h-auto py-2 px-3"
           data-testid="suggested-question-button"
           onClick={() => onSelect(question)}
+          className="rounded-full border border-border/50 bg-card/60 px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
         >
           {question}
-        </Button>
+        </button>
       ))}
     </div>
   )

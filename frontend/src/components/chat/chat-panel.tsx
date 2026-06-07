@@ -68,10 +68,12 @@ export function ChatPanel({
       )}
 
       {welcomeMessage && messages.length === 0 && (
-        <div className="px-4 py-3 text-sm text-muted-foreground">
+        <div className="px-4 pt-3 text-xs text-muted-foreground/70">
           {welcomeMessage}
         </div>
       )}
+
+      <MessageList />
 
       {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
         <SuggestedQuestions
@@ -79,8 +81,6 @@ export function ChatPanel({
           onSelect={sendMessage}
         />
       )}
-
-      <MessageList />
 
       {error && (
         <div
