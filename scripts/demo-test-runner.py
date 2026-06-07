@@ -186,6 +186,10 @@ def run_tests(
     env["DEMO_RUN_ID"] = run_id
     env["DEMO_LOG_COMPACT"] = "true" if compact else "false"
     env["DEBUG"] = env.get("DEBUG", "pw:api")
+    backend_port = os.environ.get("BACKEND_PORT", "18080")
+    frontend_port = os.environ.get("FRONTEND_PORT", "3000")
+    env.setdefault("BASE_URL", f"http://localhost:{backend_port}")
+    env.setdefault("FRONTEND_URL", f"http://localhost:{frontend_port}")
 
     # 构建 Playwright 命令
     npx = require_executable("npx", windows_fallback="npx.cmd")

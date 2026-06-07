@@ -21,6 +21,8 @@ export class ChatPage extends BasePage {
   readonly messageList: Locator
   readonly messageListEmpty: Locator
   readonly errorBanner: Locator
+  readonly suggestedQuestionsContainer: Locator
+  readonly suggestedQuestionButtons: Locator
 
   constructor(page: Page, logger?: UnifiedLogger) {
     super(page, logger)
@@ -30,6 +32,8 @@ export class ChatPage extends BasePage {
     this.messageList = page.locator(SELECTORS.chat.messageList)
     this.messageListEmpty = page.locator(SELECTORS.chat.messageListEmpty)
     this.errorBanner = page.locator(SELECTORS.chat.errorBanner)
+    this.suggestedQuestionsContainer = page.locator(SELECTORS.chat.suggestedQuestions)
+    this.suggestedQuestionButtons = page.locator(SELECTORS.chat.suggestedQuestionButton)
   }
 
   /**
@@ -97,6 +101,56 @@ export class ChatPage extends BasePage {
       contents.push(text ?? '')
     }
     return contents
+  }
+
+  // --- Suggested questions (pre-question suggestions) ---
+
+  /**
+   * Get all visible suggested question button texts.
+   * Returns empty array if container is not visible.
+   */
+  async getSuggestedQuestions(): Promise<string[]> {
+    const visible = await this.suggestedQuestionsContainer.isVisible().catch(() => false)
+    if (!visible) return []
+
+    const count = await this.suggestedQuestionButtons.count()
+    const texts: string[] = []
+    for (let i = 0; i < count; i++) {
+      const text = await this.suggestedQuestionButtons.nth(i).textContent()
+      texts.push(text ?? '')
+    }
+    return texts
+  }
+
+  /**
+   * Get a locator for the suggested question button containing the given text.
+   */
+  getSuggestedQuestionButtonByText(text: string): Locator {
+    return this.suggestedQuestionButtons.filter({ hasText: text })
+  }
+
+  /**
+   * Click a suggested question button matching the text.
+   * After click, the button disappears because messages.length > 0.
+   */
+  async clickSuggestedQuestion(text: string): Promise<void> {
+    const button = this.getSuggestedQuestionButtonByText(text)
+    await this.smartClick(button)
+  }
+
+  /**
+   * Wait for the suggested-questions container to be visible.
+   */
+  async waitForSuggestedQuestions(timeout: number = 10000): Promise<void> {
+    await expect(this.suggestedQuestionsContainer).toBeVisible({ timeout })
+  }
+
+  /**
+   * Wait for the suggested-questions container to be absent/hidden.
+   * The component returns null when empty, so the element detaches from DOM.
+   */
+  async waitForNoSuggestions(timeout: number = 10000): Promise<void> {
+    await expect(this.suggestedQuestionsContainer).toBeHidden({ timeout })
   }
 
 }

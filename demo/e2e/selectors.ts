@@ -27,6 +27,8 @@ export const SELECTORS = {
     modalHeader: '[data-testid="chat-modal-header"]',
     modalClose: '[data-testid="chat-modal-close"]',
     floatingButton: '[data-testid="floating-chat-button"]',
+    suggestedQuestions: '[data-testid="suggested-questions"]',
+    suggestedQuestionButton: '[data-testid="suggested-question-button"]',
   },
 
   /** 通用组件选择器 */
