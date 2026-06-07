@@ -137,6 +137,7 @@ Authorization: Bearer your-secret-token
 | `compact_threshold` | number | No | `8` | Trigger compaction check when message count exceeds this |
 | `token_budget` | number | No | `8000` | Trigger compaction when estimated token count exceeds this |
 | `content_language` | string | No | — | Primary language of knowledge base documents (e.g. `"English"`, `"Chinese"`). When set, the query rewrite prompt instructs the LLM to translate queries into this language for cross-language retrieval. Omit to disable language-aware rewriting. |
+| `suggested_questions` | map | No | — | Pre-chat suggestions grouped by locale key. See [Suggested questions](#suggested-questions) below. |
 
 ### Sliding window & compaction
 
@@ -148,6 +149,26 @@ Context management works in two layers:
 These two mechanisms work together: the sliding window controls per-request context length, while compaction prevents unbounded history growth.
 
 RAG retrieval results are automatically appended after the system prompt. You don't need to handle context placeholders in `system_prompt` manually.
+
+### Suggested questions
+
+`suggested_questions` lets you configure pre-chat prompts shown in the empty chat state. Questions are grouped by locale key, and the frontend picks the right set based on the user's language.
+
+```toml
+[chat.suggested_questions]
+default = ["How to get started", "What file formats are supported"]
+zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
+en = ["How to get started", "What file formats are supported"]
+```
+
+Matching logic (applied by both backend API and frontend):
+
+1. Exact match on the locale key (case-insensitive). `zh-CN` matches `zh-CN`.
+2. Longest prefix match. Locale `zh-TW` falls back to key `zh` if `zh-TW` isn't configured but `zh` is.
+3. `default` key as final fallback.
+4. Empty array if nothing matches.
+
+The backend exposes `GET /api/chat/suggestions?locale=en` and returns at most 10 questions. The frontend caches results by locale.
 
 Config example:
 
@@ -197,6 +218,7 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 | `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
 | `position` | string | No | `"right"` | Button position: `left` or `right` |
 | `welcomeMessage` | string | No | — | Welcome message |
+| `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). |
 
 ### HTML integration
 
@@ -209,6 +231,10 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
     primaryColor: '#6366f1',
     position: 'right',
     welcomeMessage: 'How can I help?',
+    suggestedQuestions: {
+      default: ['How to get started', 'What file formats are supported'],
+      zh: ['如何快速上手', '系统支持哪些文件格式'],
+    },
   });
 </script>
 ```

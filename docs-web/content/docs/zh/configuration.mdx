@@ -137,6 +137,7 @@ Authorization: Bearer your-secret-token
 | `compact_threshold` | number | 否 | `8` | 消息数超过此阈值时触发压缩检查 |
 | `token_budget` | number | 否 | `8000` | 估算 token 数超过此阈值时触发压缩 |
 | `content_language` | string | 否 | — | 知识库文档的主要语言（如 `"English"`、`"中文"`）。设置后，查询改写会将用户查询翻译为该语言，以提升跨语言检索命中率。省略时不做语言转换 |
+| `suggested_questions` | map | 否 | — | 推荐问题，按语言标签分组。详见下方[推荐问题](#推荐问题)小节。 |
 
 ### 滑动窗口与压缩机制
 
@@ -148,6 +149,26 @@ Authorization: Bearer your-secret-token
 两个机制协同工作：滑动窗口控制单次请求的上下文长度，压缩机制防止历史无限增长。
 
 RAG 检索结果由系统自动拼接到系统提示词之后，`system_prompt` 中不需要手动处理上下文占位符。
+
+### 推荐问题
+
+`suggested_questions` 配置聊天界面空状态下展示的推荐提问。按语言标签分组，前端根据用户语言自动匹配。
+
+```toml
+[chat.suggested_questions]
+default = ["如何快速上手", "系统支持哪些文件格式"]
+zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
+en = ["How to get started", "What file formats are supported"]
+```
+
+匹配逻辑（后端 API 和前端一致）：
+
+1. 精确匹配 locale key（不区分大小写）。`zh-CN` 匹配 `zh-CN`。
+2. 最长前缀匹配。如果没配 `zh-TW` 但配了 `zh`，`zh-TW` 会命中 `zh`。
+3. 都没匹配到时回退到 `default`。
+4. 全都没命中则返回空数组。
+
+后端通过 `GET /api/chat/suggestions?locale=zh-CN` 返回匹配结果，最多 10 条。前端会按 locale 缓存。
 
 配置示例：
 
@@ -197,6 +218,7 @@ service_name = "rwiki-backend"
 | `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
 | `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
 | `welcomeMessage` | string | 否 | — | 欢迎语 |
+| `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。 |
 
 ### HTML 集成
 
@@ -209,6 +231,10 @@ service_name = "rwiki-backend"
     primaryColor: '#6366f1',
     position: 'right',
     welcomeMessage: '有什么可以帮你？',
+    suggestedQuestions: {
+      default: ['如何快速上手', '系统支持哪些文件格式'],
+      en: ['How to get started', 'What file formats are supported'],
+    },
   });
 </script>
 ```

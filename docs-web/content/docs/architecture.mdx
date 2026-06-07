@@ -80,3 +80,7 @@ Users chat via `POST /api/chat` (no auth required):
 5. **Window expansion**: Top results are expanded by fetching adjacent chunks (same `page_id`, nearby `sub_index`) to provide complete context to the LLM.
 6. **Context assembly**: Search results are formatted as structured XML and wrapped in a `<documents>` block. Each result becomes a `<document index="N">` element with `<title>`, `<section>`, `<link>`, `<locale>`, and `<content>` tags. This gives the LLM a clear, machine-parseable context that supports indexed citations.
 7. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`. The default system prompt instructs the LLM to cite sources using `[Source N]` format, where N maps to the document index in the XML context.
+
+### Suggested questions
+
+`GET /api/chat/suggestions?locale=en` returns a list of pre-configured questions for the chat empty state. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. This way the frontend doesn't need to bundle locale logic for the main chat view (though the widget supports client-side locale matching via its `suggestedQuestions` config).
