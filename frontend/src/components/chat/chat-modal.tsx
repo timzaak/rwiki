@@ -10,9 +10,10 @@ interface ChatModalProps {
   title?: string
   position?: 'left' | 'right'
   welcomeMessage?: string
+  suggestedQuestions?: string[]
 }
 
-export function ChatModal({ title, position = 'right', welcomeMessage }: ChatModalProps) {
+export function ChatModal({ title, position = 'right', welcomeMessage, suggestedQuestions }: ChatModalProps) {
   const isModalOpen = useChatModalStore((s) => s.isModalOpen)
   const closeModal = useChatModalStore((s) => s.closeModal)
 
@@ -143,7 +144,7 @@ export function ChatModal({ title, position = 'right', welcomeMessage }: ChatMod
         </div>
 
         <div className="min-h-0 flex-1">
-          <ChatPanel showHeader={false} welcomeMessage={welcomeMessage} />
+          <ChatPanel showHeader={false} welcomeMessage={welcomeMessage} suggestedQuestions={suggestedQuestions} />
         </div>
       </div>
     </>

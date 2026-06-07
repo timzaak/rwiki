@@ -4,6 +4,7 @@ export interface WidgetConfig {
   title?: string;
   position?: 'left' | 'right';
   welcomeMessage?: string;
+  suggestedQuestions?: string[] | Record<string, string[]>;
 }
 
 export const WIDGET_DEFAULTS = {
@@ -12,8 +13,9 @@ export const WIDGET_DEFAULTS = {
   position: 'right' as const,
 };
 
-export interface ValidatedWidgetConfig extends Required<Omit<WidgetConfig, 'welcomeMessage'>> {
+export interface ValidatedWidgetConfig extends Required<Omit<WidgetConfig, 'welcomeMessage' | 'suggestedQuestions'>> {
   welcomeMessage?: string;
+  suggestedQuestions?: string[] | Record<string, string[]>;
 }
 
 export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWidgetConfig | null {
@@ -37,6 +39,16 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     return null;
   }
 
+  if (config.suggestedQuestions != null) {
+    const sq = config.suggestedQuestions;
+    const isArray = Array.isArray(sq);
+    const isRecord = !isArray && typeof sq === 'object' && Object.values(sq).every((v) => Array.isArray(v));
+    if (!isArray && !isRecord) {
+      console.error('[RWikiChat] suggestedQuestions must be a string[] or Record<string, string[]>');
+      return null;
+    }
+  }
+
   const apiUrl = config.apiUrl.replace(/\/+$/, '');
 
   return {
@@ -45,5 +57,6 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     title: config.title ?? WIDGET_DEFAULTS.title,
     position: config.position ?? WIDGET_DEFAULTS.position,
     ...(config.welcomeMessage && { welcomeMessage: config.welcomeMessage }),
+    ...(config.suggestedQuestions && { suggestedQuestions: config.suggestedQuestions }),
   };
 }

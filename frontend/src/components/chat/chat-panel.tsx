@@ -6,12 +6,14 @@ import { useChatStreamContext } from './chat-stream-context'
 import { Button } from '@/components/ui/button'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
+import { SuggestedQuestions } from './suggested-questions'
 
 interface ChatPanelProps {
   className?: string
   showHeader?: boolean
   headerTitle?: string
   welcomeMessage?: string
+  suggestedQuestions?: string[]
 }
 
 export function ChatPanel({
@@ -19,6 +21,7 @@ export function ChatPanel({
   showHeader = false,
   headerTitle = 'Chat Assistant',
   welcomeMessage,
+  suggestedQuestions,
 }: ChatPanelProps) {
   const messages = useChatStore((s) => s.messages)
   const sessionId = useChatStore((s) => s.sessionId)
@@ -68,6 +71,13 @@ export function ChatPanel({
         <div className="px-4 py-3 text-sm text-muted-foreground">
           {welcomeMessage}
         </div>
+      )}
+
+      {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
+        <SuggestedQuestions
+          questions={suggestedQuestions}
+          onSelect={sendMessage}
+        />
       )}
 
       <MessageList />
