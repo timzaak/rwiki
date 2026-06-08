@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod document;
+pub mod feedback;
 
 #[cfg(test)]
 mod chat_scenarios;
@@ -15,6 +16,9 @@ mod markdown_upload_scenarios;
 
 #[cfg(test)]
 mod openapi_upload_scenarios;
+
+#[cfg(test)]
+mod feedback_scenarios;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use rwiki_core::domain::health::HealthStatus;

@@ -50,5 +50,19 @@ pub fn migrations(ndims: usize) -> Migrations<'static> {
                 tokenize=\"unicode61\"\
             );",
         ),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS chat_feedback (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                session_id TEXT NOT NULL,\
+                message_id TEXT NOT NULL,\
+                feedback TEXT NOT NULL CHECK(feedback IN ('like', 'dislike')),\
+                user_message TEXT NOT NULL,\
+                assistant_message TEXT NOT NULL,\
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+                UNIQUE(session_id, message_id)\
+            );\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_created_at ON chat_feedback(created_at DESC);\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_feedback ON chat_feedback(feedback);",
+        ),
     ])
 }

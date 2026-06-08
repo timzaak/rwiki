@@ -5,6 +5,9 @@ use crate::application::http::handlers::chat::{ChatRequest, SuggestionsResponse}
 use crate::application::http::handlers::document::{
     DocumentListItem, DocumentListResponse, PublishDocumentResponse, UploadDocumentResponse,
 };
+use crate::application::http::handlers::feedback::{
+    FeedbackItem, FeedbackListResponse, FeedbackQueryParams, FeedbackRequest,
+};
 
 /// OpenAPI 文档定义
 ///
@@ -32,6 +35,8 @@ use crate::application::http::handlers::document::{
         crate::application::http::handlers::document::unpublish_document,
         crate::application::http::handlers::chat::chat,
         crate::application::http::handlers::chat::suggestions,
+        crate::application::http::handlers::feedback::submit_feedback,
+        crate::application::http::handlers::feedback::list_feedback,
     ),
     components(
         schemas(
@@ -42,6 +47,10 @@ use crate::application::http::handlers::document::{
             PublishDocumentResponse,
             ChatRequest,
             SuggestionsResponse,
+            FeedbackRequest,
+            FeedbackItem,
+            FeedbackListResponse,
+            FeedbackQueryParams,
         )
     ),
     tags(

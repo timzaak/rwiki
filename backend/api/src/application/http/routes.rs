@@ -46,6 +46,7 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             "/api/documents/{documentId}/unpublish",
             patch(handlers::document::unpublish_document),
         )
+        .route("/api/chat/feedback", get(handlers::feedback::list_feedback))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::application::http::middleware::auth_middleware,
@@ -57,6 +58,10 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
         .route("/health", get(handlers::health_check))
         .route("/api/chat", post(handlers::chat::chat))
         .route("/api/chat/suggestions", get(handlers::chat::suggestions))
+        .route(
+            "/api/chat/feedback",
+            post(handlers::feedback::submit_feedback),
+        )
         .merge(doc_router)
         .layer(cors)
         .with_state(state.clone());
