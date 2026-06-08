@@ -84,3 +84,14 @@ Users chat via `POST /api/chat` (no auth required):
 ### Suggested questions
 
 `GET /api/chat/suggestions?locale=en` returns a list of pre-configured questions for the chat empty state. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. This way the frontend doesn't need to bundle locale logic for the main chat view (though the widget supports client-side locale matching via its `suggestedQuestions` config).
+
+### Message feedback
+
+Users can submit feedback (like/dislike) on each assistant message after streaming completes. This helps track low-quality answers and improve knowledge base coverage.
+
+- `POST /api/chat/feedback` — Submit or cancel feedback (no auth required)
+- `GET /api/chat/feedback` — List feedback records (requires Bearer Token, supports `feedback`, `limit`, `offset` query params)
+
+Submitting feedback is an UPSERT: if the user already gave feedback on a message, the record is updated. Sending `feedback: null` cancels the previous feedback (idempotent delete).
+
+The frontend renders thumbs-up/thumbs-down buttons below each assistant message once streaming finishes. Clicking the same button again removes the feedback. The UI uses optimistic updates — the button state changes immediately, rolling back if the API call fails.

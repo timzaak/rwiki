@@ -288,6 +288,23 @@ data: {}
 
 You can also ask questions directly in the frontend chat page — it's more intuitive.
 
+### Give feedback on an answer
+
+After streaming completes, you can submit like/dislike feedback on the answer:
+
+```bash
+curl -X POST http://localhost:8080/api/chat/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","userMessage":"What file formats?","assistantMessage":"RWiki supports..."}'
+```
+
+Returns `204 No Content` on success. To cancel feedback, send `feedback: null`. To view collected feedback (requires auth):
+
+```bash
+curl http://localhost:8080/api/chat/feedback \
+  -H "Authorization: Bearer dev-test"
+```
+
 ## Embed in an existing site (Widget)
 
 RWiki ships a standalone chat widget as a single JS file. There are two integration paths: drop-in HTML script tag, or a React component (used by docs-web).

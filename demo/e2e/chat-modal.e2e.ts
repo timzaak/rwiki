@@ -6,7 +6,6 @@
  *   close -> reopen -> verify conversation preserved
  *   - Scenario 1: Opening and closing the chat modal
  *   - Scenario 2: Conversation preserved after close/reopen
- *   - Additional: Floating button hidden on /chat route
  *
  * Dependencies (from DE-D01):
  * - demo/e2e/fixtures/chat.fixtures.ts
@@ -16,7 +15,6 @@
 
 import { test, expect } from './fixtures/chat.fixtures'
 import { HomePage } from './pages/home-page'
-import { ChatPage } from './pages/chat-page'
 import { SELECTORS } from './selectors'
 
 // ---------------------------------------------------------------------------
@@ -105,15 +103,5 @@ test.describe('Chat Modal', () => {
     // Assert: the user message content is still "Hello test message"
     const preservedText = await preservedUserMessage.first().textContent()
     expect(preservedText).toContain('Hello test message')
-  })
-
-  // Additional test: Floating button is hidden on /chat route
-  test('US-CORE-006 - floating button is hidden on /chat route', async ({ page }) => {
-    const chatPage = new ChatPage(page)
-    await chatPage.navigate()
-    await chatPage.waitForReady()
-
-    // Assert: floating-chat-button is NOT visible on the dedicated chat page
-    await expect(page.locator(SELECTORS.chat.floatingButton)).toBeHidden()
   })
 })

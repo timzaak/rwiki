@@ -1,10 +1,10 @@
 /**
- * Chat Page Object — /chat route
+ * Chat Page Object — floating chat modal
  *
- * Business methods for the dedicated chat page covering:
+ * Business methods for the chat modal (opened via floating button) covering:
  * - US-CORE-002: multi-turn conversation
  * - US-CORE-003: streaming response
- * - US-CORE-005: dedicated chat page layout
+ * - US-CORE-005: chat modal layout
  */
 
 import { Page, Locator, expect } from '@playwright/test'
@@ -14,7 +14,8 @@ import { FRONTEND_URL } from '../fixtures/chat.fixtures'
 import type { UnifiedLogger } from 'playwright-unified-logger'
 
 export class ChatPage extends BasePage {
-  // Chat locators
+  // Chat modal and scoped locators
+  readonly modal: Locator
   readonly panel: Locator
   readonly input: Locator
   readonly sendButton: Locator
@@ -26,22 +27,26 @@ export class ChatPage extends BasePage {
 
   constructor(page: Page, logger?: UnifiedLogger) {
     super(page, logger)
-    this.panel = page.locator(SELECTORS.chat.panel)
-    this.input = page.locator(SELECTORS.chat.input)
-    this.sendButton = page.locator(SELECTORS.chat.sendButton)
-    this.messageList = page.locator(SELECTORS.chat.messageList)
-    this.messageListEmpty = page.locator(SELECTORS.chat.messageListEmpty)
-    this.errorBanner = page.locator(SELECTORS.chat.errorBanner)
-    this.suggestedQuestionsContainer = page.locator(SELECTORS.chat.suggestedQuestions)
-    this.suggestedQuestionButtons = page.locator(SELECTORS.chat.suggestedQuestionButton)
+    this.modal = page.locator(SELECTORS.chat.modal)
+    this.panel = this.modal.locator(SELECTORS.chat.panel)
+    this.input = this.modal.locator(SELECTORS.chat.input)
+    this.sendButton = this.modal.locator(SELECTORS.chat.sendButton)
+    this.messageList = this.modal.locator(SELECTORS.chat.messageList)
+    this.messageListEmpty = this.modal.locator(SELECTORS.chat.messageListEmpty)
+    this.errorBanner = this.modal.locator(SELECTORS.chat.errorBanner)
+    this.suggestedQuestionsContainer = this.modal.locator(SELECTORS.chat.suggestedQuestions)
+    this.suggestedQuestionButtons = this.modal.locator(SELECTORS.chat.suggestedQuestionButton)
   }
 
   /**
-   * Navigate to the /chat page using FRONTEND_URL (Vite dev server).
-   * Do NOT use BasePage.goto() — it prefixes with BASE_URL (port 8080).
+   * Navigate to the home page and open the chat modal via floating button.
    */
   async navigate(): Promise<void> {
-    await this.page.goto(`${FRONTEND_URL}/chat`)
+    await this.page.goto(`${FRONTEND_URL}/`)
+    const floatingBtn = this.page.locator(SELECTORS.chat.floatingButton)
+    await expect(floatingBtn).toBeVisible()
+    await floatingBtn.click()
+    await expect(this.modal).toBeVisible()
   }
 
   /**
@@ -67,11 +72,11 @@ export class ChatPage extends BasePage {
    */
   async waitForAssistantResponse(timeout: number = 30000): Promise<void> {
     // Wait for at least one assistant message
-    const assistantLocator = this.page.locator(SELECTORS.chat.messageItem('assistant'))
+    const assistantLocator = this.modal.locator(SELECTORS.chat.messageItem('assistant'))
     await expect(assistantLocator.last()).toBeVisible({ timeout })
 
     // Wait for streaming indicator to disappear
-    const streamingIndicator = this.page.locator(SELECTORS.chat.messageStreaming)
+    const streamingIndicator = this.modal.locator(SELECTORS.chat.messageStreaming)
     await expect(streamingIndicator).toHaveCount(0, { timeout })
   }
 
@@ -79,7 +84,7 @@ export class ChatPage extends BasePage {
    * Get all assistant message text contents.
    */
   async getAssistantMessages(): Promise<string[]> {
-    const messages = this.page.locator(SELECTORS.chat.messageItem('assistant'))
+    const messages = this.modal.locator(SELECTORS.chat.messageItem('assistant'))
     const count = await messages.count()
     const contents: string[] = []
     for (let i = 0; i < count; i++) {
@@ -93,7 +98,7 @@ export class ChatPage extends BasePage {
    * Get all user message text contents.
    */
   async getUserMessages(): Promise<string[]> {
-    const messages = this.page.locator(SELECTORS.chat.messageItem('user'))
+    const messages = this.modal.locator(SELECTORS.chat.messageItem('user'))
     const count = await messages.count()
     const contents: string[] = []
     for (let i = 0; i < count; i++) {

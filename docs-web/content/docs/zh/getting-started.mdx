@@ -288,6 +288,23 @@ data: {}
 
 也可以在前端界面的聊天页面直接提问，体验更直观。
 
+### 对回答进行反馈
+
+流式回答完成后，可以对回答提交赞/踩反馈：
+
+```bash
+curl -X POST http://localhost:8080/api/chat/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","userMessage":"支持哪些格式？","assistantMessage":"RWiki 支持..."}'
+```
+
+成功返回 `204 No Content`。发送 `feedback: null` 可取消反馈。查看已收集的反馈（需要鉴权）：
+
+```bash
+curl http://localhost:8080/api/chat/feedback \
+  -H "Authorization: Bearer dev-test"
+```
+
 ## 嵌入已有网站（Widget）
 
 RWiki 提供单文件聊天 widget JS。集成方式有两种：HTML 脚本引入，或 React 组件（docs-web 的方式）。

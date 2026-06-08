@@ -2,7 +2,7 @@
  * Chat RAG Streaming E2E Tests
  *
  * Covers:
- * - US-CORE-005: Navigate to /chat -> verify chat interface displayed
+ * - US-CORE-005: Open chat modal via floating button -> verify chat interface displayed
  * - US-CORE-003: Ask question -> verify streaming (text appears incrementally)
  * - US-CORE-002: Ask question based on document content -> verify answer
  *   - Scenario 1: question about document content returns relevant answer
@@ -48,10 +48,10 @@ async function uploadDocumentViaApi(page: import('@playwright/test').Page): Prom
 }
 
 // ---------------------------------------------------------------------------
-// US-CORE-005 - Scenario 1: Enter chat page and verify full interface displayed
+// US-CORE-005 - Scenario 1: Open chat modal and verify full interface displayed
 // ---------------------------------------------------------------------------
 test.describe('Chat Interface', () => {
-  test('US-CORE-005 scenario 1 - navigate to /chat and verify chat interface displayed', async ({
+  test('US-CORE-005 scenario 1 - open chat modal and verify chat interface displayed', async ({
     page,
   }) => {
     const chatPage = new ChatPage(page)
@@ -69,9 +69,6 @@ test.describe('Chat Interface', () => {
 
     // Assert: message-list-empty is visible (no messages yet)
     await expect(page.locator(SELECTORS.chat.messageListEmpty)).toBeVisible()
-
-    // Assert: page URL is /chat
-    expect(page.url()).toContain('/chat')
   })
 })
 

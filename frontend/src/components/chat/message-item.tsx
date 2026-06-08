@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -14,6 +15,9 @@ import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 import { BotIcon, UserIcon } from 'lucide-react'
 
+import { FeedbackButtons } from './feedback-buttons'
+import { useFeedback } from '@/hooks/use-feedback'
+import { useChatStore } from '@/stores/chat-store'
 import type { ChatMessage } from '@/stores/chat-store'
 import { cn } from '@/lib/utils'
 
@@ -75,6 +79,28 @@ const markdownComponents: Components = {
 export function MessageItem({ message }: MessageItemProps) {
   const isUser = message.role === 'user'
 
+  const sessionId = useChatStore((s) => s.sessionId)
+  const userMessage = useChatStore(
+    useCallback(
+      (s) => {
+        if (isUser) return ''
+        const idx = s.messages.findIndex((m) => m.id === message.id)
+        for (let i = idx - 1; i >= 0; i--) {
+          if (s.messages[i].role === 'user') return s.messages[i].content
+        }
+        return ''
+      },
+      [message.id, isUser],
+    ),
+  )
+
+  const { feedback, submitFeedback, isSubmitting } = useFeedback({
+    sessionId,
+    messageId: message.id,
+    userMessage,
+    assistantMessage: message.content,
+  })
+
   return (
     <div
       data-testid={`message-item-${message.role}`}
@@ -130,6 +156,14 @@ export function MessageItem({ message }: MessageItemProps) {
           <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
             {message.error}
           </span>
+        )}
+
+        {!isUser && !message.isStreaming && sessionId != null && (
+          <FeedbackButtons
+            feedback={feedback}
+            onFeedback={submitFeedback}
+            isSubmitting={isSubmitting}
+          />
         )}
       </div>
     </div>

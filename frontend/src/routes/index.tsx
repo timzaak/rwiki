@@ -1,10 +1,13 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
+import { useChatModalStore } from '@/stores/chat-store'
 
 export const Route = createFileRoute('/')({
   component: HomeRoute,
 })
 
 function HomeRoute() {
+  const openModal = useChatModalStore((s) => s.openModal)
+
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -20,8 +23,8 @@ function HomeRoute() {
           </div>
           <span className="font-serif text-lg font-semibold tracking-tight">Rwiki</span>
         </div>
-        <Link
-          to="/chat"
+        <button
+          onClick={openModal}
           className="group flex items-center gap-2 rounded-full border border-border bg-card/80 px-5 py-2 text-sm font-medium backdrop-blur-sm transition-all hover:border-primary/30 hover:bg-card hover:shadow-sm"
         >
           <span>Open Chat</span>
@@ -34,7 +37,7 @@ function HomeRoute() {
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
           </svg>
-        </Link>
+        </button>
       </nav>
 
       <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 pb-20 pt-8 md:px-12">
@@ -58,8 +61,8 @@ function HomeRoute() {
           </p>
 
           <div className="animate-slide-up mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center [animation-delay:200ms]">
-            <Link
-              to="/chat"
+            <button
+              onClick={openModal}
               className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full bg-primary px-7 py-3 text-sm font-semibold text-primary-foreground shadow-lg transition-all hover:shadow-xl hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="relative z-10">Start a Conversation</span>
@@ -73,7 +76,7 @@ function HomeRoute() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
               </svg>
               <div className="absolute inset-0 bg-gradient-to-r from-primary/0 via-white/10 to-primary/0 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700" />
-            </Link>
+            </button>
           </div>
 
           <div className="animate-slide-up mt-16 grid grid-cols-1 gap-6 sm:grid-cols-3 [animation-delay:300ms]">

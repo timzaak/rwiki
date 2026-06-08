@@ -84,3 +84,14 @@ flowchart LR
 ### 推荐问题
 
 `GET /api/chat/suggestions?locale=zh-CN` 返回预配置的推荐问题列表，用于聊天空状态展示。locale 匹配在服务端完成：精确匹配、最长前缀匹配、然后回退到 `default`。这样主聊天界面不需要内置 locale 逻辑（但 widget 支持通过 `suggestedQuestions` 配置在客户端做 locale 匹配）。
+
+### 消息反馈
+
+用户可以对每条 AI 回答提交赞/踩反馈，用于追踪低质量回答，帮助改进知识库覆盖和检索质量。
+
+- `POST /api/chat/feedback` — 提交或取消反馈（无需鉴权）
+- `GET /api/chat/feedback` — 查询反馈列表（需要 Bearer Token，支持 `feedback`、`limit`、`offset` 查询参数）
+
+提交反馈使用 UPSERT：如果用户已经对某条消息提交过反馈，会更新已有记录。发送 `feedback: null` 会取消之前的反馈（幂等删除）。
+
+前端在流式回答完成后，在消息气泡底部渲染赞/踩按钮。再次点击同一按钮会取消反馈。UI 使用乐观更新——按钮状态立即变化，API 调用失败时自动回滚。

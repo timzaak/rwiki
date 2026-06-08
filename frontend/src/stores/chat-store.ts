@@ -18,6 +18,7 @@ export interface ChatMessage {
   timestamp: number
   isStreaming?: boolean
   error?: string
+  feedback?: 'like' | 'dislike'
 }
 
 interface ChatState {
@@ -36,6 +37,7 @@ interface ChatState {
   setLoading: (loading: boolean) => void
   clearMessages: () => void
   removeLastFailedPair: () => void
+  updateMessageFeedback: (messageId: string, feedback: 'like' | 'dislike' | undefined) => void
 }
 
 type PersistedChatState = Pick<ChatState, 'messages' | 'sessionId' | 'updatedAt'>
@@ -167,6 +169,15 @@ export const useChatStore = create<ChatState>()(
               break
             }
           }
+          return { messages, updatedAt: Date.now() }
+        }),
+
+      updateMessageFeedback: (messageId, feedback) =>
+        set((state) => {
+          if (!state.messages.some((m) => m.id === messageId)) return state
+          const messages = state.messages.map((msg) =>
+            msg.id === messageId ? { ...msg, feedback } : msg,
+          )
           return { messages, updatedAt: Date.now() }
         }),
     }),
