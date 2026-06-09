@@ -4,6 +4,7 @@ pub mod markdown_parser;
 pub mod migration;
 pub mod openapi_parser;
 pub mod openapi_tokenizer;
+pub mod reranker;
 pub mod text_chunker;
 pub mod vector_store;
 pub mod xlsx_parser;
@@ -12,6 +13,8 @@ pub mod xlsx_parser;
 mod markdown_parser_scenarios;
 #[cfg(test)]
 mod openapi_parser_scenarios;
+#[cfg(test)]
+mod reranker_scenarios;
 #[cfg(test)]
 mod text_chunker_scenarios;
 #[cfg(test)]

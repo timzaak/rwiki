@@ -20,6 +20,9 @@ mod openapi_upload_scenarios;
 #[cfg(test)]
 mod feedback_scenarios;
 
+#[cfg(test)]
+mod rerank_scenarios;
+
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use rwiki_core::domain::health::HealthStatus;
 use std::sync::Arc;

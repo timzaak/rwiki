@@ -287,6 +287,75 @@ async fn main() -> Result<()> {
             rwiki_core::config::ChatConfig::DEFAULT_SYSTEM_PROMPT.to_string();
     }
 
+    // 初始化 Reranker（默认关闭）
+    let reranker = if config.rerank.enable {
+        let api_key = config
+            .rerank
+            .api_key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .or_else(|| {
+                let key = &config.llm.api_key;
+                if key.is_empty() {
+                    None
+                } else {
+                    Some(key.as_str())
+                }
+            });
+
+        match api_key {
+            Some(key) => {
+                let model = config
+                    .rerank
+                    .model
+                    .as_deref()
+                    .unwrap_or(match &config.rerank.provider {
+                        rwiki_core::config::RerankProviderType::BigModel => "rerank-pro",
+                        _ => "cohere/rerank-v4-fast",
+                    })
+                    .to_string();
+                let timeout = std::time::Duration::from_secs(config.rerank.timeout_secs);
+
+                match &config.rerank.provider {
+                    rwiki_core::config::RerankProviderType::BigModel => {
+                        tracing::info!("Rerank enabled: provider=BigModel, model={}", model);
+                        Some(
+                            rwiki_core::infrastructure::reranker::RerankerProvider::BigModel(
+                                rwiki_core::infrastructure::reranker::BigModelReranker::new(
+                                    key.to_string(),
+                                    model,
+                                    timeout,
+                                ),
+                            ),
+                        )
+                    }
+                    _ => {
+                        tracing::info!("Rerank enabled: provider=OpenRouter, model={}", model);
+                        Some(
+                            rwiki_core::infrastructure::reranker::RerankerProvider::OpenRouter(
+                                rwiki_core::infrastructure::reranker::OpenRouterReranker::new(
+                                    key.to_string(),
+                                    model,
+                                    timeout,
+                                ),
+                            ),
+                        )
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "Rerank enabled but no API key configured. \
+                     Set [rerank].api_key or [llm].api_key, or env RERANK_API_KEY. \
+                     Rerank disabled."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 构建应用状态
     let app_state = Arc::new(api::application::http::AppState {
         sqlite: sqlite.clone(),
@@ -298,6 +367,8 @@ async fn main() -> Result<()> {
         api_token: config.api.token.clone(),
         chat_config,
         static_dir: config.server.static_dir.clone(),
+        reranker,
+        rerank_config: config.rerank,
     });
 
     // 创建路由并启动服务器

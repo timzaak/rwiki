@@ -42,3 +42,4 @@ utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 tower = { workspace = true }
 rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
+mockito = "1"

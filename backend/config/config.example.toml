@@ -98,3 +98,27 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # license_key = ""
 # 服务名称，默认 "rwiki-backend"
 # service_name = "rwiki-backend"
+
+[rerank]
+# Rerank 精排配置（默认关闭）
+# 启用后，在 RRF 融合 + 窗口扩展后对候选结果进行语义精排，提升检索精度
+# Rerank 失败时自动降级到 RRF 融合结果，用户无感知
+#
+# enable = false
+# provider = "open_router"         # "open_router" | "big_model"
+#
+# --- OpenRouter Rerank（免费，推荐）---
+# enable = true
+# provider = "open_router"
+# model = "cohere/rerank-v4-fast"
+# top_n = 20
+# timeout_secs = 3
+# api_key = ""                      # 不配置时复用 [llm].api_key
+#
+# --- 智谱 BigModel Rerank（国内低延迟）---
+# enable = true
+# provider = "big_model"
+# model = "rerank-pro"
+# top_n = 20
+# timeout_secs = 3
+# api_key = "your-bigmodel-api-key"  # BigModel 必须配置独立 key

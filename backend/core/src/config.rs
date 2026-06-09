@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub chat: ChatConfig,
     #[serde(default)]
     pub otel: OtelConfig,
+    #[serde(default)]
+    pub rerank: RerankConfig,
 }
 
 impl AppConfig {
@@ -34,6 +36,9 @@ impl AppConfig {
         }
         if let Ok(key) = env::var("OTEL_LICENSE_KEY") {
             config.otel.license_key = key;
+        }
+        if let Ok(key) = env::var("RERANK_API_KEY") {
+            config.rerank.api_key = Some(key);
         }
         Ok(config)
     }
@@ -195,6 +200,59 @@ impl Default for OtelConfig {
             endpoint: String::new(),
             license_key: String::new(),
             service_name: default_service_name(),
+        }
+    }
+}
+
+/// Rerank provider 类型
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RerankProviderType {
+    #[default]
+    OpenRouter,
+    BigModel,
+}
+
+fn default_top_n() -> usize {
+    20
+}
+
+fn default_timeout_secs() -> u64 {
+    3
+}
+
+/// Rerank 精排配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankConfig {
+    /// 是否启用 rerank，默认 false
+    #[serde(default)]
+    pub enable: bool,
+    /// Rerank provider 类型
+    #[serde(default)]
+    pub provider: RerankProviderType,
+    /// 模型名称
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 送入 rerank 的最大候选数量（默认 20）
+    #[serde(default = "default_top_n")]
+    pub top_n: usize,
+    /// Rerank API 调用超时（秒，默认 3）
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    /// 独立 API Key
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Default for RerankConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            provider: RerankProviderType::default(),
+            model: None,
+            top_n: default_top_n(),
+            timeout_secs: default_timeout_secs(),
+            api_key: None,
         }
     }
 }
@@ -549,6 +607,112 @@ mod tests {
         assert_eq!(
             config.chat.content_language, None,
             "missing [chat] section should give content_language = None"
+        );
+    }
+
+    // --- RerankConfig tests (BE-D01) ---
+
+    // Covers: Design 4.5.1 — RerankConfig default has enable=false, backward compatible.
+    #[test]
+    fn rerank_config_default_is_disabled() {
+        let config = RerankConfig::default();
+        assert!(!config.enable, "rerank should be disabled by default");
+        assert_eq!(config.provider, RerankProviderType::OpenRouter);
+        assert_eq!(config.top_n, 20);
+        assert_eq!(config.timeout_secs, 3);
+        assert!(config.model.is_none());
+        assert!(config.api_key.is_none());
+    }
+
+    // Covers: Design 4.5.1 — RerankConfig parses all fields from TOML.
+    #[test]
+    fn rerank_config_parses_all_fields() {
+        let toml_str = r#"
+            enable = true
+            provider = "big_model"
+            model = "rerank-pro"
+            top_n = 10
+            timeout_secs = 5
+            api_key = "sk-rerank-key"
+        "#;
+        let config: RerankConfig =
+            toml::from_str(toml_str).expect("rerank config should deserialize");
+        assert!(config.enable);
+        assert_eq!(config.provider, RerankProviderType::BigModel);
+        assert_eq!(config.model.as_deref(), Some("rerank-pro"));
+        assert_eq!(config.top_n, 10);
+        assert_eq!(config.timeout_secs, 5);
+        assert_eq!(config.api_key.as_deref(), Some("sk-rerank-key"));
+    }
+
+    // Covers: Design 4.5.1 — Missing [rerank] section is backward compatible.
+    #[test]
+    fn rerank_config_missing_section_backward_compatible() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [api]
+        "#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config without [rerank] should deserialize");
+        assert!(
+            !config.rerank.enable,
+            "missing [rerank] should default to disabled"
+        );
+    }
+
+    // Covers: Design 4.5.1 — Invalid provider value causes deserialization error, not silent fallback.
+    #[test]
+    fn rerank_config_invalid_provider_fails() {
+        let toml_str = r#"
+            enable = true
+            provider = "nonexistent"
+        "#;
+        let result = toml::from_str::<RerankConfig>(toml_str);
+        assert!(
+            result.is_err(),
+            "invalid provider value should cause deserialization error"
+        );
+    }
+
+    // Covers: Design 4.5.1 — Partial config uses defaults for missing fields.
+    #[test]
+    fn rerank_config_partial_uses_defaults() {
+        let toml_str = r#"
+            enable = true
+            model = "custom-model"
+        "#;
+        let config: RerankConfig =
+            toml::from_str(toml_str).expect("partial rerank config should deserialize");
+        assert!(config.enable);
+        assert_eq!(
+            config.provider,
+            RerankProviderType::OpenRouter,
+            "missing provider should default to OpenRouter"
+        );
+        assert_eq!(config.model.as_deref(), Some("custom-model"));
+        assert_eq!(config.top_n, 20, "missing top_n should default to 20");
+        assert_eq!(
+            config.timeout_secs, 3,
+            "missing timeout_secs should default to 3"
+        );
+        assert!(
+            config.api_key.is_none(),
+            "missing api_key should default to None"
         );
     }
 }

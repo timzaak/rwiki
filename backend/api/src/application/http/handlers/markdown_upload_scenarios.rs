@@ -150,6 +150,8 @@ async fn test_app_state() -> Arc<AppState> {
         api_token: TEST_API_TOKEN.to_string(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        reranker: None,
+        rerank_config: rwiki_core::config::RerankConfig::default(),
     })
 }
 

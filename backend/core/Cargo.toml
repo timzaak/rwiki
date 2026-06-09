@@ -32,6 +32,7 @@ toml = { workspace = true }
 
 # RAG / LLM
 rig = { workspace = true }
+reqwest = { version = "0.13", features = ["json"] }
 calamine = { workspace = true }
 text-splitter = { workspace = true }
 pulldown-cmark = "0.13"
@@ -40,6 +41,8 @@ pulldown-cmark = "0.13"
 jieba-rs = { workspace = true }
 
 [dev-dependencies]
+mockito = "1"
 rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

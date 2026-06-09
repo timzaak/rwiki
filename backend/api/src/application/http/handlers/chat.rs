@@ -602,6 +602,35 @@ pub async fn chat(
         );
     }
 
+    // Rerank: re-score candidates via cross-encoder API when enabled
+    let search_results = if let Some(reranker) = &state.reranker {
+        let truncated: Vec<&SearchResult> = search_results.iter()
+            .take(state.rerank_config.top_n)
+            .collect();
+        let documents: Vec<String> = truncated.iter().map(|r| r.content.clone()).collect();
+
+        match reranker.rerank(&req.message, &documents, state.rerank_config.top_n).await {
+            Ok(rerank_results) => {
+                tracing::debug!("rerank returned {} results", rerank_results.len());
+                rerank_results
+                    .into_iter()
+                    .filter_map(|rr| truncated.get(rr.index).map(|r| (r, rr.relevance_score)))
+                    .map(|(r, score)| {
+                        let mut result = (*r).clone();
+                        result.score = score;
+                        result
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                tracing::warn!("Rerank failed, degrading to RRF fusion results: {e}");
+                search_results
+            }
+        }
+    } else {
+        search_results
+    };
+
     let context_text = format!(
         "<documents>\n{}\n</documents>",
         search_results

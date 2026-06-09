@@ -1144,3 +1144,75 @@ Given 用户已通过点击推荐问题或手动输入开始了对话
 When 聊天区域已有消息
 Then 推荐问题按钮不再显示
 ```
+
+---
+
+## 故事 30：开启 Rerank 后检索结果更精准 [US-CORE-030]
+
+**优先级**: P1
+
+**【用户故事】**
+**作为**：User
+**我希望**：系统对检索结果进行精排，将最相关的文档排在前面
+**从而**：AI 回答基于最相关的上下文，回答更准确
+
+**【验收标准】**
+
+**场景 1：Rerank 提升语义相似文档的排名**
+```gherkin
+Given 管理员已启用 rerank（配置了 provider 和模型）
+And 知识库中有多个语义相近但相关性不同的文档片段
+When 用户发起一个具体查询
+Then 系统对 RRF 融合后的候选结果进行 rerank 精排
+And 送入 LLM 的 top-5 上下文中，至少有 3 条结果与未启用 rerank 时的 top-5 不同
+And 差异部分的文档与查询的语义相关性高于被替换的文档
+```
+
+**场景 2：Rerank 未启用时行为不变**
+```gherkin
+Given 管理员未启用 rerank（配置中 enable = false 或未配置）
+When 用户发起查询
+Then 检索流程与启用 rerank 前完全一致（召回 → RRF 融合 → 截断）
+```
+
+**场景 3：送入 Rerank 的候选数量受控**
+```gherkin
+Given 管理员已启用 rerank
+And RRF 融合后产生超过 20 条候选文档
+When 系统执行 rerank
+Then 送入 rerank 的候选文档数量不超过 top-20
+And rerank 结果仍按相关性重排并截断 top-N 送入 LLM
+```
+
+---
+
+## 故事 31：Rerank 失败时用户无感知 [US-CORE-031]
+
+**优先级**: P0
+
+**【用户故事】**
+**作为**：User
+**我希望**：rerank 服务异常时不影响我正常获取回答
+**从而**：即使精排服务不可用，我仍然能得到基于粗排结果的合理回答
+
+**【验收标准】**
+
+**场景 1：Rerank API 调用失败时降级**
+```gherkin
+Given 管理员已启用 rerank
+And rerank API 服务不可用（网络错误或超时）
+When 用户发起查询
+Then 系统跳过 rerank，使用 RRF 融合结果组装上下文
+And 用户正常收到流式回答，不感知 rerank 失败
+And 系统记录 warn 级别日志
+```
+
+**场景 2：Rerank API Key 无效时降级**
+```gherkin
+Given 管理员已启用 rerank
+And 配置的 API Key 无效
+When 用户发起查询
+Then 系统跳过 rerank，使用 RRF 融合结果
+And 用户正常收到回答
+And 系统记录错误日志提示 API Key 无效
+```

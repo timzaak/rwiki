@@ -1,6 +1,8 @@
 use rig::providers::openai;
 use rwiki_core::config::ChatConfig;
+use rwiki_core::config::RerankConfig;
 use rwiki_core::domain::chat::ChatSession;
+use rwiki_core::infrastructure::reranker::RerankerProvider;
 use rwiki_core::infrastructure::vector_store::VectorStoreManager;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,4 +32,8 @@ pub struct AppState {
     pub chat_config: ChatConfig,
     /// 静态文件目录路径（含 widget JS 等），为 None 时不托管
     pub static_dir: Option<String>,
+    /// Reranker（None 表示未启用）
+    pub reranker: Option<RerankerProvider>,
+    /// Rerank 配置
+    pub rerank_config: RerankConfig,
 }
