@@ -22,6 +22,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | Bearer Token for document management endpoints |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP auth token |
+| `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
 ## Server
 
@@ -205,6 +206,43 @@ Config example (Alibaba Cloud ARMS):
 endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
 # license_key recommended via environment variable
 service_name = "rwiki-backend"
+```
+
+## Rerank
+
+`[rerank]` — Rerank precision re-ranking config. All fields have defaults, the entire section can be omitted (disabled by default).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enable` | bool | No | `false` | Enable rerank re-scoring |
+| `provider` | string | No | `"open_router"` | Rerank provider: `"open_router"` or `"big_model"` |
+| `model` | string | No | Provider default | Model name. OpenRouter defaults to `cohere/rerank-v4-fast`, BigModel defaults to `rerank-pro` |
+| `top_n` | number | No | `20` | Max candidates sent to rerank |
+| `timeout_secs` | number | No | `3` | API call timeout in seconds |
+| `api_key` | string | No | — | Dedicated API Key. Falls back to `[llm].api_key` if not set. BigModel requires a separate key. Set via `RERANK_API_KEY` env var. |
+
+When enabled, rerank failures (network errors, timeouts, auth errors, response parse errors) automatically degrade to the RRF fusion results. The user sees no difference — a warn-level log is recorded.
+
+```toml
+# OpenRouter Rerank (free, recommended)
+[rerank]
+enable = true
+provider = "open_router"
+model = "cohere/rerank-v4-fast"
+top_n = 20
+timeout_secs = 3
+# api_key falls back to [llm].api_key when not set
+```
+
+```toml
+# Zhipu BigModel Rerank (low latency in China)
+[rerank]
+enable = true
+provider = "big_model"
+model = "rerank-pro"
+top_n = 20
+timeout_secs = 3
+api_key = "your-bigmodel-api-key"
 ```
 
 ## Widget

@@ -22,6 +22,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | 文档管理接口的 Bearer Token |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP 鉴权 Token |
+| `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
 ## 服务器
 
@@ -205,6 +206,43 @@ token_budget = 12000
 endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
 # license_key 推荐通过环境变量设置
 service_name = "rwiki-backend"
+```
+
+## Rerank
+
+`[rerank]` — Rerank 精排配置。所有字段均有默认值，可省略整个 `[rerank]` 段（默认禁用）。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `enable` | bool | 否 | `false` | 启用 rerank 精排 |
+| `provider` | string | 否 | `"open_router"` | Rerank 服务提供商：`"open_router"` 或 `"big_model"` |
+| `model` | string | 否 | Provider 默认值 | 模型名称。OpenRouter 默认 `cohere/rerank-v4-fast`，BigModel 默认 `rerank-pro` |
+| `top_n` | number | 否 | `20` | 送入 rerank 的最大候选数量 |
+| `timeout_secs` | number | 否 | `3` | API 调用超时（秒） |
+| `api_key` | string | 否 | — | 独立 API Key。不配置时复用 `[llm].api_key`。BigModel 必须配置独立 key。可通过 `RERANK_API_KEY` 环境变量设置 |
+
+启用后，rerank 失败（网络错误、超时、认证失败、响应解析错误）时自动降级到 RRF 融合结果，用户无感知，系统记录 warn 级别日志。
+
+```toml
+# OpenRouter Rerank（免费，推荐）
+[rerank]
+enable = true
+provider = "open_router"
+model = "cohere/rerank-v4-fast"
+top_n = 20
+timeout_secs = 3
+# api_key 不配置时复用 [llm].api_key
+```
+
+```toml
+# 智谱 BigModel Rerank（国内低延迟）
+[rerank]
+enable = true
+provider = "big_model"
+model = "rerank-pro"
+top_n = 20
+timeout_secs = 3
+api_key = "your-bigmodel-api-key"
 ```
 
 ## Widget
