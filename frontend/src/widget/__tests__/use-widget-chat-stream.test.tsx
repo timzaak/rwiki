@@ -108,7 +108,7 @@ describe('useWidgetChatStream', () => {
     await result.current.sendMessage('Hi')
 
     const state = useChatStore.getState()
-    expect(state.error).toBe('无法连接服务，请检查配置或稍后重试')
+    expect(state.error).toBe('Unable to connect to server. Please check your configuration or try again later.')
     expect(state.isLoading).toBe(false)
   })
 
@@ -120,7 +120,7 @@ describe('useWidgetChatStream', () => {
     await result.current.sendMessage('Hi')
 
     const state = useChatStore.getState()
-    expect(state.error).toBe('请求失败 (503)')
+    expect(state.error).toBe('Request failed (503)')
     expect(state.isLoading).toBe(false)
   })
 

@@ -31,7 +31,7 @@ function processSseLines(
           store.appendToLastAssistant(String(parsed.content))
           break
         case 'error':
-          store.setError(String(parsed.message ?? '回答生成出错'))
+          store.setError(String(parsed.message ?? 'Failed to generate response'))
           store.finishStreaming()
           return true
         case 'done':
@@ -77,7 +77,7 @@ export function useWidgetChatStream(apiUrl: string): ChatStreamValue {
         })
 
         if (!response.ok) {
-          store.setError(`请求失败 (${response.status})`)
+          store.setError(`Request failed (${response.status})`)
           store.finishStreaming()
           return
         }
@@ -104,7 +104,7 @@ export function useWidgetChatStream(apiUrl: string): ChatStreamValue {
           store.finishStreaming()
           return
         }
-        store.setError('无法连接服务，请检查配置或稍后重试')
+        store.setError('Unable to connect to server. Please check your configuration or try again later.')
         store.finishStreaming()
       }
     },

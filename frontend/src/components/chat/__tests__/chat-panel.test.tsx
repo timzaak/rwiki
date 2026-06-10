@@ -34,15 +34,6 @@ function renderPanel() {
 }
 
 describe('ChatPanel error display', () => {
-  it('shows error banner when store has error', () => {
-    useChatStore.setState({ error: 'Connection lost' })
-
-    renderPanel()
-
-    expect(screen.getByTestId('chat-error-banner')).toBeInTheDocument()
-    expect(screen.getByText('Connection lost')).toBeInTheDocument()
-  })
-
   it('does not show error banner when store has no error', () => {
     useChatStore.setState({ error: null })
 

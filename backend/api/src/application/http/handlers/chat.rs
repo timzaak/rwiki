@@ -765,7 +765,7 @@ pub async fn chat(
                     chat_request_span.record("error", true);
                     chat_request_span.record("error.message", e.to_string());
                     let error_event = ErrorEvent {
-                        message: "回答生成失败，请稍后重试".to_string(),
+                        message: "Failed to generate response. Please try again later.".to_string(),
                     };
                     let event = Event::default()
                         .event("error")

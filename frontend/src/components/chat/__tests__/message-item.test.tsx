@@ -21,19 +21,19 @@ function renderMessage(overrides?: Partial<ChatMessage>) {
 
 describe('MessageItem conditional rendering', () => {
   it('shows streaming cursor when message is streaming', () => {
-    renderMessage({ isStreaming: true })
+    renderMessage({ role: 'assistant', content: 'Hello', isStreaming: true })
 
     expect(screen.getByTestId('message-item-streaming')).toBeInTheDocument()
   })
 
   it('does not show streaming cursor when message is not streaming', () => {
-    renderMessage({ isStreaming: false })
+    renderMessage({ role: 'assistant', content: 'Hello', isStreaming: false })
 
     expect(screen.queryByTestId('message-item-streaming')).not.toBeInTheDocument()
   })
 
   it('shows error indicator when message has error', () => {
-    renderMessage({ error: 'Stream interrupted' })
+    renderMessage({ role: 'assistant', content: 'Hello', error: 'Stream interrupted' })
 
     expect(screen.getByText('Stream interrupted')).toBeInTheDocument()
   })
@@ -104,5 +104,35 @@ describe('MessageItem feedback buttons', () => {
 
     expect(screen.queryByTestId('feedback-like-button')).not.toBeInTheDocument()
     expect(screen.queryByTestId('feedback-dislike-button')).not.toBeInTheDocument()
+  })
+
+  it('hides feedback buttons when assistant message is empty (failed)', () => {
+    renderMessage({
+      id: 'msg-asst-1',
+      role: 'assistant',
+      content: '',
+      isStreaming: false,
+    })
+
+    expect(screen.queryByTestId('feedback-like-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('feedback-dislike-button')).not.toBeInTheDocument()
+  })
+
+  it('shows retry button when assistant message is empty and onRetry provided', () => {
+    const onRetry = vi.fn()
+    render(
+      <MessageItem
+        message={makeMessage({ role: 'assistant', content: '', isStreaming: false })}
+        onRetry={onRetry}
+      />,
+    )
+
+    expect(screen.getByTestId('message-retry-button')).toBeInTheDocument()
+  })
+
+  it('shows failed message text when assistant message is empty', () => {
+    renderMessage({ role: 'assistant', content: '', isStreaming: false })
+
+    expect(screen.getByText('Response generation failed. Please try again.')).toBeInTheDocument()
   })
 })

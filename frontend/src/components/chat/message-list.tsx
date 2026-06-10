@@ -4,7 +4,11 @@ import { MessageSquareIcon } from 'lucide-react'
 import { useChatStore } from '@/stores/chat-store'
 import { MessageItem } from './message-item'
 
-export function MessageList() {
+interface MessageListProps {
+  onRetry?: () => void
+}
+
+export function MessageList({ onRetry }: MessageListProps) {
   const messages = useChatStore((s) => s.messages)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -30,7 +34,7 @@ export function MessageList() {
   return (
     <div data-testid="message-list" className="flex-1 overflow-y-auto">
       {messages.map((message) => (
-        <MessageItem key={message.id} message={message} />
+        <MessageItem key={message.id} message={message} onRetry={onRetry} />
       ))}
       <div ref={bottomRef} />
     </div>

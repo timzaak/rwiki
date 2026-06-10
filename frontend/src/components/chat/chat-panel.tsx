@@ -1,4 +1,4 @@
-import { XIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
+import { Trash2Icon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chat-store'
@@ -37,6 +37,18 @@ export function ChatPanel({
     clearMessages()
   }
 
+  function handleRetry() {
+    setError('')
+    const { messages, removeLastFailedPair } = useChatStore.getState()
+    const lastUserMsg = [...messages]
+      .reverse()
+      .find((m) => m.role === 'user')
+    if (lastUserMsg) {
+      removeLastFailedPair()
+      sendMessage(lastUserMsg.content)
+    }
+  }
+
   const clearButton = hasConversation ? (
     <Button
       data-testid="chat-clear-button"
@@ -73,51 +85,13 @@ export function ChatPanel({
         </div>
       )}
 
-      <MessageList />
+      <MessageList onRetry={handleRetry} />
 
       {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
         <SuggestedQuestions
           questions={suggestedQuestions}
           onSelect={sendMessage}
         />
-      )}
-
-      {error && (
-        <div
-          data-testid="chat-error-banner"
-          className="flex items-center justify-between gap-2 border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-sm text-destructive"
-        >
-          <span className="flex-1 truncate">{error}</span>
-          <div className="flex items-center gap-1">
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => setError('')}
-              aria-label="Dismiss error"
-            >
-              <XIcon className="size-3.5" />
-            </Button>
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => {
-                setError('')
-                const { messages, removeLastFailedPair } =
-                  useChatStore.getState()
-                const lastUserMsg = [...messages]
-                  .reverse()
-                  .find((m) => m.role === 'user')
-                if (lastUserMsg) {
-                  removeLastFailedPair()
-                  sendMessage(lastUserMsg.content)
-                }
-              }}
-              aria-label="Retry"
-            >
-              <RefreshCwIcon className="size-3.5" />
-            </Button>
-          </div>
-        </div>
       )}
 
       <ChatInput />

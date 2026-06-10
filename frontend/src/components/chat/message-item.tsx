@@ -13,7 +13,7 @@ import shell from 'highlight.js/lib/languages/shell'
 import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
-import { BotIcon, UserIcon } from 'lucide-react'
+import { AlertCircleIcon, BotIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 
 import { FeedbackButtons } from './feedback-buttons'
 import { useFeedback } from '@/hooks/use-feedback'
@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils'
 
 interface MessageItemProps {
   message: ChatMessage
+  onRetry?: () => void
 }
 
 hljs.registerLanguage('bash', bash)
@@ -76,8 +77,9 @@ const markdownComponents: Components = {
   },
 }
 
-export function MessageItem({ message }: MessageItemProps) {
+export function MessageItem({ message, onRetry }: MessageItemProps) {
   const isUser = message.role === 'user'
+  const isFailed = !isUser && !message.isStreaming && !message.content.trim()
 
   const sessionId = useChatStore((s) => s.sessionId)
   const userMessage = useChatStore(
@@ -134,31 +136,53 @@ export function MessageItem({ message }: MessageItemProps) {
       >
         {isUser ? (
           <p className="whitespace-pre-wrap break-all">{message.content}</p>
-        ) : (
-          <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em]">
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              components={markdownComponents}
-            >
-              {message.content}
-            </Markdown>
+        ) : isFailed ? (
+          <div className="flex flex-col gap-2 py-0.5">
+            <div className="flex items-start gap-2 text-muted-foreground">
+              <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0 text-destructive/70" />
+              <span className="text-xs leading-relaxed">
+                Response generation failed. Please try again.
+              </span>
+            </div>
+            {onRetry && (
+              <button
+                type="button"
+                data-testid="message-retry-button"
+                className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/80 px-2 py-1 text-xs text-muted-foreground ring-1 ring-border/40 transition-colors hover:bg-secondary hover:text-foreground"
+                onClick={onRetry}
+              >
+                <RefreshCwIcon className="size-3" />
+                Retry
+              </button>
+            )}
           </div>
+        ) : (
+          <>
+            <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em]">
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={markdownComponents}
+              >
+                {message.content}
+              </Markdown>
+            </div>
+
+            {message.isStreaming && (
+              <span
+                data-testid="message-item-streaming"
+                className="ml-1 inline-block size-1.5 animate-pulse rounded-full bg-current"
+              />
+            )}
+
+            {message.error && (
+              <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
+                {message.error}
+              </span>
+            )}
+          </>
         )}
 
-        {message.isStreaming && (
-          <span
-            data-testid="message-item-streaming"
-            className="ml-1 inline-block size-1.5 animate-pulse rounded-full bg-current"
-          />
-        )}
-
-        {message.error && (
-          <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
-            {message.error}
-          </span>
-        )}
-
-        {!isUser && !message.isStreaming && sessionId != null && (
+        {!isUser && !message.isStreaming && !isFailed && sessionId != null && (
           <FeedbackButtons
             feedback={feedback}
             onFeedback={submitFeedback}

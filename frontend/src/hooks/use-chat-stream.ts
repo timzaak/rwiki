@@ -102,9 +102,9 @@ export function useChatStream() {
         // Map SSE HTTP errors to user-friendly messages
         if (message.startsWith('SSE failed:')) {
           if (message.includes('503')) {
-            message = '当前知识库中没有索引数据，请先上传文档'
+            message = 'No indexed data in knowledge base. Please upload a document first.'
           } else if (message.includes('400')) {
-            message = '请求参数无效，请检查输入'
+            message = 'Invalid request. Please check your input.'
           }
         }
 
