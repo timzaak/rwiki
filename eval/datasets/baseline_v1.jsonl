@@ -1,5 +1,0 @@
-{"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
-{"id": "q002", "query": "rerank 如何配置", "expectedDocIds": ["doc_def456", "doc_ghi789"], "expectedAnswer": null}
-{"id": "q003", "query": "支持哪些文件格式", "expectedDocIds": ["doc_jkl012"], "expectedAnswer": null}
-{"id": "q004", "query": "如何创建知识库", "expectedDocIds": ["doc_mno345", "doc_pqr678"], "expectedAnswer": null}
-{"id": "q005", "query": "搜索结果如何排序", "expectedDocIds": ["doc_stu901"], "expectedAnswer": null}

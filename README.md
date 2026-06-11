@@ -47,6 +47,7 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 - **API documentation assistant** — Upload OpenAPI specs, ask questions about your APIs
 - **Provider-agnostic** — OpenAI, OpenRouter, BigModel, any OpenAI-compatible endpoint
 - **Local embedding** — Use built-in multilingual embeddings without an external API key
+- **RAG evaluation pipeline** — Built-in eval endpoint exposes retrieval metrics (HitRate, MRR, Recall) and answer quality scoring; run regression tests against golden datasets with a single script
 - **Observability** — OpenTelemetry / Jaeger tracing support for production monitoring
 - **Configurable** — Custom system prompts, content language settings, and conversation memory tuning
 

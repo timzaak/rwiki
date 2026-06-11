@@ -85,7 +85,41 @@ curl -X POST http://localhost:8080/api/eval/query \
 
 ## Prepare a golden dataset
 
-The eval scripts consume a JSONL file where each line is one test query:
+The eval scripts consume a JSONL file where each line is one test query. There are two ways to generate this file:
+
+### Mode A: Auto-generate (zero effort)
+
+Run `generate_dataset.py` to auto-generate test questions from your uploaded documents:
+
+1. Fetches all published documents from the API
+2. Retrieves chunks for each document via the eval API
+3. Uses an LLM to generate realistic test questions based on the content
+4. Outputs JSONL with document IDs already bound
+
+```bash
+uv run scripts/generate_dataset.py \
+  --config ../backend/config/demo.toml \
+  --api-url http://localhost:18080 \
+  --output datasets/auto_v1.jsonl
+```
+
+The `--config` flag reads the `[llm]` section (api_key, base_url, model) and `[api]` section (token) from a backend TOML config file. You can also override individual settings with `--llm-api-key`, `--llm-base-url`, `--llm-model`, and `--token`.
+
+### Mode B: CSV import (custom questions)
+
+If you have your own test questions, create a CSV file with `query` and `filename` columns:
+
+```csv
+query,filename
+如何上传文档,上传指南.md
+rerank 如何配置,配置说明.md
+```
+
+Multiple filenames are separated by `;`. The script automatically resolves filenames to document UUIDs via the API.
+
+### JSONL format
+
+The resulting JSONL file has this format:
 
 ```json
 {"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
@@ -99,43 +133,41 @@ The eval scripts consume a JSONL file where each line is one test query:
 | `expectedDocIds` | string[] | Yes | Document IDs that should appear in search results |
 | `expectedAnswer` | string | No | Expected answer text (reserved for future use) |
 
-A query can have multiple `expectedDocIds` — the metrics check whether *any* of them appear in the top-K results. The sample dataset is at `eval/datasets/baseline_v1.jsonl`.
-
-How to find document IDs: upload documents via the API, then list them with `GET /api/documents`. Or check the document management page in the frontend.
+A query can have multiple `expectedDocIds` — the metrics check whether *any* of them appear in the top-K results.
 
 ## Run eval
 
 ### Install dependencies
 
+Dependencies are managed with `uv`:
+
 ```bash
 cd eval
-pip install -r requirements.txt
+uv sync
 ```
-
-Dependencies: `requests`, `pandas`, `ragas` (optional, for full eval), `datasets` (optional, for full eval).
 
 ### Retrieval-only mode (default)
 
 Computes HitRate@5, MRR@5, and Recall@5 for each query. No LLM judge needed, fast and cheap.
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080
 ```
 
 Output: `eval/results/current.csv` with one row per query, plus an aggregate summary printed to stdout.
 
 ### Full mode
 
-Adds Faithfulness and Response Relevancy via Ragas, which uses an LLM judge to score answer quality. Requires `ragas` installed and an OpenAI-compatible API key set in the `OPENAI_API_KEY` environment variable.
+Adds Faithfulness and Response Relevancy via Ragas, which uses an LLM judge to score answer quality. The `--config` flag provides the LLM API key for Ragas.
 
 ```bash
-OPENAI_API_KEY=sk-... python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080 \
   --full \
   --judge-model gpt-4o-mini
 ```
@@ -147,9 +179,9 @@ The `--judge-model` flag controls which LLM Ragas uses for judging (default: `gp
 Verifies the eval API is reachable and returns the expected response structure:
 
 ```bash
-python scripts/run_eval.py \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --api-url http://localhost:18080 \
   --smoke-test
 ```
 
@@ -194,17 +226,17 @@ cp eval/results/current.csv eval/results/baseline.csv
 ### Compare
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080 \
   --baseline eval/results/baseline.csv
 ```
 
 Or run the comparison script directly:
 
 ```bash
-python scripts/baseline_diff.py \
+uv run scripts/baseline_diff.py \
   --current eval/results/current.csv \
   --baseline eval/results/baseline.csv \
   --threshold 0.1
@@ -222,10 +254,10 @@ The exit code behavior makes it straightforward to integrate into CI:
 - Exit 1: HitRate@5 regressed beyond the threshold
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
   --api-url $API_URL \
-  --token $API_TOKEN \
   --baseline eval/results/baseline.csv \
   --threshold 0.05
 ```

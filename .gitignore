@@ -25,6 +25,10 @@ config.toml
 __pycache__/
 *.py[cod]
 
+# uv
+eval/.venv/
+eval/uv.lock
+
 # Node
 node_modules/
 dist/

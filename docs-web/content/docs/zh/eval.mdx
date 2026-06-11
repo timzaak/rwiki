@@ -85,7 +85,41 @@ curl -X POST http://localhost:8080/api/eval/query \
 
 ## 准备 golden dataset
 
-评估脚本读取 JSONL 文件，每行一条测试查询：
+评估脚本读取 JSONL 文件，每行一条测试查询。有两种方式生成这个文件：
+
+### 方式 A：自动生成（零成本）
+
+运行 `generate_dataset.py`，从已上传的文档自动生成测试问题：
+
+1. 通过 API 拉取所有已发布的文档
+2. 获取每个文档的 chunks
+3. 用 LLM 基于文档内容生成测试问题
+4. 输出 JSONL，文档 ID 已自动绑定
+
+```bash
+uv run scripts/generate_dataset.py \
+  --config ../backend/config/demo.toml \
+  --api-url http://localhost:18080 \
+  --output datasets/auto_v1.jsonl
+```
+
+`--config` 从后端 TOML 配置文件读取 `[llm]` 部分（api_key、base_url、model）和 `[api]` 部分（token）。也可以用 `--llm-api-key`、`--llm-base-url`、`--llm-model`、`--token` 单独覆盖。
+
+### 方式 B：CSV 导入（自定义问题）
+
+如果你有自己的测试问题，创建一个 CSV 文件，包含 `query` 和 `filename` 两列：
+
+```csv
+query,filename
+如何上传文档,上传指南.md
+rerank 如何配置,配置说明.md
+```
+
+多个文件名用 `;` 分隔。脚本会自动通过 API 将文件名解析为文档 UUID。
+
+### JSONL 格式
+
+最终生成的 JSONL 文件格式如下：
 
 ```json
 {"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
@@ -99,43 +133,41 @@ curl -X POST http://localhost:8080/api/eval/query \
 | `expectedDocIds` | string[] | 是 | 应该出现在搜索结果中的文档 ID |
 | `expectedAnswer` | string | 否 | 期望的回答文本（预留字段） |
 
-一条查询可以有多个 `expectedDocIds`——指标会检查这些文档是否出现在 top-K 结果中。示例数据集在 `eval/datasets/baseline_v1.jsonl`。
-
-怎么拿到 document ID：上传文档后用 `GET /api/documents` 列表接口查看，或者在前端文档管理页面查看。
+一条查询可以有多个 `expectedDocIds`——指标会检查这些文档是否出现在 top-K 结果中。
 
 ## 运行评估
 
 ### 安装依赖
 
+使用 `uv` 管理依赖：
+
 ```bash
 cd eval
-pip install -r requirements.txt
+uv sync
 ```
-
-依赖包括 `requests`、`pandas`、`ragas`（可选，full eval 用）、`datasets`（可选，full eval 用）。
 
 ### Retrieval-only 模式（默认）
 
 只计算 HitRate@5、MRR@5、Recall@5。不需要 LLM judge，快且便宜。
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080
 ```
 
 输出写到 `eval/results/current.csv`，每行一条查询的结果，同时在终端打印汇总。
 
 ### Full 模式
 
-额外通过 Ragas 计算 Faithfulness 和 Response Relevancy，需要 LLM judge 给回答质量打分。需要安装 `ragas` 并设置 `OPENAI_API_KEY` 环境变量。
+额外通过 Ragas 计算 Faithfulness 和 Response Relevancy，需要 LLM judge 给回答质量打分。`--config` 会提供 Ragas 所需的 LLM API key。
 
 ```bash
-OPENAI_API_KEY=sk-... python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080 \
   --full \
   --judge-model gpt-4o-mini
 ```
@@ -147,9 +179,9 @@ OPENAI_API_KEY=sk-... python scripts/run_eval.py \
 验证 eval API 是否可达且返回结构正确：
 
 ```bash
-python scripts/run_eval.py \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --api-url http://localhost:18080 \
   --smoke-test
 ```
 
@@ -194,17 +226,17 @@ cp eval/results/current.csv eval/results/baseline.csv
 ### 对比
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
-  --api-url http://localhost:8080 \
-  --token dev-test \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
+  --api-url http://localhost:18080 \
   --baseline eval/results/baseline.csv
 ```
 
 也可以直接调用对比脚本：
 
 ```bash
-python scripts/baseline_diff.py \
+uv run scripts/baseline_diff.py \
   --current eval/results/current.csv \
   --baseline eval/results/baseline.csv \
   --threshold 0.1
@@ -222,10 +254,10 @@ python scripts/baseline_diff.py \
 - 退出码 1：HitRate@5 超过阈值回退
 
 ```bash
-python scripts/run_eval.py \
-  --dataset datasets/baseline_v1.jsonl \
+uv run scripts/run_eval.py \
+  --config ../backend/config/demo.toml \
+  --dataset datasets/auto_v1.jsonl \
   --api-url $API_URL \
-  --token $API_TOKEN \
   --baseline eval/results/baseline.csv \
   --threshold 0.05
 ```
