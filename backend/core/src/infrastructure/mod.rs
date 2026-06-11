@@ -1,6 +1,7 @@
 pub mod document_chunk;
 pub mod embedding_model;
 pub mod markdown_parser;
+pub mod metrics;
 pub mod migration;
 pub mod openapi_parser;
 pub mod openapi_tokenizer;
@@ -11,6 +12,8 @@ pub mod xlsx_parser;
 
 #[cfg(test)]
 mod markdown_parser_scenarios;
+#[cfg(test)]
+mod metrics_scenarios;
 #[cfg(test)]
 mod openapi_parser_scenarios;
 #[cfg(test)]

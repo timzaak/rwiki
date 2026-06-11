@@ -37,6 +37,9 @@ calamine = { workspace = true }
 text-splitter = { workspace = true }
 pulldown-cmark = "0.13"
 
+# Observability
+opentelemetry = { workspace = true }
+
 # Chinese word segmentation
 jieba-rs = { workspace = true }
 
@@ -45,4 +48,5 @@ mockito = "1"
 rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
 tempfile = "3"
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

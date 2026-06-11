@@ -191,11 +191,11 @@ token_budget = 12000
 
 ## OpenTelemetry
 
-`[otel]` — OpenTelemetry OTLP tracing export config. All fields have defaults, so the entire `[otel]` section can be omitted. When `endpoint` is empty, OTLP tracing is disabled — zero overhead for local development.
+`[otel]` — OpenTelemetry OTLP tracing and metrics export config. All fields have defaults, so the entire `[otel]` section can be omitted. When `endpoint` is empty, both OTLP tracing and metrics are disabled — zero overhead for local development.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `endpoint` | string | No | `""` (disabled) | OTLP gRPC endpoint |
+| `endpoint` | string | No | `""` (disabled) | OTLP gRPC endpoint (shared by tracing and metrics) |
 | `license_key` | string | No | `""` | Auth token, set via `OTEL_LICENSE_KEY` env var |
 | `service_name` | string | No | `"rwiki-backend"` | Service name shown in traces |
 

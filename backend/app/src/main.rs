@@ -1,11 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
+use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::KeyValue;
 use opentelemetry_otlp::{WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::Resource;
 use rig::client::EmbeddingsClient;
 use rig::embeddings::EmbeddingModel;
 use std::env;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Once;
 use tracing_subscriber::prelude::*;
@@ -61,6 +64,18 @@ impl Drop for TracerGuard {
     }
 }
 
+struct MetricsGuard {
+    provider: opentelemetry_sdk::metrics::SdkMeterProvider,
+}
+
+impl Drop for MetricsGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.provider.shutdown() {
+            tracing::error!("OTLP meter provider shutdown failed: {:?}", e);
+        }
+    }
+}
+
 /// Initialize OTLP tracer provider with gRPC exporter.
 /// Panics on failure (config error per PRD).
 fn init_otel_tracing(otel_config: &rwiki_core::config::OtelConfig) -> TracerOutput {
@@ -102,6 +117,41 @@ fn init_otel_tracing(otel_config: &rwiki_core::config::OtelConfig) -> TracerOutp
     }
 }
 
+/// Initialize OTLP meter provider with gRPC exporter.
+/// Mirrors init_otel_tracing() pattern: shared endpoint, metadata, and Resource.
+fn init_otel_metrics(otel_config: &rwiki_core::config::OtelConfig) -> MetricsGuard {
+    let mut metadata = tonic::metadata::MetadataMap::new();
+    if !otel_config.license_key.is_empty() {
+        metadata.insert(
+            "authentication",
+            otel_config
+                .license_key
+                .parse()
+                .expect("invalid license_key header value"),
+        );
+    }
+
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(&otel_config.endpoint)
+        .with_metadata(metadata)
+        .build()
+        .expect("Failed to build OTLP metric exporter");
+
+    let resource = Resource::builder()
+        .with_service_name(otel_config.service_name.clone())
+        .build();
+
+    let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
+        .with_resource(resource)
+        .build();
+
+    global::set_meter_provider(provider.clone());
+
+    MetricsGuard { provider }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -120,6 +170,13 @@ async fn main() -> Result<()> {
     // 初始化日志（条件追加 OTLP layer）
     let otel_output = if !config.otel.endpoint.is_empty() {
         Some(init_otel_tracing(&config.otel))
+    } else {
+        None
+    };
+
+    // 条件初始化 OTLP MeterProvider（与 tracing 对称）
+    let _metrics_guard = if !config.otel.endpoint.is_empty() {
+        Some(init_otel_metrics(&config.otel))
     } else {
         None
     };
@@ -356,6 +413,68 @@ async fn main() -> Result<()> {
         None
     };
 
+    // 创建 RwikiMetrics 实例（无论是否启用 OTel，未设置 MeterProvider 时仪器自动为 no-op）
+    let metrics = Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new());
+
+    // 创建活跃会话计数器（供 ObservableGauge 同步回调读取）
+    let session_count = Arc::new(AtomicUsize::new(0));
+
+    // 注册 ObservableGauges（知识库统计 + 活跃会话数）
+    {
+        let meter = global::meter("rwiki");
+
+        // 知识库文档数（按 status 分类）
+        let db_path = config.sqlite.path.clone();
+        meter
+            .u64_observable_gauge("rag.knowledge_base.documents")
+            .with_description("Knowledge base document count by status")
+            .with_callback(move |observer| {
+                if let Ok(conn) = rusqlite::Connection::open_with_flags(
+                    &db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                ) {
+                    let count: u64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM documents WHERE status = 'published'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(0);
+                    observer.observe(count, &[KeyValue::new("status", "published")]);
+                }
+            })
+            .build();
+
+        // 知识库 chunk 总数
+        let db_path_chunks = config.sqlite.path.clone();
+        meter
+            .u64_observable_gauge("rag.knowledge_base.chunks")
+            .with_description("Knowledge base total chunk count")
+            .with_callback(move |observer| {
+                if let Ok(conn) = rusqlite::Connection::open_with_flags(
+                    &db_path_chunks,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                ) {
+                    let count: u64 = conn
+                        .query_row("SELECT COUNT(*) FROM chunk_metadata", [], |row| row.get(0))
+                        .unwrap_or(0);
+                    observer.observe(count, &[]);
+                }
+            })
+            .build();
+
+        // 活跃会话数（读取 AtomicUsize 计数器）
+        let session_count_gauge = session_count.clone();
+        meter
+            .u64_observable_gauge("rag.sessions.active")
+            .with_description("Active chat session count")
+            .with_callback(move |observer| {
+                let count = session_count_gauge.load(std::sync::atomic::Ordering::Relaxed);
+                observer.observe(count as u64, &[]);
+            })
+            .build();
+    }
+
     // 构建应用状态
     let app_state = Arc::new(api::application::http::AppState {
         sqlite: sqlite.clone(),
@@ -369,6 +488,8 @@ async fn main() -> Result<()> {
         static_dir: config.server.static_dir.clone(),
         reranker,
         rerank_config: config.rerank,
+        metrics: metrics.clone(),
+        session_count: session_count.clone(),
     });
 
     // 创建路由并启动服务器
@@ -390,6 +511,9 @@ async fn main() -> Result<()> {
 
     // TracerGuard::Drop flushes pending OTLP spans when otel_output goes out of scope
     drop(otel_output);
+
+    // MetricsGuard::Drop flushes pending OTLP metrics when _metrics_guard goes out of scope
+    drop(_metrics_guard);
 
     Ok(())
 }
@@ -424,7 +548,7 @@ mod tests {
             service_name: "test".to_string(),
         };
         // The conditional in main() is: if !config.otel.endpoint.is_empty() { Some(init) } else { None }
-        // With empty endpoint, otel_output is None → no OTLP layer added.
+        // With empty endpoint, otel_output is None -> no OTLP layer added.
         // Verify that calling init_otel_tracing with a non-empty endpoint succeeds
         // while the empty-endpoint path correctly skips it.
         let should_skip = config.endpoint.is_empty();
@@ -440,5 +564,40 @@ mod tests {
             !config_with_endpoint.endpoint.is_empty(),
             "non-empty endpoint should NOT skip OTLP init"
         );
+    }
+
+    // Covers: Design — MetricsGuard Drop calls provider.shutdown() without panic.
+    // User Story: Graceful shutdown flushes pending OTLP metrics; MetricsGuard::Drop must not panic.
+    //
+    // Uses SdkMeterProvider::builder().build() (no exporter, no reader) to avoid
+    // needing an external OTLP collector.
+    #[test]
+    fn metrics_guard_drop_does_not_panic() {
+        let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder().build();
+        let guard = MetricsGuard { provider };
+        // Should not panic — Drop calls shutdown on a minimal provider
+        drop(guard);
+    }
+
+    // Covers: Design — empty OTel endpoint leaves global MeterProvider as default no-op.
+    // User Story: When OTel endpoint is empty, metrics init is skipped and all instruments
+    // remain no-op, so counter operations silently succeed.
+    #[test]
+    fn empty_endpoint_skips_metrics_init() {
+        // Reset to a clean no-op state first
+        global::set_meter_provider(opentelemetry_sdk::metrics::SdkMeterProvider::builder().build());
+
+        // Without calling init_otel_metrics, the global provider is the default no-op.
+        // Creating RwikiMetrics and using its instruments must succeed silently.
+        let metrics = rwiki_core::infrastructure::metrics::RwikiMetrics::new();
+        metrics.chat_request_count.add(1, &[]);
+        metrics.chat_duration.record(100.0, &[]);
+        metrics.llm_error_count.add(1, &[]);
+
+        // Also verify via global::meter that a Counter is no-op
+        let meter = global::meter("rwiki");
+        let counter = meter.u64_counter("test.counter").build();
+        counter.add(1, &[]);
+        // No panic means no-op behavior is correct
     }
 }

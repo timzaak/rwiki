@@ -91,6 +91,41 @@ flowchart LR
 7. **上下文组装**：检索结果格式化为结构化 XML，包裹在 `<documents>` 块中。每个结果生成一个 `<document index="N">` 元素，包含 `<title>`、`<section>`、`<link>`、`<locale>`、`<content>` 标签。这给 LLM 提供了清晰的、机器可解析的上下文，支持按编号引用来源
 8. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`。默认系统提示词指示 LLM 使用 `[Source N]` 格式引用来源，其中 N 对应上下文 XML 中的 document index
 
+### 指标
+
+RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用 `rag.` 前缀，通过 `[otel]` 配置的同一个 OTLP gRPC 端点导出。当 OTel endpoint 为空时，所有仪器自动降级为 no-op——本地开发零开销。
+
+**管线仪器**（每次对话请求记录）：
+
+| 阶段 | 指标名 | 类型 | 单位 | 说明 |
+|------|--------|------|------|------|
+| 对话 | `rag.chat.request.count` | Counter | — | 对话请求总数。属性：`is_new_session` |
+| 对话 | `rag.chat.duration` | Histogram | ms | 端到端对话延迟 |
+| 对话 | `rag.chat.error.count` | Counter | — | 对话请求错误数。属性：`error_type` |
+| 改写 | `rag.rewrite.duration` | Histogram | ms | 查询改写 LLM 调用延迟。属性：`is_first_turn` |
+| 改写 | `rag.rewrite.timeout.count` | Counter | — | 查询改写超时次数 |
+| 改写 | `rag.rewrite.fallback.count` | Counter | — | 查询改写回退次数。属性：`fallback_reason`（`timeout`、`llm_error` 或 `original`） |
+| 检索 | `rag.retrieval.duration` | Histogram | ms | 检索总延迟。属性：`search_type`（`hybrid`） |
+| 检索 | `rag.retrieval.results.count` | Histogram | — | 检索结果数量分布 |
+| 检索 | `rag.retrieval.empty.count` | Counter | — | 检索结果为空的次数 |
+| 重排 | `rag.rerank.duration` | Histogram | ms | Rerank API 调用延迟。属性：`provider` |
+| 重排 | `rag.rerank.error.count` | Counter | — | Rerank 错误数（降级为 RRF） |
+| LLM | `rag.llm.duration` | Histogram | ms | LLM 流式生成总延迟 |
+| LLM | `rag.llm.first_token.duration` | Histogram | ms | 首 token 延迟（TTFT） |
+| LLM | `rag.llm.error.count` | Counter | — | LLM 流式生成错误数 |
+| LLM | `rag.llm.output.chars` | Histogram | — | 输出字符数分布 |
+| LLM | `rag.llm.context.chunks` | Histogram | — | 上下文 chunk 数量分布 |
+
+**知识库观测仪表**（周期性轮询）：
+
+| 指标名 | 类型 | 说明 |
+|--------|------|------|
+| `rag.knowledge_base.documents` | ObservableGauge | 按状态统计文档数。属性：`status`（`published`） |
+| `rag.knowledge_base.chunks` | ObservableGauge | Chunk 总数 |
+| `rag.sessions.active` | ObservableGauge | 活跃会话数 |
+
+不需要额外配置——指标复用 `[otel]` 的端点和凭据，与 tracing 共享。参见[配置 > OpenTelemetry](/docs/zh/configuration#opentelemetry)。
+
 ### 推荐问题
 
 `GET /api/chat/suggestions?locale=zh-CN` 返回预配置的推荐问题列表，用于聊天空状态展示。locale 匹配在服务端完成：精确匹配、最长前缀匹配、然后回退到 `default`。这样主聊天界面不需要内置 locale 逻辑（但 widget 支持通过 `suggestedQuestions` 配置在客户端做 locale 匹配）。

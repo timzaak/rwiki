@@ -86,6 +86,41 @@ Users chat via `POST /api/chat` (no auth required):
 7. **Context assembly**: Search results are formatted as structured XML and wrapped in a `<documents>` block. Each result becomes a `<document index="N">` element with `<title>`, `<section>`, `<link>`, `<locale>`, and `<content>` tags. This gives the LLM a clear, machine-parseable context that supports indexed citations.
 8. **Streaming generation**: Results are pushed to the frontend via SSE events: `session`, `chunk`, `done`, `error`. The default system prompt instructs the LLM to cite sources using `[Source N]` format, where N maps to the document index in the XML context.
 
+### Metrics
+
+RWiki exposes OpenTelemetry metrics for the entire RAG pipeline. All metrics share the `rag.` prefix and are exported via the same OTLP gRPC endpoint configured in `[otel]`. When the OTel endpoint is empty, all instruments are no-op — zero overhead for local development.
+
+**Pipeline instruments** (recorded per chat request):
+
+| Stage | Instrument | Type | Unit | Description |
+|-------|-----------|------|------|-------------|
+| Chat | `rag.chat.request.count` | Counter | — | Total chat requests. Attributes: `is_new_session` |
+| Chat | `rag.chat.duration` | Histogram | ms | End-to-end chat latency |
+| Chat | `rag.chat.error.count` | Counter | — | Chat request errors. Attributes: `error_type` |
+| Rewrite | `rag.rewrite.duration` | Histogram | ms | Query rewrite LLM call latency. Attributes: `is_first_turn` |
+| Rewrite | `rag.rewrite.timeout.count` | Counter | — | Query rewrite timeouts |
+| Rewrite | `rag.rewrite.fallback.count` | Counter | — | Query rewrite fallbacks. Attributes: `fallback_reason` (`timeout`, `llm_error`, or `original`) |
+| Retrieval | `rag.retrieval.duration` | Histogram | ms | Retrieval total latency. Attributes: `search_type` (`hybrid`) |
+| Retrieval | `rag.retrieval.results.count` | Histogram | — | Retrieval results count distribution |
+| Retrieval | `rag.retrieval.empty.count` | Counter | — | Empty retrieval results |
+| Rerank | `rag.rerank.duration` | Histogram | ms | Rerank API call latency. Attributes: `provider` |
+| Rerank | `rag.rerank.error.count` | Counter | — | Rerank errors (degraded to RRF) |
+| LLM | `rag.llm.duration` | Histogram | ms | LLM streaming total latency |
+| LLM | `rag.llm.first_token.duration` | Histogram | ms | Time to first token (TTFT) |
+| LLM | `rag.llm.error.count` | Counter | — | LLM streaming errors |
+| LLM | `rag.llm.output.chars` | Histogram | — | Output character count distribution |
+| LLM | `rag.llm.context.chunks` | Histogram | — | Context chunk count distribution |
+
+**Knowledge base gauges** (polled periodically):
+
+| Instrument | Type | Description |
+|-----------|------|-------------|
+| `rag.knowledge_base.documents` | ObservableGauge | Document count by status. Attributes: `status` (`published`) |
+| `rag.knowledge_base.chunks` | ObservableGauge | Total chunk count |
+| `rag.sessions.active` | ObservableGauge | Active chat session count |
+
+No extra configuration is needed — metrics reuse the same `[otel]` endpoint and credentials as tracing. See [Configuration > OpenTelemetry](/docs/configuration#opentelemetry).
+
 ### Suggested questions
 
 `GET /api/chat/suggestions?locale=en` returns a list of pre-configured questions for the chat empty state. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. This way the frontend doesn't need to bundle locale logic for the main chat view (though the widget supports client-side locale matching via its `suggestedQuestions` config).

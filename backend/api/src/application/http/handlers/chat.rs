@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use futures::StreamExt;
+use opentelemetry::KeyValue;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::streaming::StreamingChat;
@@ -383,11 +384,19 @@ pub async fn chat(
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Validate message is not empty
     if req.message.trim().is_empty() {
+        state
+            .metrics
+            .chat_error_count
+            .add(1, &[KeyValue::new("error_type", "empty_message")]);
         return Err(ApiError::bad_request("消息不能为空"));
     }
 
     // Check knowledge base is not empty
     if state.vector_store.is_empty().await {
+        state
+            .metrics
+            .chat_error_count
+            .add(1, &[KeyValue::new("error_type", "no_index_data")]);
         return Err(ApiError::service_unavailable(
             "当前知识库中没有索引数据，请先上传文档",
         ));
@@ -407,6 +416,8 @@ pub async fn chat(
     );
 
     async move {
+    let chat_start = Instant::now();
+    state.metrics.chat_request_count.add(1, &[KeyValue::new("is_new_session", is_new_session)]);
 
     // Get session state: summary + history (with eviction + touch), then release lock
     let (summary, history) = {
@@ -436,6 +447,8 @@ pub async fn chat(
         );
 
         async {
+        let rewrite_start = Instant::now();
+        let is_first_turn = history.is_empty();
         let content_language = state
             .chat_config
             .content_language
@@ -478,6 +491,11 @@ pub async fn chat(
                     "invalid_json"
                 };
                 current_span.record("fallback_reason", fallback_reason);
+                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+                if fallback_reason != "none" {
+                    state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", fallback_reason)]);
+                }
                 queries
             }
             Ok(Err(e)) => {
@@ -485,6 +503,9 @@ pub async fn chat(
                 current_span.record("timed_out", false);
                 current_span.record("fallback_reason", "llm_error");
                 current_span.record("error.message", e.to_string());
+                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+                state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", "llm_error")]);
                 vec![req.message.clone()]
             }
             Err(_) => {
@@ -497,6 +518,10 @@ pub async fn chat(
                     "error.message",
                     format!("query rewriting timed out after {REWRITE_TIMEOUT_MS}ms"),
                 );
+                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+                state.metrics.rewrite_timeout_count.add(1, &[]);
+                state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", "timeout")]);
                 vec![req.message.clone()]
             }
         };
@@ -524,7 +549,9 @@ pub async fn chat(
         error.message = tracing::field::Empty,
     );
     let search_results = async {
+        let retrieval_start = Instant::now();
         let current_span = tracing::Span::current();
+        let search_type = if search_queries.len() == 1 { "hybrid" } else { "multi_query_hybrid" };
         let results = if search_queries.len() == 1 {
             // Single query: direct hybrid search
             state
@@ -573,6 +600,12 @@ pub async fn chat(
                         200,
                     ),
                 );
+                let elapsed_ms = retrieval_start.elapsed().as_secs_f64() * 1000.0;
+                state.metrics.retrieval_duration.record(elapsed_ms, &[KeyValue::new("search_type", search_type)]);
+                state.metrics.retrieval_results_count.record(results.len() as f64, &[]);
+                if results.is_empty() {
+                    state.metrics.retrieval_empty_count.add(1, &[]);
+                }
                 Ok(results)
             }
             Err(e) => {
@@ -608,10 +641,17 @@ pub async fn chat(
             .take(state.rerank_config.top_n)
             .collect();
         let documents: Vec<String> = truncated.iter().map(|r| r.content.clone()).collect();
+        let provider_str = match state.rerank_config.provider {
+            rwiki_core::config::RerankProviderType::OpenRouter => "openrouter",
+            rwiki_core::config::RerankProviderType::BigModel => "bigmodel",
+        };
+        let rerank_start = Instant::now();
 
         match reranker.rerank(&req.message, &documents, state.rerank_config.top_n).await {
             Ok(rerank_results) => {
                 tracing::debug!("rerank returned {} results", rerank_results.len());
+                let elapsed_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
+                state.metrics.rerank_duration.record(elapsed_ms, &[KeyValue::new("provider", provider_str)]);
                 rerank_results
                     .into_iter()
                     .filter_map(|rr| truncated.get(rr.index).map(|r| (r, rr.relevance_score)))
@@ -624,6 +664,7 @@ pub async fn chat(
             }
             Err(e) => {
                 tracing::warn!("Rerank failed, degrading to RRF fusion results: {e}");
+                state.metrics.rerank_error_count.add(1, &[]);
                 search_results
             }
         }
@@ -730,10 +771,12 @@ pub async fn chat(
                 )) => {
                     if !first_text_chunk_seen {
                         first_text_chunk_seen = true;
+                        let first_token_ms = llm_started_at.elapsed().as_secs_f64() * 1000.0;
                         tracing::Span::current().record(
                             "first_token_latency_ms",
-                            llm_started_at.elapsed().as_millis() as u64,
+                            first_token_ms as u64,
                         );
+                        state.metrics.llm_first_token_duration.record(first_token_ms, &[]);
                     }
                     assistant_text.push_str(&text);
                     let chunk_event = ChunkEvent { content: text };
@@ -764,6 +807,8 @@ pub async fn chat(
                     tracing::Span::current().record("error.message", e.to_string());
                     chat_request_span.record("error", true);
                     chat_request_span.record("error.message", e.to_string());
+                    state.metrics.llm_error_count.add(1, &[]);
+                    state.metrics.chat_error_count.add(1, &[KeyValue::new("error_type", "llm_stream")]);
                     let error_event = ErrorEvent {
                         message: "Failed to generate response. Please try again later.".to_string(),
                     };
@@ -778,6 +823,8 @@ pub async fn chat(
             }
         }
         tracing::Span::current().record("output_chars", assistant_text.chars().count());
+        state.metrics.llm_output_chars.record(assistant_text.chars().count() as f64, &[]);
+        state.metrics.llm_context_chunks.record(context_chunks as f64, &[]);
 
         // Persist user message and assistant response to session
         {
@@ -829,6 +876,8 @@ pub async fn chat(
                 }
             }
         }
+        state.metrics.llm_duration.record(llm_started_at.elapsed().as_secs_f64() * 1000.0, &[]);
+        state.metrics.chat_duration.record(chat_start.elapsed().as_secs_f64() * 1000.0, &[]);
             }
             .instrument(llm_span)
             .await;

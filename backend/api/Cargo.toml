@@ -34,6 +34,9 @@ futures = "0.3"
 # RAG / LLM
 rig = { workspace = true }
 
+# Observability
+opentelemetry = { workspace = true }
+
 # API Documentation — utoipa 自动生成 OpenAPI 文档
 utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono", "openapi_extensions"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
@@ -43,3 +46,4 @@ tower = { workspace = true }
 rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
 mockito = "1"
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }

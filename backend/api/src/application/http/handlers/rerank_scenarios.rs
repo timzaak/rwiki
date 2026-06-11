@@ -127,6 +127,8 @@ async fn test_app_state_with_reranker(
         static_dir: None,
         reranker,
         rerank_config,
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
 

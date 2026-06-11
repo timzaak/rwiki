@@ -2,9 +2,11 @@ use rig::providers::openai;
 use rwiki_core::config::ChatConfig;
 use rwiki_core::config::RerankConfig;
 use rwiki_core::domain::chat::ChatSession;
+use rwiki_core::infrastructure::metrics::RwikiMetrics;
 use rwiki_core::infrastructure::reranker::RerankerProvider;
 use rwiki_core::infrastructure::vector_store::VectorStoreManager;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -36,4 +38,8 @@ pub struct AppState {
     pub reranker: Option<RerankerProvider>,
     /// Rerank 配置
     pub rerank_config: RerankConfig,
+    /// RAG OTel Metrics 仪器集合
+    pub metrics: Arc<RwikiMetrics>,
+    /// 活跃会话计数器（AtomicUsize，供 ObservableGauge 同步回调读取）
+    pub session_count: Arc<AtomicUsize>,
 }

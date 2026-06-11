@@ -153,6 +153,8 @@ dependencies = [
  "dotenv",
  "futures",
  "mockito",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rig",
  "rusqlite",
  "rust_xlsxwriter",
@@ -5468,6 +5470,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.4",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -6815,6 +6818,8 @@ dependencies = [
  "jieba-rs 0.10.1",
  "md5",
  "mockito",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "pulldown-cmark",
  "reqwest 0.13.4",
  "rig",

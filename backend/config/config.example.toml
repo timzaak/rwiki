@@ -89,8 +89,8 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # en = ["How to get started", "What file formats are supported"]
 
 [otel]
-# OpenTelemetry OTLP tracing 导出配置
-# endpoint 为空时不启用 OTLP tracing（本地开发零开销）
+# OpenTelemetry OTLP tracing 和 metrics 导出配置
+# endpoint 为空时不启用 OTLP tracing 和 metrics（本地开发零开销）
 #
 # OTLP gRPC endpoint（阿里云 ARMS 示例）:
 # endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"

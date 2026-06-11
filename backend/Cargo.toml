@@ -63,8 +63,8 @@ jieba-rs = "0.10"
 tokio-stream = "0.1"
 
 # Observability (OpenTelemetry + ARMS)
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = "0.32"
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.32", features = ["metrics"] }
 tracing-opentelemetry = "0.33"
 tonic = "0.14"
