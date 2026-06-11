@@ -48,3 +48,7 @@ backend/static/
 
 # Generated OpenAPI spec
 docs-web/openapi.json
+
+# Eval results (keep .gitkeep)
+eval/results/*
+!eval/results/.gitkeep

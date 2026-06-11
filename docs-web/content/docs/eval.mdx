@@ -1,0 +1,231 @@
+---
+title: Eval
+description: Measure retrieval quality and answer accuracy with the eval pipeline
+icon: FlaskConical
+---
+
+RWiki ships a built-in eval pipeline for measuring retrieval quality and answer accuracy. It works in two parts: a backend endpoint that runs the full RAG pipeline and returns all intermediate results, and a set of Python scripts that call that endpoint against a golden dataset, compute metrics, and detect regressions.
+
+Use eval when you change the retrieval pipeline (chunking strategy, embedding model, rerank config) and want to know whether quality improved or regressed.
+
+## Eval API
+
+`POST /api/eval/query` runs the full RAG pipeline (query rewrite → hybrid search → optional rerank → LLM generate) and returns every intermediate result as JSON. It requires Bearer token auth — the same `[api] token` used for document management.
+
+### Request
+
+```json
+{
+  "query": "How to upload documents",
+  "topK": 5,
+  "sessionId": "optional-session-id"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | Yes | User query text. Empty or whitespace returns 400. |
+| `topK` | number | No | Number of search results. Defaults to 5. |
+| `sessionId` | string | No | Reuse an existing chat session for history context during query rewrite. |
+
+### Response
+
+```json
+{
+  "query": "How to upload documents",
+  "rewrittenQueries": ["upload file to knowledge base", "document upload process"],
+  "searchResults": [
+    {
+      "chunkId": "chunk-abc",
+      "documentId": "doc-001",
+      "pageId": "page-001",
+      "content": "Upload files via POST /api/documents/upload...",
+      "score": 0.87,
+      "title": "Upload Guide",
+      "section": "File Upload",
+      "locale": "en",
+      "tags": ["upload", "api"]
+    }
+  ],
+  "reranked": false,
+  "context": "<documents>...</documents>",
+  "answer": "You can upload documents via the API...",
+  "timingMs": {
+    "rewrite": 1200,
+    "search": 350,
+    "rerank": null,
+    "generate": 2100
+  }
+}
+```
+
+Key fields for eval consumers:
+
+- `searchResults[].documentId` — match against golden dataset's `expectedDocIds` to compute retrieval metrics
+- `answer` — the LLM-generated answer, used for full eval (Faithfulness, Response Relevancy)
+- `timingMs` — per-stage timing breakdown for latency analysis
+- `reranked` — whether rerank was applied
+
+### Error responses
+
+| Status | When |
+|--------|------|
+| 400 | `query` is empty or whitespace |
+| 401 | Missing or invalid Bearer token |
+| 503 | Knowledge base has no indexed data |
+
+### Quick test
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What file formats does RWiki support?"}'
+```
+
+## Prepare a golden dataset
+
+The eval scripts consume a JSONL file where each line is one test query:
+
+```json
+{"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
+{"id": "q002", "query": "rerank 如何配置", "expectedDocIds": ["doc_def456", "doc_ghi789"], "expectedAnswer": null}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique query identifier |
+| `query` | string | Yes | The question to send to the eval API |
+| `expectedDocIds` | string[] | Yes | Document IDs that should appear in search results |
+| `expectedAnswer` | string | No | Expected answer text (reserved for future use) |
+
+A query can have multiple `expectedDocIds` — the metrics check whether *any* of them appear in the top-K results. The sample dataset is at `eval/datasets/baseline_v1.jsonl`.
+
+How to find document IDs: upload documents via the API, then list them with `GET /api/documents`. Or check the document management page in the frontend.
+
+## Run eval
+
+### Install dependencies
+
+```bash
+cd eval
+pip install -r requirements.txt
+```
+
+Dependencies: `requests`, `pandas`, `ragas` (optional, for full eval), `datasets` (optional, for full eval).
+
+### Retrieval-only mode (default)
+
+Computes HitRate@5, MRR@5, and Recall@5 for each query. No LLM judge needed, fast and cheap.
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test
+```
+
+Output: `eval/results/current.csv` with one row per query, plus an aggregate summary printed to stdout.
+
+### Full mode
+
+Adds Faithfulness and Response Relevancy via Ragas, which uses an LLM judge to score answer quality. Requires `ragas` installed and an OpenAI-compatible API key set in the `OPENAI_API_KEY` environment variable.
+
+```bash
+OPENAI_API_KEY=sk-... python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --full \
+  --judge-model gpt-4o-mini
+```
+
+The `--judge-model` flag controls which LLM Ragas uses for judging (default: `gpt-4o-mini`).
+
+### Smoke test
+
+Verifies the eval API is reachable and returns the expected response structure:
+
+```bash
+python scripts/run_eval.py \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --smoke-test
+```
+
+Exit code 0 if the API responds correctly, 1 otherwise.
+
+## Metrics
+
+All retrieval metrics are computed at K=5 (top-5 results).
+
+### HitRate@5
+
+Binary: 1.0 if *any* expected document appears in the top-5 results, 0.0 otherwise. Measures whether the retriever can find relevant documents at all.
+
+### MRR@5 (Mean Reciprocal Rank)
+
+The reciprocal of the rank of the first expected document in the top-5. If the first relevant document is at position 1, MRR = 1.0; at position 2, MRR = 0.5; at position 3, MRR = 0.33; and so on. MRR = 0.0 if no expected document appears. Measures *how high* the relevant result ranks.
+
+### Recall@5
+
+Fraction of expected documents found in the top-5. If you specified 3 expected documents and 2 appear in the top-5, Recall = 0.67. Useful when a query should retrieve multiple relevant documents.
+
+### Faithfulness (full mode only)
+
+Scored by Ragas. Measures whether the generated answer is grounded in the retrieved context — i.e., the answer doesn't hallucinate facts not present in the search results.
+
+### Response Relevancy (full mode only)
+
+Scored by Ragas. Measures how relevant the generated answer is to the original query.
+
+## Baseline comparison
+
+After running eval, you can compare results against a baseline to detect regressions.
+
+### Save a baseline
+
+After a known-good eval run, copy the results CSV:
+
+```bash
+cp eval/results/current.csv eval/results/baseline.csv
+```
+
+### Compare
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --baseline eval/results/baseline.csv
+```
+
+Or run the comparison script directly:
+
+```bash
+python scripts/baseline_diff.py \
+  --current eval/results/current.csv \
+  --baseline eval/results/baseline.csv \
+  --threshold 0.1
+```
+
+The `--threshold` flag sets the maximum allowed regression for P0 metrics (default: 0.1 = 10%). If HitRate@5 drops by more than 10% compared to baseline, the script exits with code 1.
+
+Output includes an aggregate comparison table and a per-query breakdown showing which queries improved or regressed.
+
+### CI integration
+
+The exit code behavior makes it straightforward to integrate into CI:
+
+- Exit 0: no P0 metric regression
+- Exit 1: HitRate@5 regressed beyond the threshold
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url $API_URL \
+  --token $API_TOKEN \
+  --baseline eval/results/baseline.csv \
+  --threshold 0.05
+```

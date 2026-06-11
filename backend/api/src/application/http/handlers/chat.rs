@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
 use rwiki_core::domain::chat::{evict_expired_sessions, ChatMessage};
-use rwiki_core::infrastructure::vector_store::SearchResult;
+use rwiki_core::infrastructure::metrics::RwikiMetrics;
+use rwiki_core::infrastructure::vector_store::{SearchResult, VectorStoreManager};
 
 /// Rewrite LLM call timeout (ms)
 const REWRITE_TIMEOUT_MS: u64 = 8000;
@@ -343,6 +344,205 @@ fn preview_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+// ---------------------------------------------------------------------------
+// Shared RAG pipeline functions (reused by eval handler)
+// ---------------------------------------------------------------------------
+
+/// Execute query rewrite, returning a list of rewritten queries.
+/// Falls back to `original_query` on timeout or LLM error.
+pub(crate) async fn rewrite_query(
+    llm_client: &rig::providers::openai::CompletionsClient,
+    llm_model: &str,
+    message: &str,
+    history: &[ChatMessage],
+    content_language: Option<&str>,
+    metrics: &RwikiMetrics,
+) -> Vec<String> {
+    let rewrite_start = Instant::now();
+    let is_first_turn = history.is_empty();
+    let (rewrite_preamble, rewrite_prompt) = if history.is_empty() {
+        (
+            "You are a query rewriting assistant. Expand short or vague queries into more specific, retrievable forms.",
+            build_first_turn_rewrite_prompt(message, content_language),
+        )
+    } else {
+        ("You are a query rewriting assistant. Based on conversation history, rewrite the user's follow-up into a standalone, self-contained query.",
+         build_rewrite_prompt(history, message, content_language))
+    };
+
+    let rewrite_agent = llm_client
+        .agent(llm_model)
+        .preamble(rewrite_preamble)
+        .max_tokens(200)
+        .build();
+
+    let queries = match tokio::time::timeout(
+        Duration::from_millis(REWRITE_TIMEOUT_MS),
+        rewrite_agent.prompt(&rewrite_prompt),
+    )
+    .await
+    {
+        Ok(Ok(raw_response)) => {
+            let queries = parse_rewrite_response(&raw_response);
+            let json_str = strip_markdown_fences(&raw_response);
+            let fallback_reason = if has_valid_rewrite_json(&raw_response) {
+                "none"
+            } else if serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
+                "empty_queries"
+            } else {
+                "invalid_json"
+            };
+            tracing::debug!(fallback_reason, "rewrite completed");
+            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+            metrics
+                .rewrite_duration
+                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+            if fallback_reason != "none" {
+                metrics
+                    .rewrite_fallback_count
+                    .add(1, &[KeyValue::new("fallback_reason", fallback_reason)]);
+            }
+            queries
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("query rewriting failed: {e}, falling back to original query");
+            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+            metrics
+                .rewrite_duration
+                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+            metrics
+                .rewrite_fallback_count
+                .add(1, &[KeyValue::new("fallback_reason", "llm_error")]);
+            vec![message.to_string()]
+        }
+        Err(_) => {
+            tracing::warn!(
+                "query rewriting timed out after {REWRITE_TIMEOUT_MS}ms, falling back to original query"
+            );
+            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
+            metrics
+                .rewrite_duration
+                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
+            metrics.rewrite_timeout_count.add(1, &[]);
+            metrics
+                .rewrite_fallback_count
+                .add(1, &[KeyValue::new("fallback_reason", "timeout")]);
+            vec![message.to_string()]
+        }
+    };
+    queries
+}
+
+/// Execute hybrid search + optional rerank, returning final search results.
+pub(crate) async fn search_and_rerank(
+    vector_store: &VectorStoreManager,
+    reranker: &Option<rwiki_core::infrastructure::reranker::RerankerProvider>,
+    rerank_config: &rwiki_core::config::RerankConfig,
+    original_query: &str,
+    search_queries: &[String],
+    metrics: &RwikiMetrics,
+) -> Result<Vec<SearchResult>, ApiError> {
+    let retrieval_start = Instant::now();
+    let search_type = if search_queries.len() == 1 {
+        "hybrid"
+    } else {
+        "multi_query_hybrid"
+    };
+
+    let results = if search_queries.len() == 1 {
+        vector_store
+            .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
+            .await
+    } else {
+        let results = vector_store
+            .search_multi_query_hybrid(search_queries, 5, 1, 3, 12, RRF_K)
+            .await?;
+        if results.is_empty() {
+            tracing::warn!("all rewrite queries returned empty, falling back to original query");
+            vector_store
+                .search_hybrid(original_query, 5, 1, 3, 12, RRF_K)
+                .await
+        } else {
+            Ok(results)
+        }
+    };
+
+    let search_results = match results {
+        Ok(results) => {
+            let elapsed_ms = retrieval_start.elapsed().as_secs_f64() * 1000.0;
+            metrics
+                .retrieval_duration
+                .record(elapsed_ms, &[KeyValue::new("search_type", search_type)]);
+            metrics
+                .retrieval_results_count
+                .record(results.len() as f64, &[]);
+            if results.is_empty() {
+                metrics.retrieval_empty_count.add(1, &[]);
+            }
+            results
+        }
+        Err(e) => {
+            return Err(ApiError::internal(e.to_string()));
+        }
+    };
+
+    // Rerank
+    let search_results = if let Some(reranker) = reranker {
+        let truncated: Vec<&SearchResult> =
+            search_results.iter().take(rerank_config.top_n).collect();
+        let documents: Vec<String> = truncated.iter().map(|r| r.content.clone()).collect();
+        let provider_str = match rerank_config.provider {
+            rwiki_core::config::RerankProviderType::OpenRouter => "openrouter",
+            rwiki_core::config::RerankProviderType::BigModel => "bigmodel",
+        };
+        let rerank_start = Instant::now();
+
+        match reranker
+            .rerank(original_query, &documents, rerank_config.top_n)
+            .await
+        {
+            Ok(rerank_results) => {
+                tracing::debug!("rerank returned {} results", rerank_results.len());
+                let elapsed_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
+                metrics
+                    .rerank_duration
+                    .record(elapsed_ms, &[KeyValue::new("provider", provider_str)]);
+                rerank_results
+                    .into_iter()
+                    .filter_map(|rr| truncated.get(rr.index).map(|r| (r, rr.relevance_score)))
+                    .map(|(r, score)| {
+                        let mut result = (*r).clone();
+                        result.score = score;
+                        result
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                tracing::warn!("Rerank failed, degrading to RRF fusion results: {e}");
+                metrics.rerank_error_count.add(1, &[]);
+                search_results
+            }
+        }
+    } else {
+        search_results
+    };
+
+    Ok(search_results)
+}
+
+/// Format search results into XML context string for LLM consumption.
+pub(crate) fn format_context_xml(results: &[SearchResult]) -> String {
+    format!(
+        "<documents>\n{}\n</documents>",
+        results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format_context_block(i + 1, r))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 /// Check whether raw response contains valid JSON with at least one non-empty query.
 fn has_valid_rewrite_json(raw: &str) -> bool {
     let json_str = strip_markdown_fences(raw);
@@ -416,474 +616,304 @@ pub async fn chat(
     );
 
     async move {
-    let chat_start = Instant::now();
-    state.metrics.chat_request_count.add(1, &[KeyValue::new("is_new_session", is_new_session)]);
+        let chat_start = Instant::now();
+        state
+            .metrics
+            .chat_request_count
+            .add(1, &[KeyValue::new("is_new_session", is_new_session)]);
 
-    // Get session state: summary + history (with eviction + touch), then release lock
-    let (summary, history) = {
-        let mut sessions = state.chat_sessions.lock().await;
-        evict_expired_sessions(&mut sessions);
-        if let Some(session) = sessions.get_mut(&session_id) {
-            session.touch();
-            (session.summary.clone(), session.messages.clone())
-        } else {
-            (None, Vec::new())
-        }
-    };
+        // Get session state: summary + history (with eviction + touch), then release lock
+        let (summary, history) = {
+            let mut sessions = state.chat_sessions.lock().await;
+            evict_expired_sessions(&mut sessions);
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.touch();
+                (session.summary.clone(), session.messages.clone())
+            } else {
+                (None, Vec::new())
+            }
+        };
 
-    // Query rewriting: always rewrite (unconditional)
-    let search_queries = {
-        let query_rewrite_span = tracing::info_span!(
-            "query_rewrite",
-            original_query_preview = %preview_chars(&req.message, 50),
-            original_query_len = req.message.chars().count(),
-            is_first_turn = history.is_empty(),
-            timed_out = tracing::field::Empty,
-            fallback_reason = tracing::field::Empty,
-            rewrite_count = tracing::field::Empty,
-            rewritten_queries_preview = tracing::field::Empty,
-            error = tracing::field::Empty,
-            error.message = tracing::field::Empty,
-        );
-
-        async {
-        let rewrite_start = Instant::now();
-        let is_first_turn = history.is_empty();
+        // Query rewriting: always rewrite (unconditional)
         let content_language = state
             .chat_config
             .content_language
             .as_deref()
             .filter(|s| !s.is_empty());
-        let (rewrite_preamble, rewrite_prompt) =
-            if history.is_empty() {
-                (
-                    "You are a query rewriting assistant. Expand short or vague queries into more specific, retrievable forms.",
-                    build_first_turn_rewrite_prompt(&req.message, content_language),
-                )
-            } else {
-                ("You are a query rewriting assistant. Based on conversation history, rewrite the user's follow-up into a standalone, self-contained query.",
-             build_rewrite_prompt(&history, &req.message, content_language))
-            };
+        let search_queries = rewrite_query(
+            &state.llm_client,
+            &state.llm_model,
+            &req.message,
+            &history,
+            content_language,
+            &state.metrics,
+        )
+        .await;
 
-        let rewrite_agent = state
+        // Hybrid search with keyword + vector fusion + optional rerank
+        tracing::debug!("search queries: {:?}", search_queries);
+        let search_results = search_and_rerank(
+            &state.vector_store,
+            &state.reranker,
+            &state.rerank_config,
+            &req.message,
+            &search_queries,
+            &state.metrics,
+        )
+        .await?;
+        tracing::debug!(
+            "search returned {} chunks for queries={:?}",
+            search_results.len(),
+            search_queries
+        );
+        for r in &search_results {
+            tracing::debug!(
+                "  context chunk: chunk_id={}, page_id={}, sub_index={:?}, title={:?}, score={:.4}",
+                r.chunk_id,
+                r.page_id,
+                r.sub_index,
+                r.title,
+                r.score,
+            );
+        }
+
+        let context_text = format_context_xml(&search_results);
+        let context_chunks = search_results.len();
+        let context_chars = context_text.chars().count();
+
+        // Build preamble with system_prompt + optional summary + RAG context
+        let preamble = build_preamble(
+            &state.chat_config.system_prompt,
+            summary.as_deref(),
+            &context_text,
+        );
+
+        // Build per-request agent with context in preamble
+        let agent = state
             .llm_client
             .agent(&state.llm_model)
-            .preamble(rewrite_preamble)
-            .max_tokens(200)
+            .preamble(&preamble)
             .build();
 
-        let current_span = tracing::Span::current();
-        let queries = match tokio::time::timeout(
-            Duration::from_millis(REWRITE_TIMEOUT_MS),
-            rewrite_agent.prompt(&rewrite_prompt),
-        )
-        .await
-        {
-            Ok(Ok(raw_response)) => {
-                current_span.record("timed_out", false);
-                let queries = parse_rewrite_response(&raw_response);
-                let json_str = strip_markdown_fences(&raw_response);
-                let fallback_reason = if has_valid_rewrite_json(&raw_response) {
-                    "none"
-                } else if serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
-                    "empty_queries"
-                } else {
-                    "invalid_json"
-                };
-                current_span.record("fallback_reason", fallback_reason);
-                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-                if fallback_reason != "none" {
-                    state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", fallback_reason)]);
-                }
-                queries
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("query rewriting failed: {e}, falling back to original query");
-                current_span.record("timed_out", false);
-                current_span.record("fallback_reason", "llm_error");
-                current_span.record("error.message", e.to_string());
-                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-                state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", "llm_error")]);
-                vec![req.message.clone()]
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "query rewriting timed out after {REWRITE_TIMEOUT_MS}ms, falling back to original query"
-                );
-                current_span.record("timed_out", true);
-                current_span.record("fallback_reason", "timeout");
-                current_span.record(
-                    "error.message",
-                    format!("query rewriting timed out after {REWRITE_TIMEOUT_MS}ms"),
-                );
-                let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-                state.metrics.rewrite_duration.record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-                state.metrics.rewrite_timeout_count.add(1, &[]);
-                state.metrics.rewrite_fallback_count.add(1, &[KeyValue::new("fallback_reason", "timeout")]);
-                vec![req.message.clone()]
-            }
-        };
-        current_span.record("rewrite_count", queries.len());
-        current_span.record(
-            "rewritten_queries_preview",
-            preview_chars(&queries.join(", "), 200),
-        );
-        queries
-        }
-        .instrument(query_rewrite_span)
-        .await
-    };
-
-    // Hybrid search with keyword + vector fusion
-    tracing::debug!("search queries: {:?}", search_queries);
-    let chat_request_span = tracing::Span::current();
-    let retrieval_span = tracing::info_span!(
-        "retrieval",
-        query_count = search_queries.len(),
-        total_results = tracing::field::Empty,
-        top_scores = tracing::field::Empty,
-        result_titles = tracing::field::Empty,
-        error = tracing::field::Empty,
-        error.message = tracing::field::Empty,
-    );
-    let search_results = async {
-        let retrieval_start = Instant::now();
-        let current_span = tracing::Span::current();
-        let search_type = if search_queries.len() == 1 { "hybrid" } else { "multi_query_hybrid" };
-        let results = if search_queries.len() == 1 {
-            // Single query: direct hybrid search
-            state
-                .vector_store
-                .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
-                .await
-        } else {
-            // Multi-query: hybrid search per query + RRF fusion
-            let results = state
-                .vector_store
-                .search_multi_query_hybrid(&search_queries, 5, 1, 3, 12, RRF_K)
-                .await?;
-            // Fallback: if all rewrite queries returned empty, retry with original query
-            if results.is_empty() {
-                tracing::warn!("all rewrite queries returned empty, falling back to original query");
-                state
-                    .vector_store
-                    .search_hybrid(&req.message, 5, 1, 3, 12, RRF_K)
-                    .await
+        // Build chat history from sliding window only
+        let sliding_window_size = state.chat_config.sliding_window_size;
+        let sliding_window = {
+            let sessions = state.chat_sessions.lock().await;
+            if let Some(session) = sessions.get(&session_id) {
+                session.get_sliding_window(sliding_window_size).to_vec()
             } else {
-                Ok(results)
+                Vec::new()
             }
         };
-
-        match results {
-            Ok(results) => {
-                current_span.record("total_results", results.len());
-                current_span.record(
-                    "top_scores",
-                    results
-                        .iter()
-                        .take(5)
-                        .map(|r| format!("{:.4}", r.score))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                current_span.record(
-                    "result_titles",
-                    preview_chars(
-                        &results
-                            .iter()
-                            .take(5)
-                            .map(|r| r.title.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        200,
-                    ),
-                );
-                let elapsed_ms = retrieval_start.elapsed().as_secs_f64() * 1000.0;
-                state.metrics.retrieval_duration.record(elapsed_ms, &[KeyValue::new("search_type", search_type)]);
-                state.metrics.retrieval_results_count.record(results.len() as f64, &[]);
-                if results.is_empty() {
-                    state.metrics.retrieval_empty_count.add(1, &[]);
-                }
-                Ok(results)
-            }
-            Err(e) => {
-                current_span.record("error", true);
-                current_span.record("error.message", e.to_string());
-                chat_request_span.record("error", true);
-                chat_request_span.record("error.message", e.to_string());
-                Err(ApiError::internal(e.to_string()))
-            }
-        }
-    }
-    .instrument(retrieval_span)
-    .await?;
-    tracing::debug!(
-        "search returned {} chunks for queries={:?}",
-        search_results.len(),
-        search_queries
-    );
-    for r in &search_results {
-        tracing::debug!(
-            "  context chunk: chunk_id={}, page_id={}, sub_index={:?}, title={:?}, score={:.4}",
-            r.chunk_id,
-            r.page_id,
-            r.sub_index,
-            r.title,
-            r.score,
-        );
-    }
-
-    // Rerank: re-score candidates via cross-encoder API when enabled
-    let search_results = if let Some(reranker) = &state.reranker {
-        let truncated: Vec<&SearchResult> = search_results.iter()
-            .take(state.rerank_config.top_n)
-            .collect();
-        let documents: Vec<String> = truncated.iter().map(|r| r.content.clone()).collect();
-        let provider_str = match state.rerank_config.provider {
-            rwiki_core::config::RerankProviderType::OpenRouter => "openrouter",
-            rwiki_core::config::RerankProviderType::BigModel => "bigmodel",
-        };
-        let rerank_start = Instant::now();
-
-        match reranker.rerank(&req.message, &documents, state.rerank_config.top_n).await {
-            Ok(rerank_results) => {
-                tracing::debug!("rerank returned {} results", rerank_results.len());
-                let elapsed_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
-                state.metrics.rerank_duration.record(elapsed_ms, &[KeyValue::new("provider", provider_str)]);
-                rerank_results
-                    .into_iter()
-                    .filter_map(|rr| truncated.get(rr.index).map(|r| (r, rr.relevance_score)))
-                    .map(|(r, score)| {
-                        let mut result = (*r).clone();
-                        result.score = score;
-                        result
-                    })
-                    .collect()
-            }
-            Err(e) => {
-                tracing::warn!("Rerank failed, degrading to RRF fusion results: {e}");
-                state.metrics.rerank_error_count.add(1, &[]);
-                search_results
-            }
-        }
-    } else {
-        search_results
-    };
-
-    let context_text = format!(
-        "<documents>\n{}\n</documents>",
-        search_results
+        let chat_history: Vec<rig::completion::Message> = sliding_window
             .iter()
-            .enumerate()
-            .map(|(i, r)| format_context_block(i + 1, r))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let context_chunks = search_results.len();
-    let context_chars = context_text.chars().count();
+            .map(|msg| {
+                if msg.role == "user" {
+                    rig::completion::Message::from(msg.content.clone())
+                } else {
+                    rig::completion::Message::from(rig::message::AssistantContent::text(
+                        &msg.content,
+                    ))
+                }
+            })
+            .collect();
 
-    // Build preamble with system_prompt + optional summary + RAG context
-    let preamble = build_preamble(
-        &state.chat_config.system_prompt,
-        summary.as_deref(),
-        &context_text,
-    );
+        let user_message = req.message.clone();
 
-    // Build per-request agent with context in preamble
-    let agent = state
-        .llm_client
-        .agent(&state.llm_model)
-        .preamble(&preamble)
-        .build();
+        // Extract config values before spawn (state moves into the closure)
+        let compact_threshold = state.chat_config.compact_threshold;
+        let token_budget = state.chat_config.token_budget;
+        let llm_model_for_span = state.llm_model.clone();
 
-    // Build chat history from sliding window only
-    let sliding_window_size = state.chat_config.sliding_window_size;
-    let sliding_window = {
-        let sessions = state.chat_sessions.lock().await;
-        if let Some(session) = sessions.get(&session_id) {
-            session.get_sliding_window(sliding_window_size).to_vec()
-        } else {
-            Vec::new()
-        }
-    };
-    let chat_history: Vec<rig::completion::Message> = sliding_window
-        .iter()
-        .map(|msg| {
-            if msg.role == "user" {
-                rig::completion::Message::from(msg.content.clone())
-            } else {
-                rig::completion::Message::from(rig::message::AssistantContent::text(&msg.content))
-            }
-        })
-        .collect();
+        // Spawn a task to stream LLM response
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
 
-    let user_message = req.message.clone();
-
-    // Extract config values before spawn (state moves into the closure)
-    let compact_threshold = state.chat_config.compact_threshold;
-    let token_budget = state.chat_config.token_budget;
-    let llm_model_for_span = state.llm_model.clone();
-
-    // Spawn a task to stream LLM response
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
-
-    let chat_span = tracing::Span::current();
-    tokio::spawn(
-        async move {
-            let chat_request_span = tracing::Span::current();
-            let llm_span = tracing::info_span!(
-                "llm_generate",
-                model = %llm_model_for_span,
-                context_chunks,
-                context_chars,
-                output_chars = tracing::field::Empty,
-                first_token_latency_ms = tracing::field::Empty,
-                error = tracing::field::Empty,
-                error.message = tracing::field::Empty,
-            );
-
+        let chat_span = tracing::Span::current();
+        tokio::spawn(
             async move {
-        // Send session event
-        let session_event = SessionEvent {
-            session_id: session_id.clone(),
-        };
-        let event = Event::default()
-            .event("session")
-            .data(serde_json::to_string(&session_event).unwrap_or_default());
-        if tx.send(Ok(event)).await.is_err() {
-            return;
-        }
+                let chat_request_span = tracing::Span::current();
+                let llm_span = tracing::info_span!(
+                    "llm_generate",
+                    model = %llm_model_for_span,
+                    context_chunks,
+                    context_chars,
+                    output_chars = tracing::field::Empty,
+                    first_token_latency_ms = tracing::field::Empty,
+                    error = tracing::field::Empty,
+                    error.message = tracing::field::Empty,
+                );
 
-        // Stream LLM response using stream_chat (with original user message)
-        let llm_started_at = Instant::now();
-        let mut first_text_chunk_seen = false;
-        let mut stream = agent.stream_chat(user_message.clone(), chat_history).await;
-        let mut assistant_text = String::new();
-
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(rig::agent::MultiTurnStreamItem::StreamAssistantItem(
-                    rig::streaming::StreamedAssistantContent::Text(rig::message::Text {
-                        text, ..
-                    }),
-                )) => {
-                    if !first_text_chunk_seen {
-                        first_text_chunk_seen = true;
-                        let first_token_ms = llm_started_at.elapsed().as_secs_f64() * 1000.0;
-                        tracing::Span::current().record(
-                            "first_token_latency_ms",
-                            first_token_ms as u64,
-                        );
-                        state.metrics.llm_first_token_duration.record(first_token_ms, &[]);
-                    }
-                    assistant_text.push_str(&text);
-                    let chunk_event = ChunkEvent { content: text };
-                    let event = Event::default()
-                        .event("chunk")
-                        .data(serde_json::to_string(&chunk_event).unwrap_or_default());
-                    if tx.send(Ok(event)).await.is_err() {
-                        tracing::Span::current()
-                            .record("output_chars", assistant_text.chars().count());
-                        return;
-                    }
-                }
-                Ok(rig::agent::MultiTurnStreamItem::FinalResponse(_)) => {
-                    // Stream complete, send done event
-                    let done_event = DoneEvent {};
-                    let event = Event::default()
-                        .event("done")
-                        .data(serde_json::to_string(&done_event).unwrap_or_default());
-                    let _ = tx.send(Ok(event)).await;
-                    break;
-                }
-                Ok(_) => {
-                    // Ignore other stream items (tool calls, reasoning, etc.)
-                }
-                Err(e) => {
-                    tracing::error!("Stream error: {e}");
-                    tracing::Span::current().record("error", true);
-                    tracing::Span::current().record("error.message", e.to_string());
-                    chat_request_span.record("error", true);
-                    chat_request_span.record("error.message", e.to_string());
-                    state.metrics.llm_error_count.add(1, &[]);
-                    state.metrics.chat_error_count.add(1, &[KeyValue::new("error_type", "llm_stream")]);
-                    let error_event = ErrorEvent {
-                        message: "Failed to generate response. Please try again later.".to_string(),
+                async move {
+                    // Send session event
+                    let session_event = SessionEvent {
+                        session_id: session_id.clone(),
                     };
                     let event = Event::default()
-                        .event("error")
-                        .data(serde_json::to_string(&error_event).unwrap_or_default());
-                    let _ = tx.send(Ok(event)).await;
-                    tracing::Span::current()
-                        .record("output_chars", assistant_text.chars().count());
-                    return;
-                }
-            }
-        }
-        tracing::Span::current().record("output_chars", assistant_text.chars().count());
-        state.metrics.llm_output_chars.record(assistant_text.chars().count() as f64, &[]);
-        state.metrics.llm_context_chunks.record(context_chunks as f64, &[]);
+                        .event("session")
+                        .data(serde_json::to_string(&session_event).unwrap_or_default());
+                    if tx.send(Ok(event)).await.is_err() {
+                        return;
+                    }
 
-        // Persist user message and assistant response to session
-        {
-            let mut sessions = state.chat_sessions.lock().await;
-            let session = sessions
-                .entry(session_id.clone())
-                .or_insert_with_key(|id| rwiki_core::domain::chat::ChatSession::new(id.clone()));
-            session.add_message("user", &user_message);
-            if !assistant_text.is_empty() {
-                session.add_message("assistant", &assistant_text);
-            }
-        }
+                    // Stream LLM response using stream_chat (with original user message)
+                    let llm_started_at = Instant::now();
+                    let mut first_text_chunk_seen = false;
+                    let mut stream = agent.stream_chat(user_message.clone(), chat_history).await;
+                    let mut assistant_text = String::new();
 
-        // Compact check: if session exceeds thresholds, compress old messages
-        let sessions = state.chat_sessions.clone();
-        let llm_client = state.llm_client.clone();
-        let llm_model = state.llm_model.clone();
-        {
-            let mut sessions_lock = sessions.lock().await;
-            if let Some(session) = sessions_lock.get_mut(&session_id) {
-                if session.should_compact(compact_threshold, token_budget, sliding_window_size) {
-                    let old_count = session.messages.len().saturating_sub(sliding_window_size);
-                    let old_messages = session.messages[..old_count].to_vec();
-                    let existing_summary = session.summary.clone();
-                    drop(sessions_lock); // release lock before LLM call
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(rig::agent::MultiTurnStreamItem::StreamAssistantItem(
+                                rig::streaming::StreamedAssistantContent::Text(
+                                    rig::message::Text { text, .. },
+                                ),
+                            )) => {
+                                if !first_text_chunk_seen {
+                                    first_text_chunk_seen = true;
+                                    let first_token_ms =
+                                        llm_started_at.elapsed().as_secs_f64() * 1000.0;
+                                    tracing::Span::current()
+                                        .record("first_token_latency_ms", first_token_ms as u64);
+                                    state
+                                        .metrics
+                                        .llm_first_token_duration
+                                        .record(first_token_ms, &[]);
+                                }
+                                assistant_text.push_str(&text);
+                                let chunk_event = ChunkEvent { content: text };
+                                let event = Event::default()
+                                    .event("chunk")
+                                    .data(serde_json::to_string(&chunk_event).unwrap_or_default());
+                                if tx.send(Ok(event)).await.is_err() {
+                                    tracing::Span::current()
+                                        .record("output_chars", assistant_text.chars().count());
+                                    return;
+                                }
+                            }
+                            Ok(rig::agent::MultiTurnStreamItem::FinalResponse(_)) => {
+                                // Stream complete, send done event
+                                let done_event = DoneEvent {};
+                                let event = Event::default()
+                                    .event("done")
+                                    .data(serde_json::to_string(&done_event).unwrap_or_default());
+                                let _ = tx.send(Ok(event)).await;
+                                break;
+                            }
+                            Ok(_) => {
+                                // Ignore other stream items (tool calls, reasoning, etc.)
+                            }
+                            Err(e) => {
+                                tracing::error!("Stream error: {e}");
+                                tracing::Span::current().record("error", true);
+                                tracing::Span::current().record("error.message", e.to_string());
+                                chat_request_span.record("error", true);
+                                chat_request_span.record("error.message", e.to_string());
+                                state.metrics.llm_error_count.add(1, &[]);
+                                state
+                                    .metrics
+                                    .chat_error_count
+                                    .add(1, &[KeyValue::new("error_type", "llm_stream")]);
+                                let error_event = ErrorEvent {
+                                    message: "Failed to generate response. Please try again later."
+                                        .to_string(),
+                                };
+                                let event = Event::default()
+                                    .event("error")
+                                    .data(serde_json::to_string(&error_event).unwrap_or_default());
+                                let _ = tx.send(Ok(event)).await;
+                                tracing::Span::current()
+                                    .record("output_chars", assistant_text.chars().count());
+                                return;
+                            }
+                        }
+                    }
+                    tracing::Span::current().record("output_chars", assistant_text.chars().count());
+                    state
+                        .metrics
+                        .llm_output_chars
+                        .record(assistant_text.chars().count() as f64, &[]);
+                    state
+                        .metrics
+                        .llm_context_chunks
+                        .record(context_chunks as f64, &[]);
 
-                    let prompt = build_compact_prompt(existing_summary.as_deref(), &old_messages);
-                    let compact_agent = llm_client
+                    // Persist user message and assistant response to session
+                    {
+                        let mut sessions = state.chat_sessions.lock().await;
+                        let session = sessions.entry(session_id.clone()).or_insert_with_key(|id| {
+                            rwiki_core::domain::chat::ChatSession::new(id.clone())
+                        });
+                        session.add_message("user", &user_message);
+                        if !assistant_text.is_empty() {
+                            session.add_message("assistant", &assistant_text);
+                        }
+                    }
+
+                    // Compact check: if session exceeds thresholds, compress old messages
+                    let sessions = state.chat_sessions.clone();
+                    let llm_client = state.llm_client.clone();
+                    let llm_model = state.llm_model.clone();
+                    {
+                        let mut sessions_lock = sessions.lock().await;
+                        if let Some(session) = sessions_lock.get_mut(&session_id) {
+                            if session.should_compact(
+                                compact_threshold,
+                                token_budget,
+                                sliding_window_size,
+                            ) {
+                                let old_count =
+                                    session.messages.len().saturating_sub(sliding_window_size);
+                                let old_messages = session.messages[..old_count].to_vec();
+                                let existing_summary = session.summary.clone();
+                                drop(sessions_lock); // release lock before LLM call
+
+                                let prompt = build_compact_prompt(
+                                    existing_summary.as_deref(),
+                                    &old_messages,
+                                );
+                                let compact_agent = llm_client
                         .agent(&llm_model)
                         .preamble(
                             "请将以下对话历史压缩为一段简洁的摘要，保留关键信息、事实和上下文。",
                         )
                         .max_tokens(300)
                         .build();
-                    match compact_agent.prompt(&prompt).await {
-                        Ok(new_summary) => {
-                            if let Some(session) = sessions.lock().await.get_mut(&session_id) {
-                                session.compact_history(new_summary, sliding_window_size);
-                            } else {
-                                tracing::warn!(
+                                match compact_agent.prompt(&prompt).await {
+                                    Ok(new_summary) => {
+                                        if let Some(session) =
+                                            sessions.lock().await.get_mut(&session_id)
+                                        {
+                                            session
+                                                .compact_history(new_summary, sliding_window_size);
+                                        } else {
+                                            tracing::warn!(
                                     "session {session_id} evicted during compact, skipping"
                                 );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "compact failed: {e}, keeping original messages"
+                                        );
+                                    }
+                                }
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("compact failed: {e}, keeping original messages");
-                        }
                     }
+                    state
+                        .metrics
+                        .llm_duration
+                        .record(llm_started_at.elapsed().as_secs_f64() * 1000.0, &[]);
+                    state
+                        .metrics
+                        .chat_duration
+                        .record(chat_start.elapsed().as_secs_f64() * 1000.0, &[]);
                 }
+                .instrument(llm_span)
+                .await;
             }
-        }
-        state.metrics.llm_duration.record(llm_started_at.elapsed().as_secs_f64() * 1000.0, &[]);
-        state.metrics.chat_duration.record(chat_start.elapsed().as_secs_f64() * 1000.0, &[]);
-            }
-            .instrument(llm_span)
-            .await;
-        }
-        .instrument(chat_span),
-    );
+            .instrument(chat_span),
+        );
 
         let stream = ReceiverStream::new(rx);
         Ok(Sse::new(stream).keep_alive(KeepAlive::default()))

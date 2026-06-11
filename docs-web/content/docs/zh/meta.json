@@ -5,6 +5,7 @@
     "architecture",
     "configuration",
     "deployment",
+    "eval",
     "openapi"
   ]
 }

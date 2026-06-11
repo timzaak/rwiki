@@ -1,0 +1,231 @@
+---
+title: 评估（Eval）
+description: 用 eval 管线衡量检索质量和回答准确度
+icon: FlaskConical
+---
+
+RWiki 内置了一套评估管线，用来衡量检索质量和回答准确度。它分两部分：后端接口跑完整 RAG 管线并返回所有中间结果；Python 脚本调用该接口，对着 golden dataset 计算指标，检测回归。
+
+当你改了检索管线的任何环节（分块策略、embedding 模型、rerank 配置），想确认质量是变好还是变差时，用 eval。
+
+## Eval API
+
+`POST /api/eval/query` 跑完整 RAG 管线（查询改写 → 混合检索 → 可选 rerank → LLM 生成），返回所有中间结果的 JSON。需要 Bearer Token 鉴权——和文档管理用的 `[api] token` 一样。
+
+### 请求
+
+```json
+{
+  "query": "如何上传文档",
+  "topK": 5,
+  "sessionId": "optional-session-id"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | string | 是 | 用户查询。为空或纯空格返回 400。 |
+| `topK` | number | 否 | 搜索结果数量，默认 5。 |
+| `sessionId` | string | 否 | 复用已有聊天会话，让查询改写能利用对话历史。 |
+
+### 响应
+
+```json
+{
+  "query": "如何上传文档",
+  "rewrittenQueries": ["上传文件到知识库的方法", "文档上传流程"],
+  "searchResults": [
+    {
+      "chunkId": "chunk-abc",
+      "documentId": "doc-001",
+      "pageId": "page-001",
+      "content": "通过 POST /api/documents/upload 上传文件...",
+      "score": 0.87,
+      "title": "上传指南",
+      "section": "文件上传",
+      "locale": "zh-CN",
+      "tags": ["上传", "api"]
+    }
+  ],
+  "reranked": false,
+  "context": "<documents>...</documents>",
+  "answer": "你可以通过 API 上传文档...",
+  "timingMs": {
+    "rewrite": 1200,
+    "search": 350,
+    "rerank": null,
+    "generate": 2100
+  }
+}
+```
+
+评估脚本关注的核心字段：
+
+- `searchResults[].documentId` — 与 golden dataset 的 `expectedDocIds` 匹配，计算检索指标
+- `answer` — LLM 生成的回答，用于 full eval（Faithfulness、Response Relevancy）
+- `timingMs` — 各阶段耗时，用于延迟分析
+- `reranked` — 是否经过 rerank
+
+### 错误响应
+
+| 状态码 | 触发条件 |
+|--------|----------|
+| 400 | `query` 为空或纯空格 |
+| 401 | 缺少或无效的 Bearer token |
+| 503 | 知识库没有索引数据 |
+
+### 快速测试
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "RWiki 支持哪些文件格式？"}'
+```
+
+## 准备 golden dataset
+
+评估脚本读取 JSONL 文件，每行一条测试查询：
+
+```json
+{"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
+{"id": "q002", "query": "rerank 如何配置", "expectedDocIds": ["doc_def456", "doc_ghi789"], "expectedAnswer": null}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 查询的唯一标识 |
+| `query` | string | 是 | 发给 eval API 的问题 |
+| `expectedDocIds` | string[] | 是 | 应该出现在搜索结果中的文档 ID |
+| `expectedAnswer` | string | 否 | 期望的回答文本（预留字段） |
+
+一条查询可以有多个 `expectedDocIds`——指标会检查这些文档是否出现在 top-K 结果中。示例数据集在 `eval/datasets/baseline_v1.jsonl`。
+
+怎么拿到 document ID：上传文档后用 `GET /api/documents` 列表接口查看，或者在前端文档管理页面查看。
+
+## 运行评估
+
+### 安装依赖
+
+```bash
+cd eval
+pip install -r requirements.txt
+```
+
+依赖包括 `requests`、`pandas`、`ragas`（可选，full eval 用）、`datasets`（可选，full eval 用）。
+
+### Retrieval-only 模式（默认）
+
+只计算 HitRate@5、MRR@5、Recall@5。不需要 LLM judge，快且便宜。
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test
+```
+
+输出写到 `eval/results/current.csv`，每行一条查询的结果，同时在终端打印汇总。
+
+### Full 模式
+
+额外通过 Ragas 计算 Faithfulness 和 Response Relevancy，需要 LLM judge 给回答质量打分。需要安装 `ragas` 并设置 `OPENAI_API_KEY` 环境变量。
+
+```bash
+OPENAI_API_KEY=sk-... python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --full \
+  --judge-model gpt-4o-mini
+```
+
+`--judge-model` 控制 Ragas 用来打分的 LLM（默认 `gpt-4o-mini`）。
+
+### Smoke test
+
+验证 eval API 是否可达且返回结构正确：
+
+```bash
+python scripts/run_eval.py \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --smoke-test
+```
+
+API 响应正确则退出码 0，否则 1。
+
+## 指标说明
+
+所有检索指标在 K=5（top-5 结果）上计算。
+
+### HitRate@5
+
+二值指标：top-5 结果中包含任意一个期望文档则为 1.0，否则为 0.0。衡量检索器能否找到相关文档。
+
+### MRR@5（Mean Reciprocal Rank）
+
+第一个期望文档在 top-5 中的排名的倒数。排名第 1 时 MRR = 1.0，第 2 时 = 0.5，第 3 时 = 0.33，以此类推。没有命中则为 0.0。衡量相关结果排得有多靠前。
+
+### Recall@5
+
+top-5 结果中找到的期望文档占比。如果指定了 3 个期望文档，top-5 中出现了 2 个，则 Recall = 0.67。适用于一条查询应该检索出多篇相关文档的场景。
+
+### Faithfulness（仅 full 模式）
+
+Ragas 打分。衡量生成的回答是否基于检索到的上下文——即回答没有编造检索结果中不存在的事实。
+
+### Response Relevancy（仅 full 模式）
+
+Ragas 打分。衡量生成的回答与原始查询的相关程度。
+
+## 基线对比与回归检测
+
+跑完 eval 后，可以把结果和基线对比，检测是否回归。
+
+### 保存基线
+
+在已知质量良好的评估结果上，复制一份作为基线：
+
+```bash
+cp eval/results/current.csv eval/results/baseline.csv
+```
+
+### 对比
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url http://localhost:8080 \
+  --token dev-test \
+  --baseline eval/results/baseline.csv
+```
+
+也可以直接调用对比脚本：
+
+```bash
+python scripts/baseline_diff.py \
+  --current eval/results/current.csv \
+  --baseline eval/results/baseline.csv \
+  --threshold 0.1
+```
+
+`--threshold` 设置 P0 指标允许的最大回退幅度（默认 0.1 = 10%）。如果 HitRate@5 下降超过 10%，脚本退出码为 1。
+
+输出包括汇总对比表和逐条查询的明细，显示哪些查询变好了、哪些变差了。
+
+### CI 集成
+
+退出码的行为使它可以直接接入 CI：
+
+- 退出码 0：P0 指标没有回归
+- 退出码 1：HitRate@5 超过阈值回退
+
+```bash
+python scripts/run_eval.py \
+  --dataset datasets/baseline_v1.jsonl \
+  --api-url $API_URL \
+  --token $API_TOKEN \
+  --baseline eval/results/baseline.csv \
+  --threshold 0.05
+```

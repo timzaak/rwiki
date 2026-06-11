@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod document;
+pub mod eval;
 pub mod feedback;
 
 #[cfg(test)]
@@ -22,6 +23,9 @@ mod feedback_scenarios;
 
 #[cfg(test)]
 mod metrics_scenarios;
+
+#[cfg(test)]
+mod eval_scenarios;
 
 #[cfg(test)]
 mod rerank_scenarios;

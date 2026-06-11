@@ -47,6 +47,7 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             patch(handlers::document::unpublish_document),
         )
         .route("/api/chat/feedback", get(handlers::feedback::list_feedback))
+        .route("/api/eval/query", post(handlers::eval::eval_query))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::application::http::middleware::auth_middleware,
