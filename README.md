@@ -6,6 +6,8 @@ Upload Markdown, XLSX, or OpenAPI specs — RWiki chunks and vectorizes them, th
 
 [中文文档](README.zh-CN.md)
 
+![Knowledge Card](docs-web/public/knowledge-card-en.png)
+
 ## Quick Start
 
 ```bash

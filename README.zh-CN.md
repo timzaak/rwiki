@@ -6,6 +6,8 @@
 
 [English](README.md)
 
+![知识卡片](docs-web/public/knowledge-card.png)
+
 ## 快速开始
 
 ```bash
