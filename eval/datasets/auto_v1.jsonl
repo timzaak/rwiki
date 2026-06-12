@@ -1,6 +1,0 @@
-{"id": "q001", "query": "How can I use the eval API to test changes in my retrieval pipeline?", "expectedDocIds": ["019eb60b-1c08-7bc2-a483-bfece87e9920"]}
-{"id": "q002", "query": "What does the timingMs field in the eval response represent and how is it useful?", "expectedDocIds": ["019eb60b-1c08-7bc2-a483-bfece87e9920"]}
-{"id": "q003", "query": "Does the eval endpoint support reranking, and how can I tell if it was applied?", "expectedDocIds": ["019eb60b-1c08-7bc2-a483-bfece87e9920"]}
-{"id": "q004", "query": "How can I run RWiki using only free OpenRouter models without paying?", "expectedDocIds": ["019e919c-86cc-77f3-8f61-5f854e9b9a70"]}
-{"id": "q005", "query": "What steps are required to start the backend, frontend, and docs‑web servers for development?", "expectedDocIds": ["019e919c-86cc-77f3-8f61-5f854e9b9a70"]}
-{"id": "q006", "query": "Which configuration file fields do I need to change to use a different paid model on OpenRouter later?", "expectedDocIds": ["019e919c-86cc-77f3-8f61-5f854e9b9a70"]}
