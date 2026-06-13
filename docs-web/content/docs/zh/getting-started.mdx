@@ -152,78 +152,18 @@ curl http://localhost:8080/health
 
 ### 准备一份文档
 
-RWiki 支持三种格式的文件导入：
+RWiki 支持 4 种格式：Markdown（`.md` / `.mdx`）、Excel（`.xlsx`）、OpenAPI JSON（`.json`）、FAQ JSONL（`.jsonl`）。文件不超过 50 MB，编码必须是 UTF-8。每种格式的字段定义、frontmatter 写法、JSON 结构和错误提示见[文档格式](/docs/zh/document-formats)。
 
-| 格式 | 扩展名 | 典型场景 |
-|------|--------|----------|
-| Markdown | `.md`、`.mdx` | 技术文档、FAQ、知识条目 |
-| Excel | `.xlsx` | 批量导入结构化知识条目 |
-| OpenAPI JSON | `.json` | API 文档问答 |
-
-不支持 PDF、Word（.doc/.docx）、TXT、CSV 等格式。如果需要导入这类内容，先转换成 Markdown 或 Excel。
-
-文件大小上限 50MB。
-
-#### Markdown（.md / .mdx）
-
-先创建一个测试用的 Markdown 文件：
+为了把流程走通，先用任意编辑器建一个最简单的 Markdown 文件：
 
 ```markdown
 # RWiki 使用说明
 
 ## 产品介绍
 RWiki 是一个 RAG + Agent 驱动的知识库问答平台。
-
-## 支持的文件格式
-- Markdown（.md / .mdx）
-- Excel（.xlsx）
-
-## 端口配置
-后端默认监听 8080 端口，前端开发服务器监听 3000 端口。
 ```
 
 保存为 `faq.md`。
-
-Markdown 文件支持可选的 frontmatter（文件开头用 `---` 包裹的元数据块）：
-
-```markdown
----
-title: 自定义标题
-locale: zh-CN
-link: https://example.com/doc
-tags: FAQ, 产品
----
-
-正文内容...
-```
-
-frontmatter 支持的字段：`title`、`locale`、`link`、`tags`（逗号分隔）。如果省略 frontmatter，标题会从正文第一个 `#` 标题或文件名推导。
-
-文件必须是 UTF-8 编码。`.mdx` 文件按原始文本摄入，不执行 JSX 或组件编译。
-
-#### Excel（.xlsx）
-
-Excel 文件用于批量导入结构化的知识条目。第一行是表头，每个数据行生成一条知识条目。
-
-表头定义：
-
-| 列名 | 必填 | 说明 |
-|------|------|------|
-| `Title` | 是 | 条目标题 |
-| `Markdown Content` | 是 | 条目正文（支持 Markdown 格式） |
-| `Locale` | 否 | 语言标识，如 `zh-CN`、`en` |
-| `Link` | 否 | 原始链接 |
-| `Tags` | 否 | 标签，用逗号分隔 |
-
-列的顺序不影响解析，按列名匹配。缺少必填列时，上传会失败并返回具体的错误信息。
-
-如果某行的 `Title` 或 `Markdown Content` 为空，该行会被跳过，其他有效行正常导入。
-
-#### OpenAPI JSON（.json）
-
-`.json` 文件按 OpenAPI 3.x 规格解析。每个 API 端点（path + method 组合）生成一条独立的可检索条目。适合用来搭建 API 文档问答。
-
-文件必须包含 `openapi` 字段（版本 `3.x`）和 `paths` 对象。`components/schemas` 中的 `$ref` 引用会被自动解析。
 
 ### 上传文档
 

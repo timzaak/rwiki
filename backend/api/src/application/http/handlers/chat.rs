@@ -434,6 +434,7 @@ pub(crate) async fn rewrite_query(
 }
 
 /// Execute hybrid search + optional rerank, returning final search results.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn search_and_rerank(
     vector_store: &VectorStoreManager,
     reranker: &Option<rwiki_core::infrastructure::reranker::RerankerProvider>,

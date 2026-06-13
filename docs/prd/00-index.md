@@ -28,6 +28,7 @@
 | document | 文档摄入 | [document/document-ingestion.md](document/document-ingestion.md) | Implemented | xlsx、Markdown/MDX、OpenAPI JSON 上传、解析、校验、page 生成、metadata 提取 |
 | document | 文档检索与引用 | [document/document-retrieval-and-citations.md](document/document-retrieval-and-citations.md) | Implemented | 分块、窗口扩展、metadata 上下文、来源引用 |
 | document | OpenAPI JSON 文档导入 | [document/support-openapi.md](document/support-openapi.md) | Implemented | OpenAPI 3.x JSON 上传、解析、端点级 page 生成、metadata 提取 |
+| core | FAQ JSONL 格式支持 | [core/faq_format_support.md](core/faq_format_support.md) | Implemented | FAQ 问答对 JSONL 文件上传、扩展名直接路由、问答粒度 page 生成、metadata 映射 |
 | infrastructure | 存储与持久化 | [infrastructure/storage.md](infrastructure/storage.md) | Implemented | SQLite 存储形态、向量持久化、启动恢复、维度兼容性 |
 | infrastructure | 模型 Provider | [infrastructure/model-providers.md](infrastructure/model-providers.md) | Implemented | LLM Provider、Embedding Provider、模型和维度配置 |
 | infrastructure | 可观测性 | [infrastructure/observability.md](infrastructure/observability.md) | Implemented | tracing/span 输出、OTLP 配置、shutdown flush |

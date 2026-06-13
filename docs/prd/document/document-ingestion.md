@@ -3,7 +3,7 @@
 **状态**: Implemented
 **创建时间**: 2026-05-30
 **优先级**: P0
-**权威范围**: xlsx、Markdown/MDX、OpenAPI JSON 上传、解析、校验、page 生成、metadata 提取
+**权威范围**: xlsx、Markdown/MDX、`.json`（OpenAPI）、`.jsonl`（FAQ）上传、解析、校验、page 生成、metadata 提取
 
 ---
 
@@ -20,7 +20,7 @@
 
 包含：
 
-- 单一上传端点支持 `.xlsx`、`.md`、`.mdx`、`.json`（OpenAPI 3.x）。
+- 单一上传端点支持 `.xlsx`、`.md`、`.mdx`、`.json`（OpenAPI）、`.jsonl`（FAQ）。扩展名即路由，详细规则见各自 PRD。
 - xlsx 按结构化 Wiki 表格解析。
 - Markdown/MDX 按 UTF-8 文本解析，不执行、不编译组件。
 - `document_id`、`page_id`、metadata 的生成和透传。
@@ -49,7 +49,8 @@
 | `.xlsx` | 每个有效 Wiki 行一个 page | `Title`、`Locale`、`Link`、`Tags`、`Markdown Content` 列 | 必须包含 `Title` 和 `Markdown Content` |
 | `.md` | 单文件一个 page | frontmatter、H1、文件名 | UTF-8 文本，正文不能为空 |
 | `.mdx` | 单文件一个 page | frontmatter、H1、文件名 | 按原始文本摄入，不执行 import/export/JSX |
-| `.json` | 每个 path+method 组合一个 page | `operationId`、`summary`、path、method | 必须是合法 OpenAPI 3.x JSON，paths 非空 |
+| `.json` (OpenAPI) | 每个 path+method 组合一个 page | `operationId`、`summary`、path、method | 必须是合法 OpenAPI 3.x JSON，paths 非空；详见 `document/support-openapi.md` |
+| `.jsonl` (FAQ) | 每条 Q&A 一个 page | question（title）、tags、locale | JSON Lines 格式（每行一个 JSON 对象），question/answer 必填非空；详见 `core/faq_format_support.md` |
 
 ## 5. xlsx 业务规则
 
@@ -81,7 +82,7 @@
 
 - 复用现有 multipart 上传接口，不新增上传端点。
 - multipart 字段为 `file` 和可选的 `refresh_embed`（布尔值，控制是否复用已有 embedding，默认 false）。
-- 不支持格式返回 400，并明确提示支持 `xlsx/md/mdx/json`。
+- 不支持格式返回 400，并明确提示支持 `xlsx/md/mdx/json/jsonl`。
 - 上传成功后返回文件级 document 记录。
 
 ## 9. 验收目标
@@ -98,3 +99,5 @@
 - 领域模型：`/docs/prd/02-domain-model.md`
 - 文档生命周期：`/docs/prd/document/document-lifecycle.md`
 - 检索与引用：`/docs/prd/document/document-retrieval-and-citations.md`
+- OpenAPI JSON 导入：`/docs/prd/document/support-openapi.md`
+- FAQ JSON 格式支持：`/docs/prd/core/faq_format_support.md`

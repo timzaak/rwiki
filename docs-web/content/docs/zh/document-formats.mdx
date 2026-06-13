@@ -1,0 +1,155 @@
+---
+title: 文档格式
+description: RWiki 支持的上传文件格式与解析规则
+icon: FileText
+---
+
+RWiki 用同一个上传接口 `POST /api/documents/upload` 处理所有格式，文件扩展名决定走哪个解析器。所有格式解析完都进同一条分块、embedding、检索管道。
+
+## 支持的格式
+
+| 格式 | 扩展名 | 解析粒度 | 适用场景 |
+|------|--------|----------|----------|
+| Markdown | `.md`、`.mdx` | 一个文件一页，按标题拆 chunk | 技术文档、长篇说明 |
+| Excel | `.xlsx` | 一行一页 | 批量导入结构化条目 |
+| OpenAPI JSON | `.json` | 一个端点（path + method）一页 | API 文档问答 |
+| FAQ JSONL | `.jsonl` | 一条问答一页 | 常见问题集 |
+
+PDF、Word（`.doc`/`.docx`）、TXT、CSV 不支持。先把内容转成 Markdown 或 Excel 再传。
+
+所有格式共同限制：
+
+- 文件不超过 50 MB
+- 编码必须是 UTF-8
+- 上传后状态是 `draft`，发布 (`PATCH /api/documents/{id}/publish`) 之后才参与检索
+
+## Markdown（.md / .mdx）
+
+最常用的格式。一个文件解析成一页知识，正文按标题层级切成 chunk 用于检索。
+
+可选的 frontmatter 写在文件顶部，用 `---` 包裹：
+
+```markdown
+---
+title: 自定义标题
+locale: zh-CN
+link: https://example.com/doc
+tags: FAQ, 产品
+---
+
+# RWiki 使用说明
+
+## 产品介绍
+RWiki 是一个 RAG + Agent 驱动的知识库问答平台。
+
+## 支持的文件格式
+- Markdown（.md / .mdx）
+- Excel（.xlsx）
+```
+
+frontmatter 字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `title` | 否 | 不写就从正文第一个 `#` 标题或文件名推导 |
+| `locale` | 否 | 语言标识，如 `zh-CN`、`en` |
+| `link` | 否 | 原始链接，用于回答中引用来源 |
+| `tags` | 否 | 逗号分隔 |
+
+`.mdx` 文件按纯文本摄入，不执行 JSX、不编译组件，写法跟 `.md` 一样。
+
+## Excel（.xlsx）
+
+适合一次导入一批结构化条目，每行一页。第一行是表头，按列名匹配，列的顺序无所谓。
+
+| 列名 | 必填 | 说明 |
+|------|------|------|
+| `Title` | 是 | 条目标题 |
+| `Markdown Content` | 是 | 条目正文，支持 Markdown |
+| `Locale` | 否 | 语言标识 |
+| `Link` | 否 | 原始链接 |
+| `Tags` | 否 | 逗号分隔 |
+
+缺少必填列上传会失败，错误信息会指出缺哪个列。某行的 `Title` 或 `Markdown Content` 为空时该行被跳过，其它行照常导入。
+
+## OpenAPI JSON（.json）
+
+把 OpenAPI 3.x 规范文件传上去，每个 `path + method` 组合生成一页，用来做 API 文档问答很合适。
+
+文件必须包含 `openapi` 字段（版本 `3.x`）和 `paths` 对象，`components/schemas` 里的 `$ref` 会被自动解开。
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": { "title": "示例 API", "version": "1.0.0" },
+  "paths": {
+    "/users/{id}": {
+      "get": {
+        "summary": "获取用户",
+        "parameters": [...],
+        "responses": {...}
+      }
+    }
+  }
+}
+```
+
+## FAQ JSONL（.jsonl）
+
+把常见问题集导入知识库。每条问答独立成页，问题被转成 Markdown H2 标题和 answer 一起进入 embedding，让"用户的提问"和"已有的问题"在向量空间里语义接近，提高命中率。
+
+文件是 JSON Lines 格式 —— 每行一个 JSON 对象，每行描述一对问答。行与行之间的空白行会被跳过：
+
+```jsonl
+{"question": "RWiki 支持哪些文件格式？", "answer": "支持 Markdown（.md / .mdx）、Excel（.xlsx）、OpenAPI JSON 和 FAQ JSONL。", "tags": ["格式", "上传"], "locale": "zh-CN"}
+{"question": "文件大小上限是多少？", "answer": "50 MB。", "tags": "上传, 限制"}
+```
+
+字段说明：
+
+| 字段 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `question` | 是 | 字符串 | 问题文本，作为页面标题，并写入正文 H2 |
+| `answer` | 是 | 字符串 | 答案文本 |
+| `tags` | 否 | 字符串或字符串数组 | 逗号分隔字符串或数组都行，存到页面 metadata |
+| `locale` | 否 | 字符串 | 语言标识 |
+| `category` | 否 | 任意 | 忽略。需要分类信息就放进 `tags` 或问题/答案文本里 |
+
+其它未知字段一律忽略，不会报错。
+
+每条问答的页面内容会被格式化成：
+
+```markdown
+## {question}
+
+{answer}
+```
+
+`question` 同时是页面标题。这种写法保证问题既参与向量化（H2 进入正文），也参与 section 元数据生成。
+
+### FAQ 上传的常见错误
+
+| 错误 | 触发条件 | 提示 |
+|------|----------|------|
+| `400` JSON 格式无效 | 某行不是合法 JSON 或不是 JSON 对象 | `第 N 行 JSON 格式无效: {细节}` |
+| `400` 编码不支持 | 非 UTF-8 文件 | `文件编码不支持，仅支持 UTF-8` |
+| `400` 缺字段 | 某条 Q&A 缺 `question` 或 `answer` | `第 N 条问答缺少必填字段: question/answer` |
+| `400` 字段为空 | `question` 或 `answer` 是空串或纯空白 | `第 N 条问答的 question 不能为空` |
+| `400` 空文件 | 文件没有任何 Q&A 数据（空文件或只有空白行） | `文件中没有可用的问答数据` |
+
+`第 N 行` 里的 `N` 是物理行号（从 1 开始）；其它提示里的 `N` 是 Q&A 序号（从 0 开始，跳过空白行后编号），方便直接定位到出错的那条。
+
+## 上传之后发生什么
+
+不管哪种格式，文件进来都走同一条流水线：
+
+1. 按扩展名选解析器，切成若干 `ParsedChunk`
+2. 每个 chunk 调用 embedding 模型生成向量，存入向量库
+3. 同步建 FTS5 全文索引（用 jieba 分词）
+4. 文档元数据落 SQLite，状态置 `draft`
+
+到这一步可以预览，但不会出现在聊天回答里。`PATCH /api/documents/{id}/publish` 发布之后才会被检索到。
+
+## 想看具体上传调用
+
+完整的 `curl` 示例和返回结构见[快速上手](/docs/zh/getting-started#上传文档)。所有格式只是 `file=@` 后面的文件名不一样，请求结构完全相同。

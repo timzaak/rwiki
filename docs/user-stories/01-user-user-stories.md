@@ -1216,3 +1216,64 @@ Then 系统跳过 rerank，使用 RRF 融合结果
 And 用户正常收到回答
 And 系统记录错误日志提示 API Key 无效
 ```
+
+---
+
+## 故事 32：上传 FAQ JSONL 文件到知识库 [US-CORE-032]
+
+**优先级**: P1
+
+**【用户故事】**
+**作为**：User
+**我希望**：通过 API 上传 FAQ 格式的 JSONL 文件（每行一个问答对 JSON 对象）到知识库，系统自动解析每条问答为独立知识页并索引
+**从而**：我可以将已有的 FAQ 数据直接导入知识库，无需手动转换为 xlsx 格式，且用户提问时能语义匹配到已有 FAQ 问题并获得对应答案
+
+**【验收标准】**
+
+**场景 1：上传合法 FAQ JSONL 并成功解析**
+```gherkin
+Given 知识库当前为空
+And 用户准备了一个 JSONL 文件，每行一个 JSON 对象描述一对问答（含 question 和 answer 字段）
+When 调用上传 API 上传该 .jsonl 文件
+Then API 返回上传成功，每条问答对生成一个独立的知识页
+And 每个知识页的标题为 FAQ 的 question，内容包含 question 和 answer
+And 文档状态为"草稿"
+```
+
+**场景 2：FAQ question 和 answer 为必填**
+```gherkin
+Given 用户准备了一个 JSONL 文件，某行问答对象缺少 question 或 answer 字段
+When 调用上传 API 上传该 .jsonl 文件
+Then API 返回 400 错误，提示缺少必填字段
+And 文件不被导入
+```
+
+**场景 3：上传空文件**
+```gherkin
+Given 用户准备了一个 JSONL 文件，内容为空或只含空白行
+When 调用上传 API 上传该 .jsonl 文件
+Then API 返回 400 错误，提示文件中没有可用的问答数据
+```
+
+**场景 4：上传非 OpenAPI 的 .json 文件**
+```gherkin
+Given 用户准备了一个 .json 文件，内容不是合法的 OpenAPI 3.x 规范
+When 调用上传 API 上传该 .json 文件
+Then 系统按 OpenAPI 解析器处理，由其返回相应的错误
+And 不影响 .jsonl FAQ 路由
+```
+
+**场景 5：上传后通过聊天查询 FAQ 内容**
+```gherkin
+Given 用户已上传并发布了一份 FAQ JSONL 文档
+When 用户在聊天中提出与 FAQ 中已有问题语义相近的问题
+Then 系统返回基于 FAQ 答案的回答
+And 回答中包含来源引用，显示 FAQ 的 question 作为标题
+```
+
+**场景 6：OpenAPI JSON 上传不受影响**
+```gherkin
+Given 用户准备了一个 OpenAPI 3.x JSON 文件
+When 调用上传 API 上传该 .json 文件
+Then 系统按 OpenAPI 格式解析，每个端点生成独立知识页
+And `.jsonl` 路由独立于 `.json`，不影响 OpenAPI 上传

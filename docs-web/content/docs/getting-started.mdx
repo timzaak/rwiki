@@ -152,78 +152,18 @@ With the server running, let's walk through the full flow: upload a document, pu
 
 ### Prepare a document
 
-RWiki supports three file formats:
+RWiki supports four formats: Markdown (`.md` / `.mdx`), Excel (`.xlsx`), OpenAPI JSON (`.json`), and FAQ JSONL (`.jsonl`). File size limit is 50 MB; encoding must be UTF-8. For field definitions, frontmatter, JSON shapes, and error messages per format, see [Document Formats](/docs/document-formats).
 
-| Format | Extension | Use case |
-|--------|-----------|----------|
-| Markdown | `.md`, `.mdx` | Technical docs, FAQs, knowledge articles |
-| Excel | `.xlsx` | Batch import of structured knowledge entries |
-| OpenAPI JSON | `.json` | API documentation Q&A |
-
-PDF, Word (.doc/.docx), TXT, and CSV are **not supported**. Convert those to Markdown or Excel first.
-
-File size limit: 50MB.
-
-#### Markdown (.md / .mdx)
-
-Create a test Markdown file:
+To walk through the flow, create a minimal Markdown file:
 
 ```markdown
 # RWiki Usage Guide
 
 ## Product Overview
 RWiki is a RAG + Agent powered knowledge base Q&A platform.
-
-## Supported File Formats
-- Markdown (.md / .mdx)
-- Excel (.xlsx)
-
-## Port Configuration
-The backend listens on port 8080 by default. The frontend dev server listens on port 3000.
 ```
 
 Save it as `faq.md`.
-
-Markdown files support optional frontmatter (a metadata block wrapped in `---` at the top of the file):
-
-```markdown
----
-title: Custom Title
-locale: en
-link: https://example.com/doc
-tags: FAQ, product
----
-
-Body content...
-```
-
-Frontmatter fields: `title`, `locale`, `link`, `tags` (comma-separated). If you skip frontmatter, the title is derived from the first `#` heading in the body or the filename.
-
-Files must be UTF-8 encoded. `.mdx` files are ingested as raw text — no JSX execution or component compilation.
-
-#### Excel (.xlsx)
-
-Excel files are for batch importing structured knowledge entries. The first row is the header, and each data row becomes one searchable entry.
-
-Header columns:
-
-| Column name | Required | Description |
-|-------------|----------|-------------|
-| `Title` | Yes | Entry title |
-| `Markdown Content` | Yes | Entry body (supports Markdown formatting) |
-| `Locale` | No | Language identifier, e.g. `en`, `zh-CN` |
-| `Link` | No | Original URL |
-| `Tags` | No | Comma-separated tags |
-
-Column order doesn't matter — columns are matched by name. If required columns are missing, the upload fails with a specific error message.
-
-If a row has empty `Title` or `Markdown Content`, that row is skipped and the rest are imported normally.
-
-#### OpenAPI JSON (.json)
-
-`.json` files are parsed as OpenAPI 3.x specs. Each API endpoint (path + method combination) becomes a separate searchable entry. Useful for building an API documentation assistant.
-
-The file must contain an `openapi` field (version `3.x`) and a `paths` object. `$ref` references inside `components/schemas` are resolved automatically.
 
 ### Upload the document
 

@@ -19,6 +19,9 @@ mod markdown_upload_scenarios;
 mod openapi_upload_scenarios;
 
 #[cfg(test)]
+mod faq_upload_scenarios;
+
+#[cfg(test)]
 mod feedback_scenarios;
 
 #[cfg(test)]

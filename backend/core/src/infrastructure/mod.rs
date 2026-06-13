@@ -1,5 +1,6 @@
 pub mod document_chunk;
 pub mod embedding_model;
+pub mod faq_parser;
 pub mod markdown_parser;
 pub mod metrics;
 pub mod migration;
@@ -10,6 +11,8 @@ pub mod text_chunker;
 pub mod vector_store;
 pub mod xlsx_parser;
 
+#[cfg(test)]
+mod faq_parser_scenarios;
 #[cfg(test)]
 mod markdown_parser_scenarios;
 #[cfg(test)]

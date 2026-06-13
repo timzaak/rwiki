@@ -1,0 +1,155 @@
+---
+title: Document Formats
+description: File formats RWiki accepts and how each is parsed
+icon: FileText
+---
+
+RWiki handles every format through the same endpoint, `POST /api/documents/upload`. The file extension picks the parser. After parsing, every format takes the same path: embed the chunks, build the FTS5 index, persist metadata.
+
+## Supported formats
+
+| Format | Extension | Parse granularity | Use case |
+|--------|-----------|-------------------|----------|
+| Markdown | `.md`, `.mdx` | One file → one page, split into chunks by heading | Technical docs, long-form writing |
+| Excel | `.xlsx` | One row → one page | Batch import of structured entries |
+| OpenAPI JSON | `.json` | One endpoint (path + method) → one page | API documentation Q&A |
+| FAQ JSONL | `.jsonl` | One Q&A pair → one page | FAQ datasets |
+
+PDF, Word (`.doc`/`.docx`), TXT, and CSV are not supported. Convert them to Markdown or Excel first.
+
+Limits that apply to every format:
+
+- File size: 50 MB max
+- Encoding: UTF-8 only
+- After upload the document is in `draft` status. You must publish it (`PATCH /api/documents/{id}/publish`) before it shows up in retrieval
+
+## Markdown (.md / .mdx)
+
+The most common format. One file becomes one knowledge page. The body is sliced into chunks along heading boundaries for retrieval.
+
+Optional frontmatter goes at the top, wrapped in `---`:
+
+```markdown
+---
+title: Custom Title
+locale: en
+link: https://example.com/doc
+tags: FAQ, product
+---
+
+# RWiki Usage Guide
+
+## Product Overview
+RWiki is a RAG + Agent powered knowledge base Q&A platform.
+
+## Supported File Formats
+- Markdown (.md / .mdx)
+- Excel (.xlsx)
+```
+
+Frontmatter fields:
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `title` | No | Falls back to the first `#` heading in the body, then the filename |
+| `locale` | No | Language identifier, e.g. `en`, `zh-CN` |
+| `link` | No | Original URL, shown as the source citation in answers |
+| `tags` | No | Comma-separated |
+
+`.mdx` files are ingested as raw text. JSX is not executed, components are not compiled — write them like `.md`.
+
+## Excel (.xlsx)
+
+Use this when you have a batch of structured entries to import at once. Each row becomes one page. The first row is the header; columns are matched by name, so order doesn't matter.
+
+| Column name | Required | Notes |
+|-------------|----------|-------|
+| `Title` | Yes | Entry title |
+| `Markdown Content` | Yes | Entry body, supports Markdown |
+| `Locale` | No | Language identifier |
+| `Link` | No | Original URL |
+| `Tags` | No | Comma-separated |
+
+If a required column is missing the upload fails with an error naming the missing column. If a row has empty `Title` or `Markdown Content`, that row is skipped and the rest import normally.
+
+## OpenAPI JSON (.json)
+
+Upload an OpenAPI 3.x spec. Each `path + method` combination becomes its own page, which makes this format a good fit for API documentation assistants.
+
+The file must contain an `openapi` field (version `3.x`) and a `paths` object. `$ref` references inside `components/schemas` are resolved automatically.
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Example API", "version": "1.0.0" },
+  "paths": {
+    "/users/{id}": {
+      "get": {
+        "summary": "Get user",
+        "parameters": [...],
+        "responses": {...}
+      }
+    }
+  }
+}
+```
+
+## FAQ JSONL (.jsonl)
+
+For importing FAQ datasets. Each Q&A pair becomes its own page. The question is converted to a Markdown H2 heading and embedded together with the answer, so the user's question and your stored question land close together in vector space — retrieval hits more often.
+
+The file is JSON Lines — one JSON object per line. Each line describes one Q&A pair. Blank lines between records are skipped:
+
+```jsonl
+{"question": "What file formats does RWiki support?", "answer": "Markdown (.md / .mdx), Excel (.xlsx), OpenAPI JSON, and FAQ JSONL.", "tags": ["formats", "upload"], "locale": "en"}
+{"question": "What is the file size limit?", "answer": "50 MB.", "tags": "upload, limit"}
+```
+
+Fields:
+
+| Field | Required | Type | Notes |
+|-------|----------|------|-------|
+| `question` | Yes | string | The question text. Becomes the page title and an H2 in the body |
+| `answer` | Yes | string | The answer text |
+| `tags` | No | string or string[] | Accepts a comma-separated string or an array. Stored as page metadata |
+| `locale` | No | string | Language identifier |
+| `category` | No | any | Ignored. Put classification info into `tags` or the question/answer text |
+
+Any other unknown field is silently ignored.
+
+Each Q&A pair's page body is formatted as:
+
+```markdown
+## {question}
+
+{answer}
+```
+
+The `question` also serves as the page title. This shape ensures the question participates in both vectorization (as an H2 inside the body) and section metadata extraction.
+
+### Common FAQ upload errors
+
+| Status | Trigger | Message |
+|--------|---------|---------|
+| `400` invalid JSON | A line is not valid JSON or is not a JSON object | `第 N 行 JSON 格式无效: {detail}` |
+| `400` unsupported encoding | Non-UTF-8 file | `文件编码不支持，仅支持 UTF-8` |
+| `400` missing field | A Q&A object lacks `question` or `answer` | `第 N 条问答缺少必填字段: question/answer` |
+| `400` empty field | `question` or `answer` is empty or whitespace | `第 N 条问答的 question 不能为空` |
+| `400` empty file | No Q&A records (file is empty or only blank lines) | `文件中没有可用的问答数据` |
+
+`N` in the `第 N 行 JSON 格式无效` message is a 1-based physical line number. `N` in the other messages is a 0-based Q&A index that skips blank lines, so you can jump straight to the offending record.
+
+## What happens after upload
+
+Regardless of format, every uploaded file walks the same pipeline:
+
+1. Pick a parser by extension, produce a list of `ParsedChunk`s
+2. Embed each chunk via the embedding model and write to the vector store
+3. Build a FTS5 full-text index in parallel (jieba tokenization)
+4. Persist document metadata to SQLite, mark status as `draft`
+
+At this point the document is previewable but not yet visible in chat answers. Call `PATCH /api/documents/{id}/publish` to make it retrievable.
+
+## Concrete upload examples
+
+For the full `curl` examples and response shapes, see [Getting Started](/docs/getting-started#upload-the-document). Only the filename after `file=@` changes between formats — the request structure is identical.

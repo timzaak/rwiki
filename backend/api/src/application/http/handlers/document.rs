@@ -5,6 +5,7 @@ use axum::{
 };
 use rwiki_core::domain::document::{DocumentRow, DocumentStatus};
 use rwiki_core::infrastructure::document_chunk::DocumentChunk;
+use rwiki_core::infrastructure::faq_parser;
 use rwiki_core::infrastructure::markdown_parser;
 use rwiki_core::infrastructure::openapi_parser;
 use rwiki_core::infrastructure::text_chunker;
@@ -60,7 +61,7 @@ pub struct PublishDocumentResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Upload and index a document (.xlsx / .md / .mdx / .json).
+/// Upload and index a document (.xlsx / .md / .mdx / .json / .jsonl).
 ///
 /// Accepts a multipart file upload, validates format and size (<= 50 MB),
 /// parses into chunks, embeds them via VectorStoreManager, and persists
@@ -132,9 +133,11 @@ pub async fn upload_document(
         "mdx"
     } else if ext.ends_with(".json") {
         "json"
+    } else if ext.ends_with(".jsonl") {
+        "jsonl"
     } else {
         return Err(ApiError::bad_request(
-            "不支持的文件格式，支持 xlsx/md/mdx/json",
+            "不支持的文件格式，支持 xlsx/md/mdx/json/jsonl",
         ));
     };
 
@@ -186,7 +189,15 @@ pub async fn upload_document(
             (vec![chunk], 1)
         }
         "json" => {
+            // `.json` exclusively routes to the OpenAPI parser; FAQ is now
+            // handled by `.jsonl`.
             let chunks = openapi_parser::parse_openapi_file(&bytes, &file_name)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            let row_count = chunks.len() as i32;
+            (chunks, row_count)
+        }
+        "jsonl" => {
+            let chunks = faq_parser::parse_faq_file(&bytes)
                 .map_err(|e| ApiError::bad_request(e.to_string()))?;
             let row_count = chunks.len() as i32;
             (chunks, row_count)

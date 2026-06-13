@@ -2,6 +2,7 @@
   "title": "教程",
   "pages": [
     "getting-started",
+    "document-formats",
     "architecture",
     "configuration",
     "deployment",
