@@ -1,39 +1,48 @@
 ---
 title: Eval
-description: Measure retrieval quality and answer accuracy with the eval pipeline
+description: Export RAG traces for open-source evaluation frameworks
 icon: FlaskConical
 ---
 
-RWiki ships a built-in eval pipeline for measuring retrieval quality and answer accuracy. It works in two parts: a backend endpoint that runs the full RAG pipeline and returns all intermediate results, and a set of Python scripts that call that endpoint against a golden dataset, compute metrics, and detect regressions.
+RWiki does not ship a local Python eval runner. Instead, the backend exposes a
+stable eval endpoint that runs the full RAG pipeline and returns payloads shaped
+for open-source evaluators such as Ragas, DeepEval, and RAGChecker.
 
-Use eval when you change the retrieval pipeline (chunking strategy, embedding model, rerank config) and want to know whether quality improved or regressed.
+Use eval when you change retrieval, rerank, prompts, or model config and need to
+compare answer quality with a fixed golden dataset.
 
 ## Eval API
 
-`POST /api/eval/query` runs the full RAG pipeline (query rewrite → hybrid search → optional rerank → LLM generate) and returns every intermediate result as JSON. It requires Bearer token auth — the same `[api] token` used for document management.
+`POST /api/eval/query` runs query rewrite, hybrid retrieval, optional rerank, and
+non-streaming answer generation. It requires the same Bearer token used by
+document management APIs.
 
 ### Request
 
 ```json
 {
-  "query": "How to upload documents",
+  "queryId": "q001",
+  "query": "How to upload documents?",
   "topK": 5,
+  "referenceAnswer": "Upload documents with POST /api/documents/upload.",
   "sessionId": "optional-session-id"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `queryId` | string | No | Stable eval case ID, forwarded to evaluator payloads. |
 | `query` | string | Yes | User query text. Empty or whitespace returns 400. |
-| `topK` | number | No | Number of search results. Defaults to 5. |
-| `sessionId` | string | No | Reuse an existing chat session for history context during query rewrite. |
+| `topK` | number | No | Number of retrieved contexts to return. Defaults to `[retrieval].max_context_chunks`. |
+| `referenceAnswer` | string | No | Golden answer for correctness metrics. |
+| `sessionId` | string | No | Reuse an existing chat session for rewrite context. |
 
 ### Response
 
 ```json
 {
-  "query": "How to upload documents",
-  "rewrittenQueries": ["upload file to knowledge base", "document upload process"],
+  "query": "How to upload documents?",
+  "rewrittenQueries": ["upload documents to knowledge base"],
   "searchResults": [
     {
       "chunkId": "chunk-abc",
@@ -49,7 +58,38 @@ Use eval when you change the retrieval pipeline (chunking strategy, embedding mo
   ],
   "reranked": false,
   "context": "<documents>...</documents>",
-  "answer": "You can upload documents via the API...",
+  "answer": "You can upload documents with POST /api/documents/upload.",
+  "evaluation": {
+    "ragas": {
+      "user_input": "How to upload documents?",
+      "retrieved_contexts": ["Upload files via POST /api/documents/upload..."],
+      "response": "You can upload documents with POST /api/documents/upload.",
+      "reference": "Upload documents with POST /api/documents/upload.",
+      "question": "How to upload documents?",
+      "answer": "You can upload documents with POST /api/documents/upload.",
+      "contexts": ["Upload files via POST /api/documents/upload..."],
+      "ground_truth": "Upload documents with POST /api/documents/upload."
+    },
+    "deepeval": {
+      "input": "How to upload documents?",
+      "actual_output": "You can upload documents with POST /api/documents/upload.",
+      "expected_output": "Upload documents with POST /api/documents/upload.",
+      "retrieval_context": ["Upload files via POST /api/documents/upload..."],
+      "context": ["Upload files via POST /api/documents/upload..."]
+    },
+    "ragchecker": {
+      "query_id": "q001",
+      "query": "How to upload documents?",
+      "gt_answer": "Upload documents with POST /api/documents/upload.",
+      "response": "You can upload documents with POST /api/documents/upload.",
+      "retrieved_context": [
+        {
+          "doc_id": "doc-001",
+          "text": "Upload files via POST /api/documents/upload..."
+        }
+      ]
+    }
+  },
   "timingMs": {
     "rewrite": 1200,
     "search": 350,
@@ -59,205 +99,51 @@ Use eval when you change the retrieval pipeline (chunking strategy, embedding mo
 }
 ```
 
-Key fields for eval consumers:
+## Recommended Tools
 
-- `searchResults[].documentId` — match against golden dataset's `expectedDocIds` to compute retrieval metrics
-- `answer` — the LLM-generated answer, used for full eval (Faithfulness, Response Relevancy)
-- `timingMs` — per-stage timing breakdown for latency analysis
-- `reranked` — whether rerank was applied
+Ragas is the best default for dataset-style RAG regression. Use
+`evaluation.ragas` for faithfulness, answer relevancy, context precision/recall,
+and answer correctness.
 
-### Error responses
+DeepEval fits test-driven CI. Use `evaluation.deepeval` to build
+`LLMTestCase(input, actual_output, expected_output, retrieval_context)` and run
+metrics such as `FaithfulnessMetric`, `AnswerRelevancyMetric`,
+`ContextualPrecisionMetric`, and custom `GEval` rules.
+
+RAGChecker is useful when you need deeper diagnosis. Pass `referenceAnswer` and
+use `evaluation.ragchecker` for claim-level metrics such as overall
+precision/recall, context utilization, hallucination, and faithfulness.
+
+Phoenix is useful for tracing and dashboards. Keep the raw response fields
+(`query`, `searchResults`, `answer`, `timingMs`) as span attributes, then log
+evaluator scores back as annotations.
+
+## Golden Dataset
+
+Keep golden data outside this repository or in your test infrastructure. A
+minimal JSONL case should include:
+
+```json
+{"queryId":"q001","query":"How to upload documents?","referenceAnswer":"Upload documents with POST /api/documents/upload.","expectedDocIds":["doc-001"]}
+```
+
+For each case, call `/api/eval/query` with `queryId`, `query`, `topK`, and
+`referenceAnswer`. The external evaluator can compute retrieval metrics from
+`searchResults[].documentId` and answer metrics from `evaluation`.
+
+## Quick Test
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"queryId":"q001","query":"What file formats does RWiki support?","topK":5}'
+```
+
+## Error Responses
 
 | Status | When |
 |--------|------|
 | 400 | `query` is empty or whitespace |
 | 401 | Missing or invalid Bearer token |
 | 503 | Knowledge base has no indexed data |
-
-### Quick test
-
-```bash
-curl -X POST http://localhost:8080/api/eval/query \
-  -H "Authorization: Bearer dev-test" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What file formats does RWiki support?"}'
-```
-
-## Prepare a golden dataset
-
-The eval scripts consume a JSONL file where each line is one test query. There are two ways to generate this file:
-
-### Mode A: Auto-generate (zero effort)
-
-Run `generate_dataset.py` to auto-generate test questions from your uploaded documents:
-
-1. Fetches all published documents from the API
-2. Retrieves chunks for each document via the eval API
-3. Uses an LLM to generate realistic test questions based on the content
-4. Outputs JSONL with document IDs already bound
-
-```bash
-uv run scripts/generate_dataset.py \
-  --config ../backend/config/demo.toml \
-  --api-url http://localhost:18080 \
-  --output datasets/auto_v1.jsonl
-```
-
-The `--config` flag reads the `[llm]` section (api_key, base_url, model) and `[api]` section (token) from a backend TOML config file. You can also override individual settings with `--llm-api-key`, `--llm-base-url`, `--llm-model`, and `--token`.
-
-### Mode B: CSV import (custom questions)
-
-If you have your own test questions, create a CSV file with `query` and `filename` columns:
-
-```csv
-query,filename
-如何上传文档,上传指南.md
-rerank 如何配置,配置说明.md
-```
-
-Multiple filenames are separated by `;`. The script automatically resolves filenames to document UUIDs via the API.
-
-### JSONL format
-
-The resulting JSONL file has this format:
-
-```json
-{"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
-{"id": "q002", "query": "rerank 如何配置", "expectedDocIds": ["doc_def456", "doc_ghi789"], "expectedAnswer": null}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | string | Yes | Unique query identifier |
-| `query` | string | Yes | The question to send to the eval API |
-| `expectedDocIds` | string[] | Yes | Document IDs that should appear in search results |
-| `expectedAnswer` | string | No | Expected answer text (reserved for future use) |
-
-A query can have multiple `expectedDocIds` — the metrics check whether *any* of them appear in the top-K results.
-
-## Run eval
-
-### Install dependencies
-
-Dependencies are managed with `uv`:
-
-```bash
-cd eval
-uv sync
-```
-
-### Retrieval-only mode (default)
-
-Computes HitRate@5, MRR@5, and Recall@5 for each query. No LLM judge needed, fast and cheap.
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080
-```
-
-Output: `eval/results/current.csv` with one row per query, plus an aggregate summary printed to stdout.
-
-### Full mode
-
-Adds Faithfulness and Response Relevancy via Ragas, which uses an LLM judge to score answer quality. The `--config` flag provides the LLM API key for Ragas.
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080 \
-  --full \
-  --judge-model gpt-4o-mini
-```
-
-The `--judge-model` flag controls which LLM Ragas uses for judging (default: `gpt-4o-mini`).
-
-### Smoke test
-
-Verifies the eval API is reachable and returns the expected response structure:
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --api-url http://localhost:18080 \
-  --smoke-test
-```
-
-Exit code 0 if the API responds correctly, 1 otherwise.
-
-## Metrics
-
-All retrieval metrics are computed at K=5 (top-5 results).
-
-### HitRate@5
-
-Binary: 1.0 if *any* expected document appears in the top-5 results, 0.0 otherwise. Measures whether the retriever can find relevant documents at all.
-
-### MRR@5 (Mean Reciprocal Rank)
-
-The reciprocal of the rank of the first expected document in the top-5. If the first relevant document is at position 1, MRR = 1.0; at position 2, MRR = 0.5; at position 3, MRR = 0.33; and so on. MRR = 0.0 if no expected document appears. Measures *how high* the relevant result ranks.
-
-### Recall@5
-
-Fraction of expected documents found in the top-5. If you specified 3 expected documents and 2 appear in the top-5, Recall = 0.67. Useful when a query should retrieve multiple relevant documents.
-
-### Faithfulness (full mode only)
-
-Scored by Ragas. Measures whether the generated answer is grounded in the retrieved context — i.e., the answer doesn't hallucinate facts not present in the search results.
-
-### Response Relevancy (full mode only)
-
-Scored by Ragas. Measures how relevant the generated answer is to the original query.
-
-## Baseline comparison
-
-After running eval, you can compare results against a baseline to detect regressions.
-
-### Save a baseline
-
-After a known-good eval run, copy the results CSV:
-
-```bash
-cp eval/results/current.csv eval/results/baseline.csv
-```
-
-### Compare
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080 \
-  --baseline eval/results/baseline.csv
-```
-
-Or run the comparison script directly:
-
-```bash
-uv run scripts/baseline_diff.py \
-  --current eval/results/current.csv \
-  --baseline eval/results/baseline.csv \
-  --threshold 0.1
-```
-
-The `--threshold` flag sets the maximum allowed regression for P0 metrics (default: 0.1 = 10%). If HitRate@5 drops by more than 10% compared to baseline, the script exits with code 1.
-
-Output includes an aggregate comparison table and a per-query breakdown showing which queries improved or regressed.
-
-### CI integration
-
-The exit code behavior makes it straightforward to integrate into CI:
-
-- Exit 0: no P0 metric regression
-- Exit 1: HitRate@5 regressed beyond the threshold
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url $API_URL \
-  --baseline eval/results/baseline.csv \
-  --threshold 0.05
-```

@@ -1,39 +1,46 @@
 ---
 title: 评估（Eval）
-description: 用 eval 管线衡量检索质量和回答准确度
+description: 导出 RAG 轨迹，交给开源评估框架打分
 icon: FlaskConical
 ---
 
-RWiki 内置了一套评估管线，用来衡量检索质量和回答准确度。它分两部分：后端接口跑完整 RAG 管线并返回所有中间结果；Python 脚本调用该接口，对着 golden dataset 计算指标，检测回归。
+RWiki 不再内置本地 Python eval runner。后端只提供稳定的 eval 接口：跑完整
+RAG 管线，并返回适配 Ragas、DeepEval、RAGChecker 等开源评估框架的 payload。
 
-当你改了检索管线的任何环节（分块策略、embedding 模型、rerank 配置），想确认质量是变好还是变差时，用 eval。
+当你修改检索、rerank、prompt 或模型配置时，用固定 golden dataset 调用这个接口，
+再用外部评估框架比较回答质量。
 
 ## Eval API
 
-`POST /api/eval/query` 跑完整 RAG 管线（查询改写 → 混合检索 → 可选 rerank → LLM 生成），返回所有中间结果的 JSON。需要 Bearer Token 鉴权——和文档管理用的 `[api] token` 一样。
+`POST /api/eval/query` 会执行查询改写、混合检索、可选 rerank 和非流式回答生成。
+接口需要 Bearer token，和文档管理 API 使用同一个 `[api] token`。
 
 ### 请求
 
 ```json
 {
-  "query": "如何上传文档",
+  "queryId": "q001",
+  "query": "如何上传文档？",
   "topK": 5,
+  "referenceAnswer": "通过 POST /api/documents/upload 上传文档。",
   "sessionId": "optional-session-id"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
+| `queryId` | string | 否 | 稳定的评估用例 ID，会透传到评估 payload。 |
 | `query` | string | 是 | 用户查询。为空或纯空格返回 400。 |
-| `topK` | number | 否 | 搜索结果数量，默认 5。 |
-| `sessionId` | string | 否 | 复用已有聊天会话，让查询改写能利用对话历史。 |
+| `topK` | number | 否 | 返回的检索上下文数量，默认使用 `[retrieval].max_context_chunks`。 |
+| `referenceAnswer` | string | 否 | 用于 correctness 指标的标准答案。 |
+| `sessionId` | string | 否 | 复用已有聊天会话，让查询改写利用对话历史。 |
 
 ### 响应
 
 ```json
 {
-  "query": "如何上传文档",
-  "rewrittenQueries": ["上传文件到知识库的方法", "文档上传流程"],
+  "query": "如何上传文档？",
+  "rewrittenQueries": ["上传文件到知识库的方法"],
   "searchResults": [
     {
       "chunkId": "chunk-abc",
@@ -49,7 +56,38 @@ RWiki 内置了一套评估管线，用来衡量检索质量和回答准确度�
   ],
   "reranked": false,
   "context": "<documents>...</documents>",
-  "answer": "你可以通过 API 上传文档...",
+  "answer": "你可以通过 POST /api/documents/upload 上传文档。",
+  "evaluation": {
+    "ragas": {
+      "user_input": "如何上传文档？",
+      "retrieved_contexts": ["通过 POST /api/documents/upload 上传文件..."],
+      "response": "你可以通过 POST /api/documents/upload 上传文档。",
+      "reference": "通过 POST /api/documents/upload 上传文档。",
+      "question": "如何上传文档？",
+      "answer": "你可以通过 POST /api/documents/upload 上传文档。",
+      "contexts": ["通过 POST /api/documents/upload 上传文件..."],
+      "ground_truth": "通过 POST /api/documents/upload 上传文档。"
+    },
+    "deepeval": {
+      "input": "如何上传文档？",
+      "actual_output": "你可以通过 POST /api/documents/upload 上传文档。",
+      "expected_output": "通过 POST /api/documents/upload 上传文档。",
+      "retrieval_context": ["通过 POST /api/documents/upload 上传文件..."],
+      "context": ["通过 POST /api/documents/upload 上传文件..."]
+    },
+    "ragchecker": {
+      "query_id": "q001",
+      "query": "如何上传文档？",
+      "gt_answer": "通过 POST /api/documents/upload 上传文档。",
+      "response": "你可以通过 POST /api/documents/upload 上传文档。",
+      "retrieved_context": [
+        {
+          "doc_id": "doc-001",
+          "text": "通过 POST /api/documents/upload 上传文件..."
+        }
+      ]
+    }
+  },
   "timingMs": {
     "rewrite": 1200,
     "search": 350,
@@ -59,205 +97,48 @@ RWiki 内置了一套评估管线，用来衡量检索质量和回答准确度�
 }
 ```
 
-评估脚本关注的核心字段：
+## 推荐开源方案
 
-- `searchResults[].documentId` — 与 golden dataset 的 `expectedDocIds` 匹配，计算检索指标
-- `answer` — LLM 生成的回答，用于 full eval（Faithfulness、Response Relevancy）
-- `timingMs` — 各阶段耗时，用于延迟分析
-- `reranked` — 是否经过 rerank
+Ragas 适合默认的 RAG 回归评估。使用 `evaluation.ragas` 计算 faithfulness、
+answer relevancy、context precision/recall 和 answer correctness。
 
-### 错误响应
+DeepEval 更适合测试驱动和 CI。使用 `evaluation.deepeval` 构造
+`LLMTestCase(input, actual_output, expected_output, retrieval_context)`，再运行
+`FaithfulnessMetric`、`AnswerRelevancyMetric`、`ContextualPrecisionMetric` 或自定义
+`GEval`。
+
+RAGChecker 适合做更细的诊断。调用接口时传入 `referenceAnswer`，再使用
+`evaluation.ragchecker` 计算 claim 级别的 overall precision/recall、
+context utilization、hallucination 和 faithfulness。
+
+Phoenix 适合做 trace 和看板。把原始响应字段（`query`、`searchResults`、`answer`、
+`timingMs`）记录为 span 属性，再把评估分数作为 annotation 写回。
+
+## Golden Dataset
+
+golden 数据建议放在仓库外或测试基础设施中。最小 JSONL 用例：
+
+```json
+{"queryId":"q001","query":"如何上传文档？","referenceAnswer":"通过 POST /api/documents/upload 上传文档。","expectedDocIds":["doc-001"]}
+```
+
+每条用例调用 `/api/eval/query` 时传入 `queryId`、`query`、`topK` 和
+`referenceAnswer`。外部评估工具可以用 `searchResults[].documentId` 计算检索指标，
+用 `evaluation` 计算最终答案指标。
+
+## 快速测试
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"queryId":"q001","query":"RWiki 支持哪些文件格式？","topK":5}'
+```
+
+## 错误响应
 
 | 状态码 | 触发条件 |
 |--------|----------|
 | 400 | `query` 为空或纯空格 |
 | 401 | 缺少或无效的 Bearer token |
 | 503 | 知识库没有索引数据 |
-
-### 快速测试
-
-```bash
-curl -X POST http://localhost:8080/api/eval/query \
-  -H "Authorization: Bearer dev-test" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "RWiki 支持哪些文件格式？"}'
-```
-
-## 准备 golden dataset
-
-评估脚本读取 JSONL 文件，每行一条测试查询。有两种方式生成这个文件：
-
-### 方式 A：自动生成（零成本）
-
-运行 `generate_dataset.py`，从已上传的文档自动生成测试问题：
-
-1. 通过 API 拉取所有已发布的文档
-2. 获取每个文档的 chunks
-3. 用 LLM 基于文档内容生成测试问题
-4. 输出 JSONL，文档 ID 已自动绑定
-
-```bash
-uv run scripts/generate_dataset.py \
-  --config ../backend/config/demo.toml \
-  --api-url http://localhost:18080 \
-  --output datasets/auto_v1.jsonl
-```
-
-`--config` 从后端 TOML 配置文件读取 `[llm]` 部分（api_key、base_url、model）和 `[api]` 部分（token）。也可以用 `--llm-api-key`、`--llm-base-url`、`--llm-model`、`--token` 单独覆盖。
-
-### 方式 B：CSV 导入（自定义问题）
-
-如果你有自己的测试问题，创建一个 CSV 文件，包含 `query` 和 `filename` 两列：
-
-```csv
-query,filename
-如何上传文档,上传指南.md
-rerank 如何配置,配置说明.md
-```
-
-多个文件名用 `;` 分隔。脚本会自动通过 API 将文件名解析为文档 UUID。
-
-### JSONL 格式
-
-最终生成的 JSONL 文件格式如下：
-
-```json
-{"id": "q001", "query": "如何上传文档", "expectedDocIds": ["doc_abc123"], "expectedAnswer": null}
-{"id": "q002", "query": "rerank 如何配置", "expectedDocIds": ["doc_def456", "doc_ghi789"], "expectedAnswer": null}
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | 是 | 查询的唯一标识 |
-| `query` | string | 是 | 发给 eval API 的问题 |
-| `expectedDocIds` | string[] | 是 | 应该出现在搜索结果中的文档 ID |
-| `expectedAnswer` | string | 否 | 期望的回答文本（预留字段） |
-
-一条查询可以有多个 `expectedDocIds`——指标会检查这些文档是否出现在 top-K 结果中。
-
-## 运行评估
-
-### 安装依赖
-
-使用 `uv` 管理依赖：
-
-```bash
-cd eval
-uv sync
-```
-
-### Retrieval-only 模式（默认）
-
-只计算 HitRate@5、MRR@5、Recall@5。不需要 LLM judge，快且便宜。
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080
-```
-
-输出写到 `eval/results/current.csv`，每行一条查询的结果，同时在终端打印汇总。
-
-### Full 模式
-
-额外通过 Ragas 计算 Faithfulness 和 Response Relevancy，需要 LLM judge 给回答质量打分。`--config` 会提供 Ragas 所需的 LLM API key。
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080 \
-  --full \
-  --judge-model gpt-4o-mini
-```
-
-`--judge-model` 控制 Ragas 用来打分的 LLM（默认 `gpt-4o-mini`）。
-
-### Smoke test
-
-验证 eval API 是否可达且返回结构正确：
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --api-url http://localhost:18080 \
-  --smoke-test
-```
-
-API 响应正确则退出码 0，否则 1。
-
-## 指标说明
-
-所有检索指标在 K=5（top-5 结果）上计算。
-
-### HitRate@5
-
-二值指标：top-5 结果中包含任意一个期望文档则为 1.0，否则为 0.0。衡量检索器能否找到相关文档。
-
-### MRR@5（Mean Reciprocal Rank）
-
-第一个期望文档在 top-5 中的排名的倒数。排名第 1 时 MRR = 1.0，第 2 时 = 0.5，第 3 时 = 0.33，以此类推。没有命中则为 0.0。衡量相关结果排得有多靠前。
-
-### Recall@5
-
-top-5 结果中找到的期望文档占比。如果指定了 3 个期望文档，top-5 中出现了 2 个，则 Recall = 0.67。适用于一条查询应该检索出多篇相关文档的场景。
-
-### Faithfulness（仅 full 模式）
-
-Ragas 打分。衡量生成的回答是否基于检索到的上下文——即回答没有编造检索结果中不存在的事实。
-
-### Response Relevancy（仅 full 模式）
-
-Ragas 打分。衡量生成的回答与原始查询的相关程度。
-
-## 基线对比与回归检测
-
-跑完 eval 后，可以把结果和基线对比，检测是否回归。
-
-### 保存基线
-
-在已知质量良好的评估结果上，复制一份作为基线：
-
-```bash
-cp eval/results/current.csv eval/results/baseline.csv
-```
-
-### 对比
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url http://localhost:18080 \
-  --baseline eval/results/baseline.csv
-```
-
-也可以直接调用对比脚本：
-
-```bash
-uv run scripts/baseline_diff.py \
-  --current eval/results/current.csv \
-  --baseline eval/results/baseline.csv \
-  --threshold 0.1
-```
-
-`--threshold` 设置 P0 指标允许的最大回退幅度（默认 0.1 = 10%）。如果 HitRate@5 下降超过 10%，脚本退出码为 1。
-
-输出包括汇总对比表和逐条查询的明细，显示哪些查询变好了、哪些变差了。
-
-### CI 集成
-
-退出码的行为使它可以直接接入 CI：
-
-- 退出码 0：P0 指标没有回归
-- 退出码 1：HitRate@5 超过阈值回退
-
-```bash
-uv run scripts/run_eval.py \
-  --config ../backend/config/demo.toml \
-  --dataset datasets/auto_v1.jsonl \
-  --api-url $API_URL \
-  --baseline eval/results/baseline.csv \
-  --threshold 0.05
-```

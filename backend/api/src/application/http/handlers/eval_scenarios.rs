@@ -143,6 +143,7 @@ async fn test_app_state(seed_data: bool) -> Arc<AppState> {
         api_token: "test-api-token".to_string(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: RerankConfig::default(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
@@ -398,5 +399,67 @@ async fn eval_query_with_session_id_carries_context() {
     assert!(
         body.get("timingMs").is_some(),
         "response must contain timingMs field"
+    );
+}
+
+// User Story: External evaluator integration -- The eval endpoint should expose
+// payloads that can be passed directly into common open-source RAG evaluators.
+// Covers: Ragas, DeepEval, and RAGChecker adapter fields in EvalPayload.
+#[tokio::test]
+async fn eval_query_returns_open_source_evaluator_payloads() {
+    let state = test_app_state(true).await;
+    let app = create_api_routes(state);
+
+    let req = eval_request("Rust programming language", None, true);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "eval endpoint should succeed, got status {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = parse_json_body(resp.into_body()).await;
+    let evaluation = body
+        .get("evaluation")
+        .expect("response must contain evaluation payload");
+
+    assert_eq!(
+        evaluation["ragas"]["user_input"], body["query"],
+        "Ragas user_input should mirror the original query"
+    );
+    assert_eq!(
+        evaluation["ragas"]["response"], body["answer"],
+        "Ragas response should mirror the generated answer"
+    );
+    assert!(
+        evaluation["ragas"]["retrieved_contexts"].is_array(),
+        "Ragas retrieved_contexts must be an array"
+    );
+
+    assert_eq!(
+        evaluation["deepeval"]["input"], body["query"],
+        "DeepEval input should mirror the original query"
+    );
+    assert_eq!(
+        evaluation["deepeval"]["actual_output"], body["answer"],
+        "DeepEval actual_output should mirror the generated answer"
+    );
+    assert!(
+        evaluation["deepeval"]["retrieval_context"].is_array(),
+        "DeepEval retrieval_context must be an array"
+    );
+
+    assert_eq!(
+        evaluation["ragchecker"]["query"], body["query"],
+        "RAGChecker query should mirror the original query"
+    );
+    assert_eq!(
+        evaluation["ragchecker"]["response"], body["answer"],
+        "RAGChecker response should mirror the generated answer"
+    );
+    assert!(
+        evaluation["ragchecker"]["retrieved_context"].is_array(),
+        "RAGChecker retrieved_context must be an array"
     );
 }

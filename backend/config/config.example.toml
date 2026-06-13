@@ -88,6 +88,13 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
 # en = ["How to get started", "What file formats are supported"]
 
+[retrieval]
+# 每个查询变体召回的候选数量（默认 5）
+# search_top_k_per_query = 5
+
+# 最终送入 LLM 上下文的最大 chunk 数（默认 12）
+# max_context_chunks = 12
+
 [otel]
 # OpenTelemetry OTLP tracing 和 metrics 导出配置
 # endpoint 为空时不启用 OTLP tracing 和 metrics（本地开发零开销）

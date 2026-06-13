@@ -189,6 +189,23 @@ token_budget = 12000
 # content_language = "English"  # 知识库文档主要为英文时取消注释
 ```
 
+## Retrieval
+
+`[retrieval]` — RAG 检索数量配置。所有字段均有默认值，可省略整个 `[retrieval]` 段。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `search_top_k_per_query` | number | 否 | `5` | 每个改写查询变体召回的候选数量 |
+| `max_context_chunks` | number | 否 | `12` | 最终送入 LLM 上下文的最大 chunk 数 |
+
+`/api/eval/query` 可以通过请求里的 `topK` 覆盖单次评估的上下文数量。Chat 请求使用配置文件中的值。
+
+```toml
+[retrieval]
+search_top_k_per_query = 5
+max_context_chunks = 12
+```
+
 ## OpenTelemetry
 
 `[otel]` — OpenTelemetry OTLP tracing 和 metrics 导出配置。所有字段均有默认值，可省略整个 `[otel]` 段。`endpoint` 为空时不启用 OTLP tracing 和 metrics，本地开发零开销。

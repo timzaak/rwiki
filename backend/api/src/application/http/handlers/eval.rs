@@ -18,11 +18,17 @@ use super::chat::{build_preamble, format_context_xml, rewrite_query, search_and_
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EvalQueryRequest {
+    /// Optional stable eval case ID for downstream tools
+    #[serde(rename = "queryId")]
+    pub query_id: Option<String>,
     /// User query text
     pub query: String,
     /// Number of search results to return (default 5)
     #[serde(rename = "topK", default)]
     pub top_k: Option<u32>,
+    /// Optional reference answer for correctness-oriented evaluators
+    #[serde(rename = "referenceAnswer")]
+    pub reference_answer: Option<String>,
     /// Session ID to reuse chat SessionStore for history context
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
@@ -43,6 +49,8 @@ pub struct EvalQueryResponse {
     pub context: String,
     /// LLM-generated answer (non-streaming)
     pub answer: String,
+    /// Pre-shaped payloads for common open-source RAG evaluators
+    pub evaluation: EvalPayload,
     /// Timing breakdown in milliseconds
     pub timing_ms: TimingMs,
 }
@@ -59,6 +67,55 @@ pub struct EvalSearchResult {
     pub section: Option<String>,
     pub locale: Option<String>,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalPayload {
+    /// Ragas-compatible single-turn sample. Includes both current and legacy field names.
+    pub ragas: RagasEvalSample,
+    /// DeepEval-compatible LLMTestCase fields.
+    pub deepeval: DeepEvalTestCasePayload,
+    /// RAGChecker-compatible result object.
+    pub ragchecker: RagCheckerResultPayload,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RagasEvalSample {
+    pub user_input: String,
+    pub retrieved_contexts: Vec<String>,
+    pub response: String,
+    pub reference: Option<String>,
+    pub question: String,
+    pub answer: String,
+    pub contexts: Vec<String>,
+    pub ground_truth: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeepEvalTestCasePayload {
+    pub input: String,
+    pub actual_output: String,
+    pub expected_output: Option<String>,
+    pub retrieval_context: Vec<String>,
+    pub context: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RagCheckerResultPayload {
+    pub query_id: String,
+    pub query: String,
+    pub gt_answer: String,
+    pub response: String,
+    pub retrieved_context: Vec<RagCheckerContextPayload>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RagCheckerContextPayload {
+    pub doc_id: String,
+    pub text: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -110,6 +167,12 @@ pub async fn eval_query(
         ));
     }
 
+    let top_k = req
+        .top_k
+        .map(|k| k as usize)
+        .unwrap_or(state.retrieval_config.max_context_chunks)
+        .max(1);
+
     // Determine session ID and get history
     let session_id = req
         .session_id
@@ -152,6 +215,8 @@ pub async fn eval_query(
         &state.rerank_config,
         &req.query,
         &rewritten_queries,
+        top_k,
+        top_k,
         &state.metrics,
     )
     .await?;
@@ -195,6 +260,46 @@ pub async fn eval_query(
         .map_err(|e| ApiError::internal(format!("LLM generation failed: {e}")))?;
     let generate_ms = generate_start.elapsed().as_millis() as u64;
 
+    let contexts: Vec<String> = search_results.iter().map(|r| r.content.clone()).collect();
+    let ragchecker_context: Vec<RagCheckerContextPayload> = search_results
+        .iter()
+        .map(|r| RagCheckerContextPayload {
+            doc_id: r.document_id.clone(),
+            text: r.content.clone(),
+        })
+        .collect();
+    let reference_answer = req.reference_answer.clone();
+    let query_id = req
+        .query_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let evaluation = EvalPayload {
+        ragas: RagasEvalSample {
+            user_input: req.query.clone(),
+            retrieved_contexts: contexts.clone(),
+            response: answer.clone(),
+            reference: reference_answer.clone(),
+            question: req.query.clone(),
+            answer: answer.clone(),
+            contexts: contexts.clone(),
+            ground_truth: reference_answer.clone(),
+        },
+        deepeval: DeepEvalTestCasePayload {
+            input: req.query.clone(),
+            actual_output: answer.clone(),
+            expected_output: reference_answer.clone(),
+            retrieval_context: contexts.clone(),
+            context: contexts,
+        },
+        ragchecker: RagCheckerResultPayload {
+            query_id,
+            query: req.query.clone(),
+            gt_answer: reference_answer.unwrap_or_default(),
+            response: answer.clone(),
+            retrieved_context: ragchecker_context,
+        },
+    };
+
     // Map search results to eval DTOs
     let eval_results: Vec<EvalSearchResult> = search_results
         .into_iter()
@@ -220,6 +325,7 @@ pub async fn eval_query(
         reranked,
         context: context_text,
         answer,
+        evaluation,
         timing_ms: TimingMs {
             rewrite: rewrite_ms,
             search: search_ms,

@@ -1,6 +1,7 @@
 use rig::providers::openai;
 use rwiki_core::config::ChatConfig;
 use rwiki_core::config::RerankConfig;
+use rwiki_core::config::RetrievalConfig;
 use rwiki_core::domain::chat::ChatSession;
 use rwiki_core::infrastructure::metrics::RwikiMetrics;
 use rwiki_core::infrastructure::reranker::RerankerProvider;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub chat_config: ChatConfig,
     /// 静态文件目录路径（含 widget JS 等），为 None 时不托管
     pub static_dir: Option<String>,
+    /// RAG 检索配置
+    pub retrieval_config: RetrievalConfig,
     /// Reranker（None 表示未启用）
     pub reranker: Option<RerankerProvider>,
     /// Rerank 配置

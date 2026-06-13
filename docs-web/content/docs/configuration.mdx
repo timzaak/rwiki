@@ -189,6 +189,23 @@ token_budget = 12000
 # content_language = "English"  # Uncomment if docs are primarily in English
 ```
 
+## Retrieval
+
+`[retrieval]` — RAG retrieval limits. All fields have defaults, so the entire section can be omitted.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `search_top_k_per_query` | number | No | `5` | Number of candidates retrieved for each rewritten query variant |
+| `max_context_chunks` | number | No | `12` | Maximum chunks passed into the LLM context |
+
+`/api/eval/query` can override the per-request context count with `topK`. Chat requests use the configured values.
+
+```toml
+[retrieval]
+search_top_k_per_query = 5
+max_context_chunks = 12
+```
+
 ## OpenTelemetry
 
 `[otel]` — OpenTelemetry OTLP tracing and metrics export config. All fields have defaults, so the entire `[otel]` section can be omitted. When `endpoint` is empty, both OTLP tracing and metrics are disabled — zero overhead for local development.

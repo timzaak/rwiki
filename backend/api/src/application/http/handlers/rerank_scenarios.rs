@@ -125,6 +125,7 @@ async fn test_app_state_with_reranker(
         api_token: "test-api-token".to_string(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker,
         rerank_config,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),

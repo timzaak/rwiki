@@ -93,6 +93,7 @@ async fn test_app_state() -> Arc<AppState> {
         api_token: TEST_API_TOKEN.to_string(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),

@@ -20,6 +20,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub otel: OtelConfig,
     #[serde(default)]
+    pub retrieval: RetrievalConfig,
+    #[serde(default)]
     pub rerank: RerankConfig,
 }
 
@@ -166,6 +168,34 @@ impl ChatConfig {
 4. 如果多个来源提供相同信息，合并引用，如 [Source 1][Source 2]。\n\
 5. 如果来源之间信息冲突，说明冲突并分别引用相关来源。\n\
 6. 如果来源标注了语言（Locale），请在引用中提及信息的语言。";
+}
+
+fn default_search_top_k_per_query() -> usize {
+    5
+}
+
+fn default_max_context_chunks() -> usize {
+    12
+}
+
+/// RAG 检索配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalConfig {
+    /// 每个查询变体召回的候选数量（默认 5）
+    #[serde(default = "default_search_top_k_per_query")]
+    pub search_top_k_per_query: usize,
+    /// 最终送入 LLM 上下文的最大 chunk 数（默认 12）
+    #[serde(default = "default_max_context_chunks")]
+    pub max_context_chunks: usize,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            search_top_k_per_query: default_search_top_k_per_query(),
+            max_context_chunks: default_max_context_chunks(),
+        }
+    }
 }
 
 /// API Token 配置
@@ -353,6 +383,8 @@ mod tests {
         assert_eq!(config.chat.sliding_window_size, 6);
         assert_eq!(config.chat.compact_threshold, 8);
         assert_eq!(config.chat.token_budget, 8000);
+        assert_eq!(config.retrieval.search_top_k_per_query, 5);
+        assert_eq!(config.retrieval.max_context_chunks, 12);
     }
 
     #[test]
@@ -443,6 +475,33 @@ mod tests {
             toml::from_str(toml_str).expect("config without [otel] should deserialize");
         assert!(config.otel.endpoint.is_empty());
         assert_eq!(config.otel.service_name, "rwiki-backend");
+    }
+
+    // Covers: Retrieval config defaults — missing [retrieval] preserves existing search behavior.
+    #[test]
+    fn retrieval_config_default_preserves_existing_limits() {
+        let config = RetrievalConfig::default();
+        assert_eq!(
+            config.search_top_k_per_query, 5,
+            "default per-query search top-k should preserve the previous hardcoded value"
+        );
+        assert_eq!(
+            config.max_context_chunks, 12,
+            "default max context chunks should preserve the previous hardcoded value"
+        );
+    }
+
+    // Covers: Retrieval config parsing — admins can tune search and context limits from TOML.
+    #[test]
+    fn retrieval_config_parses_all_fields() {
+        let toml_str = r#"
+            search_top_k_per_query = 8
+            max_context_chunks = 16
+        "#;
+        let config: RetrievalConfig =
+            toml::from_str(toml_str).expect("retrieval config should deserialize");
+        assert_eq!(config.search_top_k_per_query, 8);
+        assert_eq!(config.max_context_chunks, 16);
     }
 
     // Covers: PRD config-driven enablement — license_key field parsing within full AppConfig TOML.

@@ -440,6 +440,8 @@ pub(crate) async fn search_and_rerank(
     rerank_config: &rwiki_core::config::RerankConfig,
     original_query: &str,
     search_queries: &[String],
+    top_k_per_query: usize,
+    max_total_context_chunks: usize,
     metrics: &RwikiMetrics,
 ) -> Result<Vec<SearchResult>, ApiError> {
     let retrieval_start = Instant::now();
@@ -451,16 +453,37 @@ pub(crate) async fn search_and_rerank(
 
     let results = if search_queries.len() == 1 {
         vector_store
-            .search_hybrid(&search_queries[0], 5, 1, 3, 12, RRF_K)
+            .search_hybrid(
+                &search_queries[0],
+                top_k_per_query,
+                1,
+                3,
+                max_total_context_chunks,
+                RRF_K,
+            )
             .await
     } else {
         let results = vector_store
-            .search_multi_query_hybrid(search_queries, 5, 1, 3, 12, RRF_K)
+            .search_multi_query_hybrid(
+                search_queries,
+                top_k_per_query,
+                1,
+                3,
+                max_total_context_chunks,
+                RRF_K,
+            )
             .await?;
         if results.is_empty() {
             tracing::warn!("all rewrite queries returned empty, falling back to original query");
             vector_store
-                .search_hybrid(original_query, 5, 1, 3, 12, RRF_K)
+                .search_hybrid(
+                    original_query,
+                    top_k_per_query,
+                    1,
+                    3,
+                    max_total_context_chunks,
+                    RRF_K,
+                )
                 .await
         } else {
             Ok(results)
@@ -658,6 +681,8 @@ pub async fn chat(
             &state.rerank_config,
             &req.message,
             &search_queries,
+            state.retrieval_config.search_top_k_per_query.max(1),
+            state.retrieval_config.max_context_chunks.max(1),
             &state.metrics,
         )
         .await?;

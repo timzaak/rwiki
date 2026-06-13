@@ -486,6 +486,7 @@ async fn main() -> Result<()> {
         api_token: config.api.token.clone(),
         chat_config,
         static_dir: config.server.static_dir.clone(),
+        retrieval_config: config.retrieval.clone(),
         reranker,
         rerank_config: config.rerank,
         metrics: metrics.clone(),
