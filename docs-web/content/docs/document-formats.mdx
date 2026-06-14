@@ -131,13 +131,13 @@ The `question` also serves as the page title. This shape ensures the question pa
 
 | Status | Trigger | Message |
 |--------|---------|---------|
-| `400` invalid JSON | A line is not valid JSON or is not a JSON object | `第 N 行 JSON 格式无效: {detail}` |
-| `400` unsupported encoding | Non-UTF-8 file | `文件编码不支持，仅支持 UTF-8` |
-| `400` missing field | A Q&A object lacks `question` or `answer` | `第 N 条问答缺少必填字段: question/answer` |
-| `400` empty field | `question` or `answer` is empty or whitespace | `第 N 条问答的 question 不能为空` |
-| `400` empty file | No Q&A records (file is empty or only blank lines) | `文件中没有可用的问答数据` |
+| `400` invalid JSON | A line is not valid JSON or is not a JSON object | `Line N: invalid JSON: {detail}` |
+| `400` unsupported encoding | Non-UTF-8 file | `Unsupported file encoding: only UTF-8 is supported` |
+| `400` missing field | A Q&A object lacks `question` or `answer` | `Q&A item N is missing required field(s): question/answer` |
+| `400` empty field | `question` or `answer` is empty or whitespace | `Q&A item N: field "question" must not be empty` |
+| `400` empty file | No Q&A records (file is empty or only blank lines) | `No usable Q&A records found in the file` |
 
-`N` in the `第 N 行 JSON 格式无效` message is a 1-based physical line number. `N` in the other messages is a 0-based Q&A index that skips blank lines, so you can jump straight to the offending record.
+`N` in the `Line N: invalid JSON` message is a 1-based physical line number. `N` in the other messages is a 0-based Q&A index that skips blank lines, so you can jump straight to the offending record.
 
 ## What happens after upload
 
@@ -147,6 +147,8 @@ Regardless of format, every uploaded file walks the same pipeline:
 2. Embed each chunk via the embedding model and write to the vector store
 3. Build a FTS5 full-text index in parallel (jieba tokenization)
 4. Persist document metadata to SQLite, mark status as `draft`
+
+Before writing, content is deduplicated: if a chunk's content already exists in a `published` document, that chunk is skipped — not re-indexed, not duplicated online (only `draft`-to-`draft` duplication is allowed). The skipped count is logged.
 
 At this point the document is previewable but not yet visible in chat answers. Call `PATCH /api/documents/{id}/publish` to make it retrievable.
 

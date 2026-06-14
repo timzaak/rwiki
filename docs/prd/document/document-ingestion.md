@@ -41,6 +41,7 @@
 - Markdown/MDX 每个文件生成一个 page。
 - 每个 page 使用独立 `page_id`，用于 chunk 分组、去重和邻居扩展。
 - Excel 行号只用于错误提示，不作为领域 ID。
+- 写入去重：上传时按 `content_hash`（MD5）检测，若某 chunk 内容已存在于任意 `published` 文档，则跳过该 chunk 的写入（不重复入库、不重复上线）；`draft` 文档之间不去重（草稿可能不上线/被删，各自保留）。该去重独立于 `refresh_embed`，与「相同内容复用向量、省 API 调用」是两层不同机制。
 
 ## 4. 支持格式
 

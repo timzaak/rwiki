@@ -42,7 +42,7 @@
 - FAQ 专用检索策略（如 BM25 问题匹配加权）
 - CSV、YAML 等其他 FAQ 数据格式
 - 前端上传页面或 UI 调整
-- FAQ 问答对的去重或合并
+- FAQ 问答对的语义去重或合并（如按问题聚类、合并近似问答）。注：内容级写入去重（相同内容已上线则跳过）由摄入管道统一处理，见 `document/document-ingestion.md`
 - `category` 字段的存储或处理（忽略该字段，用户可将分类信息纳入 `tags` 或 question/answer 文本）
 
 ### 2.3 依赖项

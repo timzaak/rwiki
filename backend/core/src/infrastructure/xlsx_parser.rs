@@ -75,17 +75,27 @@ impl std::fmt::Display for WikiParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WikiParseError::MissingRequiredColumns { missing } => {
-                write!(f, "缺少必填列: {}", missing.join("、"))
+                write!(f, "Missing required column(s): {}", missing.join(", "))
             }
             WikiParseError::RowValidationFailed { errors } => {
                 let details: Vec<String> = errors
                     .iter()
-                    .map(|e| format!("第 {} 行缺少 {}", e.excel_row, e.missing_fields.join("、")))
+                    .map(|e| {
+                        format!(
+                            "Row {}: missing {}",
+                            e.excel_row,
+                            e.missing_fields.join(", ")
+                        )
+                    })
                     .collect();
-                write!(f, "以下行数据不完整:\n{}", details.join("\n"))
+                write!(
+                    f,
+                    "The following rows are incomplete:\n{}",
+                    details.join("\n")
+                )
             }
-            WikiParseError::NoDataRows => write!(f, "文件中没有可用的数据行"),
-            WikiParseError::InvalidFormat(msg) => write!(f, "文件格式无效: {msg}"),
+            WikiParseError::NoDataRows => write!(f, "No usable data rows found in the file"),
+            WikiParseError::InvalidFormat(msg) => write!(f, "Invalid file format: {msg}"),
         }
     }
 }
@@ -107,19 +117,19 @@ const COL_TAGS: &str = "Tags";
 pub fn parse_xlsx_wiki(bytes: &[u8]) -> Result<ParseWikiResult, WikiParseError> {
     let cursor = Cursor::new(bytes.to_vec());
     let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
-        .map_err(|e| WikiParseError::InvalidFormat(format!("无法解析 xlsx 文件: {e}")))?;
+        .map_err(|e| WikiParseError::InvalidFormat(format!("Failed to parse xlsx file: {e}")))?;
 
     let range: Range<Data> = workbook
         .worksheet_range_at(0)
-        .ok_or_else(|| WikiParseError::InvalidFormat("xlsx 文件中没有工作表".into()))?
-        .map_err(|e| WikiParseError::InvalidFormat(format!("无法读取工作表: {e}")))?;
+        .ok_or_else(|| WikiParseError::InvalidFormat("No worksheet found in the xlsx file".into()))?
+        .map_err(|e| WikiParseError::InvalidFormat(format!("Failed to read worksheet: {e}")))?;
 
     let mut rows = range.rows();
 
     // Extract headers from first row, build column name -> index mapping
     let header_row = rows
         .next()
-        .ok_or_else(|| WikiParseError::InvalidFormat("xlsx 文件没有表头行".into()))?;
+        .ok_or_else(|| WikiParseError::InvalidFormat("The xlsx file has no header row".into()))?;
 
     let col_map: HashMap<String, usize> = header_row
         .iter()
@@ -135,7 +145,7 @@ pub fn parse_xlsx_wiki(bytes: &[u8]) -> Result<ParseWikiResult, WikiParseError> 
         .collect();
 
     if col_map.is_empty() {
-        return Err(WikiParseError::InvalidFormat("表头为空".into()));
+        return Err(WikiParseError::InvalidFormat("Header is empty".into()));
     }
 
     // Validate required columns
@@ -277,7 +287,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("无法解析 xlsx")),
+            matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("Failed to parse xlsx")),
             "expected InvalidFormat with parse failure, got: {err:?}"
         );
     }

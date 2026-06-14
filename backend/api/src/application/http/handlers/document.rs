@@ -237,7 +237,18 @@ pub async fn upload_document(
         .index_document_with_options(document_id, chunks, IndexOptions { refresh_embed })
         .await
     {
-        Ok(_) => {
+        Ok(stats) => {
+            // 写入去重 reporting：跳过已存在于 published 文档的重复内容（Rule 12 fail loud）
+            if stats.skipped_duplicate > 0 {
+                tracing::warn!(
+                    %document_id,
+                    indexed = stats.indexed,
+                    skipped_duplicate = stats.skipped_duplicate,
+                    "上传文档跳过重复内容（已存在于 published 文档）"
+                );
+            } else {
+                tracing::info!(%document_id, indexed = stats.indexed, "上传文档索引完成");
+            }
             // Update status to `draft`
             let doc_id_str = document_id.to_string();
             state

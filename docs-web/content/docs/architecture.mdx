@@ -57,7 +57,7 @@ Overlong chunks are further split at Markdown semantic boundaries.
 
 ### Vectorization & Storage
 
-Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Identical content is deduplicated, skipping redundant API calls.
+Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication runs at two levels: **identical content already present in a `published` document is skipped entirely** (preventing duplicates from polluting retrieval); other identical content reuses cached vectors, skipping redundant API calls.
 
 In parallel, each chunk's text is tokenized with [jieba](https://github.com/messense/jieba-rs) (Chinese word segmentation) and indexed into an FTS5 virtual table (`fts_chunks`). This enables BM25 keyword search alongside vector similarity search — the two are fused via Reciprocal Rank Fusion (RRF) at retrieval time.
 

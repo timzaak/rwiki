@@ -23,15 +23,15 @@ const METHODS: &[&str] = &[
 /// Error type for OpenAPI JSON file parsing.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenApiParseError {
-    #[error("文件编码不支持，仅支持 UTF-8")]
+    #[error("Unsupported file encoding: only UTF-8 is supported")]
     InvalidEncoding,
-    #[error("JSON 格式无效: {0}")]
+    #[error("Invalid JSON: {0}")]
     InvalidJson(String),
-    #[error("不是有效的 OpenAPI 3.x 格式: 缺少 openapi 字段")]
+    #[error("Not a valid OpenAPI 3.x document: missing \"openapi\" field")]
     MissingOpenApiField,
-    #[error("不是有效的 OpenAPI 3.x 格式: 仅支持 OpenAPI 3.x 版本")]
+    #[error("Not a valid OpenAPI 3.x document: only OpenAPI 3.x is supported")]
     UnsupportedVersion,
-    #[error("文件中没有可解析的 API 端点")]
+    #[error("No parseable API endpoints found in the file")]
     EmptyPaths,
 }
 
@@ -274,7 +274,7 @@ fn resolve_ref(ref_path: &str, schemas: &HashMap<String, &Value>) -> String {
         if let Some(schema) = schemas.get(schema_name) {
             return format_schema_summary(schema, schemas);
         }
-        return format!("(未找到引用: {})", ref_path);
+        return format!("(unresolved $ref: {})", ref_path);
     }
     // Non-local refs are ignored
     String::new()

@@ -131,13 +131,13 @@ frontmatter 字段：
 
 | 错误 | 触发条件 | 提示 |
 |------|----------|------|
-| `400` JSON 格式无效 | 某行不是合法 JSON 或不是 JSON 对象 | `第 N 行 JSON 格式无效: {细节}` |
-| `400` 编码不支持 | 非 UTF-8 文件 | `文件编码不支持，仅支持 UTF-8` |
-| `400` 缺字段 | 某条 Q&A 缺 `question` 或 `answer` | `第 N 条问答缺少必填字段: question/answer` |
-| `400` 字段为空 | `question` 或 `answer` 是空串或纯空白 | `第 N 条问答的 question 不能为空` |
-| `400` 空文件 | 文件没有任何 Q&A 数据（空文件或只有空白行） | `文件中没有可用的问答数据` |
+| `400` JSON 格式无效 | 某行不是合法 JSON 或不是 JSON 对象 | `Line N: invalid JSON: {detail}` |
+| `400` 编码不支持 | 非 UTF-8 文件 | `Unsupported file encoding: only UTF-8 is supported` |
+| `400` 缺字段 | 某条 Q&A 缺 `question` 或 `answer` | `Q&A item N is missing required field(s): question/answer` |
+| `400` 字段为空 | `question` 或 `answer` 是空串或纯空白 | `Q&A item N: field "question" must not be empty` |
+| `400` 空文件 | 文件没有任何 Q&A 数据（空文件或只有空白行） | `No usable Q&A records found in the file` |
 
-`第 N 行` 里的 `N` 是物理行号（从 1 开始）；其它提示里的 `N` 是 Q&A 序号（从 0 开始，跳过空白行后编号），方便直接定位到出错的那条。
+`Line N` 里的 `N` 是物理行号（从 1 开始）；其它提示里的 `N` 是 Q&A 序号（从 0 开始，跳过空白行后编号），方便直接定位到出错的那条。
 
 ## 上传之后发生什么
 
@@ -147,6 +147,8 @@ frontmatter 字段：
 2. 每个 chunk 调用 embedding 模型生成向量，存入向量库
 3. 同步建 FTS5 全文索引（用 jieba 分词）
 4. 文档元数据落 SQLite，状态置 `draft`
+
+写入前会做内容去重：若某 chunk 内容已存在于已发布（`published`）文档，该 chunk 被跳过，不重复入库、也不重复上线（仅 `draft` 之间不去重）。跳过条数会记录到日志。
 
 到这一步可以预览，但不会出现在聊天回答里。`PATCH /api/documents/{id}/publish` 发布之后才会被检索到。
 

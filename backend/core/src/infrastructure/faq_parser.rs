@@ -69,19 +69,25 @@ pub enum FaqParseError {
 impl fmt::Display for FaqParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FaqParseError::InvalidEncoding => write!(f, "文件编码不支持，仅支持 UTF-8"),
-            FaqParseError::InvalidJson { line, detail } => {
-                write!(f, "第 {line} 行 JSON 格式无效: {detail}")
+            FaqParseError::InvalidEncoding => {
+                write!(f, "Unsupported file encoding: only UTF-8 is supported")
             }
-            FaqParseError::EmptyFile => write!(f, "文件中没有可用的问答数据"),
+            FaqParseError::InvalidJson { line, detail } => {
+                write!(f, "Line {line}: invalid JSON: {detail}")
+            }
+            FaqParseError::EmptyFile => write!(f, "No usable Q&A records found in the file"),
             FaqParseError::MissingRequiredFields { index, fields } => {
                 // Hand-render fields as slash-joined (NOT Debug format) so the
                 // output matches the design doc §4.2.2 table:
-                //   "第 0 条问答缺少必填字段: question/answer"
-                write!(f, "第 {index} 条问答缺少必填字段: {}", fields.join("/"))
+                //   "Q&A item 0 is missing required field(s): question/answer"
+                write!(
+                    f,
+                    "Q&A item {index} is missing required field(s): {}",
+                    fields.join("/")
+                )
             }
             FaqParseError::EmptyField { index, field } => {
-                write!(f, "第 {index} 条问答的 {field} 不能为空")
+                write!(f, "Q&A item {index}: field \"{field}\" must not be empty")
             }
         }
     }

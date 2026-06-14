@@ -57,7 +57,7 @@ flowchart LR
 
 ### 向量化与存储
 
-每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。相同内容会自动去重，跳过重复的 API 调用。
+每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重分两层：**已存在于已发布（`published`）文档的相同内容直接跳过写入**，避免重复内容上线污染检索；其余相同内容复用已缓存向量，跳过重复的 API 调用。
 
 同时，每个 chunk 的文本会用 [jieba](https://github.com/messense/jieba-rs)（中文分词）进行分词，写入 FTS5 虚拟表（`fts_chunks`）。这样检索时可以同时做 BM25 关键词搜索和向量相似度搜索，两种结果通过 Reciprocal Rank Fusion（RRF）融合排序。
 

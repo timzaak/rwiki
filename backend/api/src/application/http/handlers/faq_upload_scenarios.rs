@@ -308,12 +308,10 @@ async fn upload_faq_missing_answer_returns_400() {
     );
 
     let body_text = read_body_string(resp.into_body()).await;
-    // 第 0 条问答缺少必填字段
+    // Q&A item 0 is missing required field(s)
     assert!(
-        body_text.contains(
-            "\u{7b2c} 0 \u{6761}\u{95ee}\u{7b54}\u{7f3a}\u{5c11}\u{5fc5}\u{586b}\u{5b57}\u{6bb5}"
-        ),
-        "error message must contain '第 0 条问答缺少必填字段', got: {body_text}"
+        body_text.contains("Q&A item 0 is missing required field(s)"),
+        "error message must contain 'Q&A item 0 is missing required field(s)', got: {body_text}"
     );
     // answer
     assert!(
@@ -347,10 +345,10 @@ async fn upload_empty_faq_file_returns_400() {
     );
 
     let body_text = read_body_string(resp.into_body()).await;
-    // 文件中没有可用的问答数据
+    // No usable Q&A records found in the file
     assert!(
-        body_text.contains("\u{6587}\u{4ef6}\u{4e2d}\u{6ca1}\u{6709}\u{53ef}\u{7528}\u{7684}\u{95ee}\u{7b54}\u{6570}\u{636e}"),
-        "error message must contain '文件中没有可用的问答数据', got: {body_text}"
+        body_text.contains("No usable Q&A records found in the file"),
+        "error message must contain 'No usable Q&A records found in the file', got: {body_text}"
     );
 }
 

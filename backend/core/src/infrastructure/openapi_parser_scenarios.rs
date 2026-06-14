@@ -290,7 +290,7 @@ fn ref_not_found_produces_note() {
 
     let content = &result[0].content;
     assert!(
-        content.contains("未找到引用"),
+        content.contains("unresolved $ref"),
         "should note that ref was not found, got: {}",
         content
     );

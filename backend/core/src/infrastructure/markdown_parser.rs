@@ -5,15 +5,15 @@ use super::xlsx_parser::{ContentType, ParsedChunk};
 /// Error type for markdown/mdx file parsing.
 #[derive(Debug, thiserror::Error)]
 pub enum MarkdownParseError {
-    #[error("文件内容为空")]
+    #[error("File is empty")]
     EmptyFile,
-    #[error("文件编码不支持，仅支持 UTF-8")]
+    #[error("Unsupported file encoding: only UTF-8 is supported")]
     InvalidEncoding,
-    #[error("frontmatter 格式错误: 未闭合")]
+    #[error("Invalid frontmatter: not closed")]
     FrontmatterNotClosed,
-    #[error("frontmatter 格式错误: 第 {line_number} 行 '{line}'")]
+    #[error("Invalid frontmatter at line {line_number}: '{line}'")]
     InvalidFrontmatterLine { line_number: usize, line: String },
-    #[error("frontmatter 格式错误: 字段 '{field}' 重复")]
+    #[error("Invalid frontmatter: duplicate field '{field}'")]
     DuplicateField { field: String },
 }
 

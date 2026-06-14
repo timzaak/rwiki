@@ -276,7 +276,7 @@ fn empty_bytes_returns_error() {
     assert!(result.is_err(), "empty bytes should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("无法解析 xlsx")),
+        matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("Failed to parse xlsx")),
         "expected InvalidFormat with parse failure message, got: {err:?}"
     );
 }
@@ -289,7 +289,7 @@ fn malformed_bytes_returns_error() {
     assert!(result.is_err(), "malformed bytes should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("无法解析 xlsx")),
+        matches!(err, WikiParseError::InvalidFormat(ref msg) if msg.contains("Failed to parse xlsx")),
         "expected InvalidFormat with parse failure message, got: {err:?}"
     );
 }
@@ -440,7 +440,7 @@ fn wiki_parse_error_display_messages() {
     };
     let msg = format!("{err}");
     assert!(
-        msg.contains("缺少必填列"),
+        msg.contains("Missing required column(s)"),
         "MissingRequiredColumns display: {msg}"
     );
     assert!(
@@ -460,24 +460,27 @@ fn wiki_parse_error_display_messages() {
     };
     let msg = format!("{err}");
     assert!(
-        msg.contains("数据不完整"),
+        msg.contains("incomplete"),
         "RowValidationFailed display: {msg}"
     );
     // excel_row 2 -> display row 2 directly (already 1-based)
     assert!(
-        msg.contains("第 2 行"),
+        msg.contains("Row 2"),
         "RowValidationFailed display row number: {msg}"
     );
 
     let err = WikiParseError::NoDataRows;
     let msg = format!("{err}");
     assert!(
-        msg.contains("没有可用的数据行"),
+        msg.contains("No usable data rows"),
         "NoDataRows display: {msg}"
     );
 
     let err = WikiParseError::InvalidFormat("test error".to_string());
     let msg = format!("{err}");
-    assert!(msg.contains("文件格式无效"), "InvalidFormat display: {msg}");
+    assert!(
+        msg.contains("Invalid file format"),
+        "InvalidFormat display: {msg}"
+    );
     assert!(msg.contains("test error"), "InvalidFormat display: {msg}");
 }

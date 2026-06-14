@@ -139,6 +139,25 @@ pub struct IndexOptions {
     pub refresh_embed: bool,
 }
 
+/// Result of indexing a document: how many chunks were written vs skipped.
+#[derive(Debug, Clone, Default)]
+pub struct IndexStats {
+    /// Number of chunks actually written to the store.
+    pub indexed: usize,
+    /// Number of chunks skipped because identical content already exists in a
+    /// `published` document (write-time dedup). Independent of `refresh_embed`.
+    pub skipped_duplicate: usize,
+}
+
+/// Existing embedding lookup result for a content_hash.
+#[derive(Debug, Clone)]
+struct ExistingEmbedding {
+    /// Cached embedding bytes (for reuse, avoiding a re-call to the embedding API).
+    embedding_bytes: Vec<u8>,
+    /// True if at least one chunk with this hash belongs to a `published` document.
+    already_published: bool,
+}
+
 impl VectorStoreManager {
     /// Create a new VectorStoreManager with the given sqlite connection and embedding model.
     pub fn ndims(&self) -> usize {
@@ -157,13 +176,14 @@ impl VectorStoreManager {
         }
     }
 
-    /// 根据 content_hash 批量查找已有向量。
+    /// 根据 content_hash 批量查找已有向量及是否已上线(published)。
     /// 排除 content_hash IS NULL 的旧记录，且只返回与当前模型一致的记录。
-    /// 注意：若同一 content_hash 匹配多行，任取一行即可（向量相同）。
+    /// 注意：若同一 content_hash 匹配多行，任取一行读 bytes 即可（向量相同）；
+    ///       already_published 是聚合级判断（该 hash 存在任意 published 文档即 true）。
     async fn find_existing_embeddings(
         &self,
         content_hashes: &[String],
-    ) -> Result<std::collections::HashMap<String, Vec<u8>>, CoreError> {
+    ) -> Result<std::collections::HashMap<String, ExistingEmbedding>, CoreError> {
         if content_hashes.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -173,14 +193,19 @@ impl VectorStoreManager {
 
         self.conn
             .call(move |conn| {
-                // Step 1: 从 chunk_metadata 查找匹配的 rowid
+                // Step 1: 从 chunk_metadata 查找匹配的 rowid + 是否已上线
                 let placeholders: Vec<String> = hashes.iter().map(|_| "?".to_string()).collect();
                 let sql = format!(
-                    "SELECT content_hash, rowid FROM chunk_metadata \
-                     WHERE content_hash IN ({}) \
-                     AND content_hash IS NOT NULL \
-                     AND embedding_model = ? \
-                     GROUP BY content_hash",
+                    "SELECT cm.content_hash, cm.rowid, \
+                            EXISTS(SELECT 1 FROM chunk_metadata cm2 \
+                                   JOIN documents d2 ON cm2.document_id = d2.id \
+                                   WHERE cm2.content_hash = cm.content_hash \
+                                     AND d2.status = 'published') AS already_published \
+                     FROM chunk_metadata cm \
+                     WHERE cm.content_hash IN ({}) \
+                     AND cm.content_hash IS NOT NULL \
+                     AND cm.embedding_model = ? \
+                     GROUP BY cm.content_hash",
                     placeholders.join(",")
                 );
 
@@ -193,23 +218,33 @@ impl VectorStoreManager {
                 let rows = stmt.query_map(params.as_slice(), |row| {
                     let hash: String = row.get(0)?;
                     let rowid: i64 = row.get(1)?;
-                    Ok((hash, rowid))
+                    let already_published: i64 = row.get(2)?;
+                    Ok((hash, rowid, already_published != 0))
                 })?;
 
-                let rowid_map: std::collections::HashMap<String, i64> =
-                    rows.filter_map(|r| r.ok()).collect();
+                let mut rowid_map: std::collections::HashMap<String, (i64, bool)> =
+                    std::collections::HashMap::new();
+                for (hash, rowid, already_published) in rows.flatten() {
+                    rowid_map.insert(hash, (rowid, already_published));
+                }
 
                 // Step 2: 逐行从 vec_chunks 读取 embedding bytes
                 let mut result = std::collections::HashMap::new();
-                for (hash, rowid) in rowid_map {
+                for (hash, (rowid, already_published)) in rowid_map {
                     let bytes: Vec<u8> = conn.query_row(
                         "SELECT embedding FROM vec_chunks WHERE rowid = ?",
                         rusqlite::params![rowid],
                         |row| row.get(0),
                     )?;
-                    result.insert(hash, bytes);
+                    result.insert(
+                        hash,
+                        ExistingEmbedding {
+                            embedding_bytes: bytes,
+                            already_published,
+                        },
+                    );
                 }
-                Ok::<std::collections::HashMap<String, Vec<u8>>, rusqlite::Error>(result)
+                Ok::<std::collections::HashMap<String, ExistingEmbedding>, rusqlite::Error>(result)
             })
             .await
             .map_err(|e| CoreError::DatabaseError(format!("查找已有向量失败: {e}")))
@@ -223,7 +258,7 @@ impl VectorStoreManager {
         &self,
         document_id: Uuid,
         chunks: Vec<DocumentChunk>,
-    ) -> Result<usize, CoreError> {
+    ) -> Result<IndexStats, CoreError> {
         self.index_document_with_options(document_id, chunks, IndexOptions::default())
             .await
     }
@@ -238,11 +273,12 @@ impl VectorStoreManager {
         document_id: Uuid,
         chunks: Vec<DocumentChunk>,
         options: IndexOptions,
-    ) -> Result<usize, CoreError> {
-        let chunk_count = chunks.len();
-
-        // 分流：可复用 vs 需要新 embedding
-        let (reusable, new_chunks) = if !options.refresh_embed && !chunks.is_empty() {
+    ) -> Result<IndexStats, CoreError> {
+        // 写入去重始终先执行（独立于 refresh_embed）：
+        //   - content_hash 已出现在任意 published 文档 → 跳过（防重复上线）
+        //   - 否则 !refresh_embed 且有缓存向量 → 复用向量写入
+        //   - 其余 → 重新 embedding
+        let (reusable, new_chunks, skipped_duplicate) = if !chunks.is_empty() {
             // 计算每个 chunk 的 content_hash（基于 content.join("\n")）
             let hashes: Vec<String> = chunks
                 .iter()
@@ -253,17 +289,29 @@ impl VectorStoreManager {
 
             let mut reusable = Vec::new();
             let mut new_chunks = Vec::new();
+            let mut skipped_duplicate = 0usize;
             for (chunk, hash) in chunks.into_iter().zip(hashes) {
-                if let Some(bytes) = existing.get(&hash) {
-                    reusable.push((chunk, hash, bytes.clone()));
-                } else {
-                    new_chunks.push(chunk);
+                match existing.get(&hash) {
+                    // 内容已在 published 文档上线 → 跳过
+                    Some(info) if info.already_published => {
+                        skipped_duplicate += 1;
+                    }
+                    // 非 published 且未强制刷新 → 复用缓存向量
+                    Some(info) if !options.refresh_embed => {
+                        reusable.push((chunk, hash, info.embedding_bytes.clone()));
+                    }
+                    _ => {
+                        new_chunks.push(chunk);
+                    }
                 }
             }
-            (reusable, new_chunks)
+            (reusable, new_chunks, skipped_duplicate)
         } else {
-            (Vec::new(), chunks)
+            (Vec::new(), Vec::new(), 0)
         };
+
+        // indexed = 实际写入数；在 reusable/new_chunks 被 move 进事务前记录
+        let indexed = reusable.len() + new_chunks.len();
 
         // new_chunks 走正常 embedding 流程（按 64 条分批，避免超出 API 限制）
         let embedded: Vec<(DocumentChunk, OneOrMany<Embedding>)> = if !new_chunks.is_empty() {
@@ -368,7 +416,10 @@ impl VectorStoreManager {
             .await
             .map_err(|e| CoreError::DatabaseError(format!("插入文档向量失败: {e}")))?;
 
-        Ok(chunk_count)
+        Ok(IndexStats {
+            indexed,
+            skipped_duplicate,
+        })
     }
 
     /// 分批补齐旧数据的 content_hash 和 embedding_model。
@@ -2268,5 +2319,170 @@ mod tests {
             "degraded output should contain tokens from content, got: {}",
             result
         );
+    }
+
+    // --- 写入去重（published dedup）tests ---
+
+    /// 预置一条带真实 content_hash 和 embedding_model 的 chunk（模拟已索引状态）。
+    /// insert_test_chunk 默认 content_hash/embedding_model 为 NULL，这里补齐以便
+    /// find_existing_embeddings 能命中。
+    async fn seed_existing_chunk(
+        store: &VectorStoreManager,
+        document_id: &str,
+        status: &str,
+        chunk_id: &str,
+        content: &str,
+        page_id: &str,
+    ) {
+        insert_test_document(store, document_id, status).await;
+        insert_test_chunk(
+            store,
+            document_id,
+            chunk_id,
+            content,
+            page_id,
+            Some(0),
+            Some(1),
+        )
+        .await;
+
+        let model = store.model_name.clone();
+        let hash = super::content_hash(content);
+        let cid = chunk_id.to_string();
+        store
+            .conn
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE chunk_metadata SET content_hash = ?, embedding_model = ? WHERE chunk_id = ?",
+                    rusqlite::params![hash, model, cid],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await
+            .expect("seed content_hash should succeed");
+    }
+
+    /// 构造一个最小 DocumentChunk（content 为单元素 Vec，与 index 的 hash 计算口径一致）。
+    fn make_chunk(document_id: &str, page_id: &str, content: &str) -> DocumentChunk {
+        DocumentChunk {
+            id: format!("{}:0", page_id),
+            document_id: document_id.to_string(),
+            page_id: page_id.to_string(),
+            content: vec![content.to_string()],
+            ..Default::default()
+        }
+    }
+
+    async fn count_chunks_for_doc(store: &VectorStoreManager, document_id: &str) -> i64 {
+        let doc_id = document_id.to_string();
+        store
+            .conn
+            .call(move |conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",
+                    rusqlite::params![doc_id],
+                    |row| row.get(0),
+                )?;
+                Ok::<i64, rusqlite::Error>(count)
+            })
+            .await
+            .expect("count should succeed")
+    }
+
+    // Covers: content_hash 已存在于 published 文档 → 跳过写入（治本去重的核心）。
+    //         新文档不应产生任何 chunk_metadata 行，skipped_duplicate == 1。
+    #[tokio::test]
+    async fn index_skips_chunk_already_in_published_document() {
+        let store = make_sql_only_store();
+
+        seed_existing_chunk(
+            &store,
+            "doc_published",
+            "published",
+            "chunk_pub",
+            "duplicate content",
+            "page_pub",
+        )
+        .await;
+
+        let new_doc = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2c01").unwrap();
+        let chunk = make_chunk(&new_doc.to_string(), "page_new", "duplicate content");
+
+        let stats = store
+            .index_document_with_options(new_doc, vec![chunk], IndexOptions::default())
+            .await
+            .expect("index should succeed");
+
+        assert_eq!(stats.skipped_duplicate, 1, "published 重复应被跳过");
+        assert_eq!(stats.indexed, 0, "无 chunk 写入");
+
+        let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
+        assert_eq!(count, 0, "新文档不应写入任何 chunk");
+    }
+
+    // Covers: 重复内容仅存在于 draft 文档 → 不跳过（draft 间不去重），复用向量写入。
+    #[tokio::test]
+    async fn index_keeps_chunk_only_in_draft_document() {
+        let store = make_sql_only_store();
+
+        seed_existing_chunk(
+            &store,
+            "doc_draft",
+            "draft",
+            "chunk_draft",
+            "draft only content",
+            "page_draft",
+        )
+        .await;
+
+        let new_doc = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2c02").unwrap();
+        let chunk = make_chunk(&new_doc.to_string(), "page_new", "draft only content");
+
+        let stats = store
+            .index_document_with_options(new_doc, vec![chunk], IndexOptions::default())
+            .await
+            .expect("index should succeed");
+
+        assert_eq!(stats.skipped_duplicate, 0, "draft 内容不应被当作重复跳过");
+        assert_eq!(stats.indexed, 1, "应写入 1 条 chunk（复用向量）");
+
+        let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
+        assert_eq!(count, 1, "新文档应写入 1 条 chunk");
+    }
+
+    // Covers: refresh_embed=true 时 published 去重仍生效（去重独立于 refresh_embed）。
+    #[tokio::test]
+    async fn index_dedup_independent_of_refresh_embed() {
+        let store = make_sql_only_store();
+
+        seed_existing_chunk(
+            &store,
+            "doc_pub",
+            "published",
+            "chunk_pub",
+            "refresh dedup content",
+            "page_pub",
+        )
+        .await;
+
+        let new_doc = Uuid::parse_str("01918170-7c21-7d2e-8e64-7e6f6c1a2c03").unwrap();
+        let chunk = make_chunk(&new_doc.to_string(), "page_new", "refresh dedup content");
+
+        let stats = store
+            .index_document_with_options(
+                new_doc,
+                vec![chunk],
+                IndexOptions {
+                    refresh_embed: true,
+                },
+            )
+            .await
+            .expect("index should succeed");
+
+        assert_eq!(
+            stats.skipped_duplicate, 1,
+            "refresh_embed=true 下 published 重复仍应被跳过"
+        );
+        assert_eq!(stats.indexed, 0);
     }
 }
