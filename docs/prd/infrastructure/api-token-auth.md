@@ -1,5 +1,6 @@
 # API Token 鉴权 产品需求文档 (PRD)
 
+**状态**: Implemented
 **创建时间**: 2026-05-29
 **优先级**: P0
 
@@ -32,7 +33,7 @@
 - **Bearer Token 认证**：调用方在请求头中携带 API Token 进行身份验证
 - **配置管理**：API Token 通过配置文件或环境变量设置
 - **强制配置**：未配置 API Token 时服务拒绝启动
-- **鉴权范围**：所有文档管理操作（上传、列表、删除、发布、取消发布）均需鉴权
+- **鉴权范围**：受保护路由组（`doc_router`）覆盖文档管理操作（上传、列表、删除、发布、取消发布）、反馈查询（`GET /api/chat/feedback`）和评估端点（`POST /api/eval/query`，内部评估工具）；`/health`、`POST /api/chat`、`GET /api/chat/suggestions` 和反馈提交（`POST /api/chat/feedback`）保持公开
 
 ### 2.2 不包含功能 (Out of Scope)
 
@@ -70,7 +71,7 @@
 
 ### 4.1 业务规则
 
-- **鉴权范围**：所有文档管理操作（上传、列表、删除、发布、取消发布）均需鉴权
+- **鉴权范围**：受保护路由组（`doc_router`）覆盖文档管理操作（上传、列表、删除、发布、取消发布）、反馈查询（`GET /api/chat/feedback`）和评估端点（`POST /api/eval/query`，内部评估工具）；`/health`、`POST /api/chat`、`GET /api/chat/suggestions` 和反馈提交（`POST /api/chat/feedback`）保持公开
 - **公开路由**：聊天接口和健康检查接口保持公开，无需 Token
 - **Token 传递方式**：`Authorization: Bearer <token>` 请求头
 - **强制配置**：API Token 为必填配置，未配置时服务拒绝启动
@@ -117,7 +118,7 @@
 
 **适用性**: 适用
 
-- **能力范围**：文档管理操作（上传、列表、删除、发布、取消发布）需要 Bearer Token 鉴权
+- **能力范围**：受保护路由组（文档管理操作、`GET /api/chat/feedback`、`POST /api/eval/query`）需要 Bearer Token 鉴权
 - **鉴权方式**：`Authorization: Bearer <token>` 请求头
 - **访问控制**：无 Token 或 Token 无效时返回 401，不区分具体原因
 - **公开接口**：聊天接口和健康检查接口无需鉴权
@@ -137,7 +138,7 @@
 
 - **Token 类型**：静态 API Token，非 JWT，适用于内部工具场景
 - **配置方式**：配置文件 + 环境变量覆盖（与现有 LLM API Key 模式一致）
-- **鉴权范围**：所有文档路由（upload / list / delete / publish / unpublish），chat 和 health 不需要
+- **鉴权范围**：受保护路由组包括 upload / list / delete / publish / unpublish、`GET /api/chat/feedback` 和 `POST /api/eval/query`；`/health`、`POST /api/chat`、`GET /api/chat/suggestions` 和 `POST /api/chat/feedback` 公开
 - **强制配置**：api_token 为必填项，未配置时服务拒绝启动
 - **错误响应**：Token 缺失和无效返回相同 401 响应（安全最佳实践）
 

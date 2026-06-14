@@ -1,5 +1,6 @@
 # Chat Widget 嵌入式 JS 导出 产品需求文档 (PRD)
 
+**状态**: Implemented
 **创建时间**: 2026-05-29
 **优先级**: P1
 
@@ -113,7 +114,7 @@
 3. **配置接口**
    - `apiUrl`（必填）：后端 API 地址
    - `primaryColor`（可选）：主题强调色，默认 `#3b82f6`
-   - `title`（可选）：对话框标题，默认"AI 助手"
+   - `title`（可选）：对话框标题，默认"Chat Assistant"
    - `position`（可选）：浮动按钮位置，`right`（默认）或 `left`
    - `welcomeMessage`（可选）：首次打开时的欢迎语
 

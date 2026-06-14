@@ -10,15 +10,17 @@
 
 ## 快速开始
 
+将 LLM Key 填入 `config.toml` 的 `[llm].api_key`（支持任意 OpenAI 兼容 provider，参考 `backend/config/config.example.toml`），然后：
+
 ```bash
 docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
-  -e OPENROUTER_API_KEY=your-llm-key \
+  -v ./config.toml:/app/config.toml:ro \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```
 
-打开 `http://localhost:8080`，上传文档，发布，开始对话。
+`OPENAI_API_KEY` 设置 Embedding Key。打开 `http://localhost:8080`，上传文档，发布，开始对话。
 
 或运行演示：
 
@@ -60,7 +62,7 @@ RWiki 只做一件事 — 知识库问答 — 并把基础设施压缩到一个�
 docker pull ghcr.io/timzaak/rwiki
 docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
-  -e OPENROUTER_API_KEY=your-llm-key \
+  -v ./config.toml:/app/config.toml:ro \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```

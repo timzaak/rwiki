@@ -1,6 +1,6 @@
 # 可观测性 产品需求文档 (PRD)
 
-**状态**: Done
+**状态**: Implemented
 **创建时间**: 2026-05-30
 **优先级**: P2
 **权威范围**: tracing/span 输出、OTLP 配置、shutdown flush

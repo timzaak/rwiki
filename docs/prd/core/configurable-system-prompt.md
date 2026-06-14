@@ -1,5 +1,6 @@
 # 可配置系统提示词 (Configurable System Prompt) 产品需求文档 (PRD)
 
+**状态**: Implemented
 **创建时间**: 2026-05-29
 **优先级**: P2
 

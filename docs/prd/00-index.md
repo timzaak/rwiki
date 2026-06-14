@@ -45,3 +45,11 @@
 | chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Draft | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |
 | chat | 聊天回答反馈记录 | [chat/chat-feedback.md](chat/chat-feedback.md) | Implemented | 赞/踩反馈、状态切换、数据持久化、双入口一致、反馈查询 |
 | core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |
+
+## 内部工程工具（无 PRD）
+
+以下能力无独立 PRD（无用户可见产品行为、无用户故事/验收），仅作为开发阶段内部工程工具存在，受 `infrastructure/api-token-auth.md` 保护，不计入正式 PRD 数量。
+
+| 能力 | 说明 |
+|------|------|
+| eval | RAG 质量评估端点 `POST /api/eval/query`，暴露检索中间结果（召回、RAG 上下文）供外部 Ragas/Python 评估，复用 chat 检索 + rerank 管线；受 API Token 鉴权 |

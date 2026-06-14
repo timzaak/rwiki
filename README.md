@@ -10,15 +10,17 @@ Upload Markdown, XLSX, or OpenAPI specs — RWiki chunks and vectorizes them, th
 
 ## Quick Start
 
+Put your LLM key in `[llm].api_key` inside `config.toml` (any OpenAI-compatible provider; see `backend/config/config.example.toml`), then:
+
 ```bash
 docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
-  -e OPENROUTER_API_KEY=your-llm-key \
+  -v ./config.toml:/app/config.toml:ro \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```
 
-Open `http://localhost:8080`, upload a document, publish, start chatting.
+`OPENAI_API_KEY` sets the embedding key. Open `http://localhost:8080`, upload a document, publish, start chatting.
 
 Or try the demo:
 
@@ -61,7 +63,7 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 docker pull ghcr.io/timzaak/rwiki
 docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
-  -e OPENROUTER_API_KEY=your-llm-key \
+  -v ./config.toml:/app/config.toml:ro \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```
