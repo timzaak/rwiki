@@ -317,8 +317,8 @@ async fn upload_non_openapi_json_returns_400() {
 
     let body_text = read_body_string(resp.into_body()).await;
     assert!(
-        body_text.contains("\u{7f3a}\u{5c11} openapi \u{5b57}\u{6bb5}"),
-        "error message must contain '缺少 openapi 字段', got: {body_text}"
+        body_text.contains("missing \\\"openapi\\\" field"),
+        "error message must contain 'missing \"openapi\" field', got: {body_text}"
     );
 }
 
@@ -351,8 +351,8 @@ async fn upload_openapi_empty_paths_returns_400() {
 
     let body_text = read_body_string(resp.into_body()).await;
     assert!(
-        body_text.contains("\u{6ca1}\u{6709}\u{53ef}\u{89e3}\u{6790}\u{7684} API \u{7aef}\u{70b9}"),
-        "error message must contain '没有可解析的 API 端点', got: {body_text}"
+        body_text.contains("No parseable API endpoints"),
+        "error message must contain 'No parseable API endpoints', got: {body_text}"
     );
 }
 
