@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use super::reranker::{OpenRouterReranker, RerankResult, RerankerProvider};
+use super::reranker::{DashScopeReranker, OpenRouterReranker, RerankResult, RerankerProvider};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -241,6 +241,68 @@ async fn rerank_all_indices_out_of_range_returns_raw_results() {
         results.len(),
         2,
         "provider returns all raw API results for caller to filter"
+    );
+
+    mock.assert_async().await;
+}
+
+// User Story: US-CORE-033 (scenario 2) -- As a user, when the deployer configures
+// rerank provider = "dash_scope", the system must call Alibaba Bailian's rerank
+// endpoint and feed the reranked ordering into the LLM context.
+// Covers: PRD 5.1.2 + Decision "精排新增 dash_scope provider" -- RerankerProvider
+//         enum dispatch routes DashScope variant through DashScopeReranker, which
+//         parses the OpenAI-compatible flat response shape and returns results
+//         preserving API ordering (index + relevance_score).
+// Note: The RerankerProvider::DashScope dispatch arm is the scenario-level seam
+//       that connects config (provider = "dash_scope") to the HTTP client.
+//       The unit test `dashscope_rerank_success` in reranker.rs only exercises
+//       DashScopeReranker in isolation; this test verifies the dispatch wiring
+//       end-to-end through RerankerProvider::rerank, which is what the chat
+//       handler actually invokes.
+
+#[tokio::test]
+async fn dashscope_provider_dispatch_returns_reranked_order() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/reranks")
+        .match_header("Authorization", "Bearer bailian-key")
+        .with_status(200)
+        // Bailian returns a flat OpenAI-compatible shape with extra top-level
+        // fields (object/model/id/usage) that must be ignored by the parser.
+        .with_body(
+            r#"{"object":"list","results":[{"index":2,"relevance_score":0.97},{"index":0,"relevance_score":0.42}],"model":"qwen3-rerank","id":"req-abc","usage":{"total_tokens":128}}"#,
+        )
+        .create_async()
+        .await;
+
+    let provider = RerankerProvider::DashScope(DashScopeReranker::with_base_url(
+        "bailian-key".to_string(),
+        "qwen3-rerank".to_string(),
+        Duration::from_secs(3),
+        format!("{}/reranks", server.url()),
+    ));
+
+    let docs = make_documents(3);
+    let results: Vec<RerankResult> = provider
+        .rerank("如何重置密码", &docs, 10)
+        .await
+        .expect("DashScope dispatch should succeed");
+
+    // The reranker must preserve API ordering: index 2 (0.97) before index 0 (0.42).
+    // This ordering is what determines which context chunks reach the LLM first.
+    assert_eq!(results.len(), 2, "DashScope should return 2 results");
+    assert_eq!(
+        results[0].index, 2,
+        "highest-scoring chunk must come first so it reaches the LLM"
+    );
+    assert!(
+        (results[0].relevance_score - 0.97).abs() < f64::EPSILON,
+        "top result score must match Bailian response"
+    );
+    assert_eq!(results[1].index, 0);
+    assert!(
+        (results[1].relevance_score - 0.42).abs() < f64::EPSILON,
+        "second result score must match Bailian response"
     );
 
     mock.assert_async().await;

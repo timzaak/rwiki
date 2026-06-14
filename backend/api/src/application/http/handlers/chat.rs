@@ -518,6 +518,7 @@ pub(crate) async fn search_and_rerank(
         let provider_str = match rerank_config.provider {
             rwiki_core::config::RerankProviderType::OpenRouter => "openrouter",
             rwiki_core::config::RerankProviderType::BigModel => "bigmodel",
+            rwiki_core::config::RerankProviderType::DashScope => "dashscope",
         };
         let rerank_start = Instant::now();
 

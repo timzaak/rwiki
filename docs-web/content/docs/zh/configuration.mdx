@@ -76,7 +76,15 @@ model = "gpt-4o"
 api_key = "your-glm-api-key"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "glm-4-flash"
+
+# 阿里云百炼 (DashScope)
+[llm]
+api_key = "sk-..."  # 百炼控制台获取，sk- 开头
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen-plus"  # 也可 qwen-max / qwen-turbo / qwen-long
 ```
+
+国内用户可仅用阿里云百炼一个 provider 和一个 API Key 同时驱动对话、向量化与精排（精排用 `provider = "dash_scope"`，见下方 Rerank 章节）。
 
 ## Embedding
 
@@ -105,6 +113,13 @@ api_key = "your-bigmodel-api-key"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "embedding-3"
 dimensions = 2048   # 可选：256 / 512 / 1024 / 2048
+
+# 阿里云百炼 (DashScope)
+[embedding]
+api_key = "sk-..."  # 可与 [llm] 共用同一百炼 key
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "text-embedding-v3"
+dimensions = 1024   # 可选：512 / 768 / 1024
 ```
 
 ## API Token
@@ -232,8 +247,8 @@ service_name = "rwiki-backend"
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `enable` | bool | 否 | `false` | 启用 rerank 精排 |
-| `provider` | string | 否 | `"open_router"` | Rerank 服务提供商：`"open_router"` 或 `"big_model"` |
-| `model` | string | 否 | Provider 默认值 | 模型名称。OpenRouter 默认 `cohere/rerank-v4-fast`，BigModel 默认 `rerank-pro` |
+| `provider` | string | 否 | `"open_router"` | Rerank 服务提供商：`"open_router"`、`"big_model"` 或 `"dash_scope"` |
+| `model` | string | 否 | Provider 默认值 | 模型名称。OpenRouter 默认 `cohere/rerank-v4-fast`，BigModel 默认 `rerank-pro`，DashScope 默认 `qwen3-rerank` |
 | `top_n` | number | 否 | `20` | 送入 rerank 的最大候选数量 |
 | `timeout_secs` | number | 否 | `3` | API 调用超时（秒） |
 | `api_key` | string | 否 | — | 独立 API Key。不配置时复用 `[llm].api_key`。BigModel 必须配置独立 key。可通过 `RERANK_API_KEY` 环境变量设置 |
@@ -260,6 +275,17 @@ model = "rerank-pro"
 top_n = 20
 timeout_secs = 3
 api_key = "your-bigmodel-api-key"
+```
+
+```toml
+# 阿里云百炼 (DashScope) Rerank
+[rerank]
+enable = true
+provider = "dash_scope"
+model = "qwen3-rerank"        # 推荐模型；gte-rerank v1 已于 2026-05-30 下线
+top_n = 20
+timeout_secs = 3
+# api_key 不配置时复用 [llm].api_key
 ```
 
 ## Widget

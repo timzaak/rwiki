@@ -29,9 +29,10 @@
 - 通过 `[llm].base_url` 指向目标 provider。
 - 通过 `[llm].api_key` 配置对应 provider 的 API Key。
 - 通过 `[llm].model` 配置模型名称。
-- OpenAI、OpenRouter、GLM 等兼容 provider 均通过同一配置模型接入。
+- OpenAI、OpenRouter、GLM、阿里云百炼（DashScope）等兼容 provider 均通过同一配置模型接入。
 - LLM provider 与 embedding provider 独立配置，互不影响。
 - SSE 流式输出必须兼容现有 Chat API 契约。
+- 单一 provider 全栈：部分兼容 provider（如阿里云百炼 DashScope）可同时提供对话与向量化能力；结合 rerank provider 选项（见 `core/rerank-investigation.md`），部署者可用单一 provider 与单一 API Key 驱动完整 RAG 链路。
 
 ## 3. Embedding Provider 规则
 
@@ -66,6 +67,7 @@
 - 配置 dimensions 后，生成向量维度与配置一致。
 - 切换 embedding dimensions 后，应用能识别不兼容存储并阻止错误检索。
 - LLM provider 切换不影响 embedding provider 配置。
+- 配置阿里云百炼（DashScope）对话与向量化后，聊天 SSE 正常输出、文档可上传索引检索。
 
 ## 7. 参考资料
 

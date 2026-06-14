@@ -32,11 +32,13 @@ api_key = ""
 # OpenAI:       https://api.openai.com/v1
 # OpenRouter:   https://openrouter.ai/api/v1
 # GLM (智谱AI):  https://open.bigmodel.cn/api/paas/v4
+# 百炼 (DashScope): https://dashscope.aliyuncs.com/compatible-mode/v1
 base_url = "https://openrouter.ai/api/v1"
 # 模型名称（填入对应 provider 支持的模型）
 # OpenAI:       gpt-4o, gpt-4o-mini
 # OpenRouter:   deepseek/deepseek-chat-v3-0324, anthropic/claude-sonnet-4-20250514
 # GLM:          glm-4-plus, glm-4-flash
+# 百炼:         qwen-plus, qwen-turbo
 model = "deepseek/deepseek-chat-v3-0324"
 
 [embedding]
@@ -50,6 +52,12 @@ model = "deepseek/deepseek-chat-v3-0324"
 # base_url = "https://open.bigmodel.cn/api/paas/v4"
 # model = "embedding-3"
 # dimensions = 2048   # 可选，支持 256/512/1024/2048，不设置时使用模型默认维度
+
+# --- 百炼 (DashScope) Embedding ---
+# api_key = "your-dashscope-api-key"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# model = "text-embedding-v3"
+# dimensions = 1024   # 可选，支持 512/768/1024
 
 [api]
 # API Token for document management endpoints
@@ -112,7 +120,7 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # Rerank 失败时自动降级到 RRF 融合结果，用户无感知
 #
 # enable = false
-# provider = "open_router"         # "open_router" | "big_model"
+# provider = "open_router"         # "open_router" | "big_model" | "dash_scope"
 #
 # --- OpenRouter Rerank（免费，推荐）---
 # enable = true
@@ -129,3 +137,11 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # top_n = 20
 # timeout_secs = 3
 # api_key = "your-bigmodel-api-key"  # BigModel 必须配置独立 key
+#
+# --- 阿里云百炼 (DashScope) Rerank ---
+# enable = true
+# provider = "dash_scope"
+# model = "qwen3-rerank"             # 推荐模型；gte-rerank v1 已于 2026-05-30 下线
+# top_n = 20
+# timeout_secs = 3
+# api_key = ""                      # 不配置时复用 [llm].api_key

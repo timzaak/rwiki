@@ -32,6 +32,7 @@
 - 在现有检索管线（向量 + BM25 + RRF 融合）后增加 rerank 精排阶段
 - 支持 **OpenRouter Rerank** provider（Cohere Rerank 系列模型）
 - 支持 **智谱 BigModel Rerank** provider（BGE-Reranker 系列模型）
+- 支持 **阿里云百炼 DashScope Rerank** provider（qwen3-rerank 模型）
 - 通过配置文件切换 provider 和模型
 - Rerank 默认关闭，管理员显式启用
 - Rerank 调用失败时降级到无 rerank 的原有检索流程
@@ -63,7 +64,7 @@
 
 ### 3.2 关键特性
 
-- **双 provider 支持**：OpenRouter Rerank（免费 Cohere 模型）和智谱 BigModel Rerank（BGE-Reranker 模型），通过配置切换
+- **多 provider 支持**：OpenRouter Rerank（免费 Cohere 模型）、智谱 BigModel Rerank（BGE-Reranker 模型）和阿里云百炼 DashScope Rerank（qwen3-rerank 模型），通过配置切换
 - **默认关闭**：rerank 会引入额外延迟（约 200-500ms），默认关闭，管理员按需启用
 - **无感降级**：rerank API 调用失败时，使用 RRF 融合结果继续，用户不感知错误
 - **管线位置固定**：rerank 在 RRF 融合后、上下文组装前执行，不影响召回阶段
@@ -75,7 +76,7 @@
 ### 4.1 业务规则
 
 - **默认关闭**：rerank 功能默认不启用，需要管理员在配置文件中显式开启
-- **单 provider**：同一时间只能配置一个 rerank provider（OpenRouter 或 BigModel）
+- **单 provider**：同一时间只能配置一个 rerank provider（OpenRouter、BigModel 或 DashScope）
 - **候选数量控制**：送入 rerank 的候选文档数量应控制在 top-20 以内，平衡延迟与精度
 - **rerank 用途边界**：rerank 结果仅影响送入 LLM 的上下文选择，不改变用户看到的引用来源展示逻辑
 - **不改 API 契约**：聊天接口请求/响应/SSE 结构保持不变
@@ -97,7 +98,7 @@
 
 1. **Reranker 模块**
    - 新增 reranker 模块，封装 rerank API 调用逻辑
-   - 支持 OpenRouter Rerank 和智谱 BigModel Rerank 两个 provider
+   - 支持 OpenRouter Rerank、智谱 BigModel Rerank 和阿里云百炼 DashScope Rerank 三个 provider
    - 通过配置文件选择 provider、模型和参数
 
 2. **OpenRouter Rerank Provider**
@@ -110,12 +111,17 @@
    - 使用独立配置的智谱 API Key 认证
    - 输入查询和候选文档，返回按相关性分数排序的结果
 
-4. **管线集成**
+4. **阿里云百炼 DashScope Rerank Provider**
+   - 支持 `qwen3-rerank` 模型（`gte-rerank` v1 已下线，`qwen3-rerank` 为官方推荐替代）
+   - 接入百炼 OpenAI 兼容精排能力；未单独配置 API Key 时复用对话模型 Key
+   - 输入查询和候选文档，返回按相关性分数排序的结果
+
+5. **管线集成**
    - 在 RRF 融合后、上下文组装前调用 rerank
    - 将候选文档的 content 作为 documents 数组传入
    - 按 relevance_score 重排，取 top-N 送入 LLM
 
-5. **降级保障**
+6. **降级保障**
    - rerank 调用失败或超时时，使用 RRF 融合结果继续
    - 所有降级记录日志，不影响用户主流程
 
@@ -124,6 +130,7 @@
 - 配置启用 rerank 后，对同一查询，rerank 重排后的 top-5 结果语义相关性高于未启用时
 - OpenRouter Rerank provider 配置正确时，调用成功并返回排序结果
 - 智谱 BigModel Rerank provider 配置正确时，调用成功并返回排序结果
+- 阿里云百炼 DashScope Rerank provider 配置正确时，调用成功并返回排序结果
 - rerank 未启用时，检索流程与现有行为完全一致
 - rerank API 调用失败时，系统使用 RRF 融合结果正常回答，用户不感知错误
 - rerank 阶段延迟 ≤ 1 秒（不含网络超时场景）
@@ -150,7 +157,8 @@
 ## 8. 已确认决策
 
 - **默认关闭**：rerank 引入额外延迟，默认不启用，管理员按需开启
-- **双 provider**：支持 OpenRouter Rerank 和智谱 BigModel Rerank，通过配置切换
+- **多 provider**：支持 OpenRouter Rerank、智谱 BigModel Rerank 和阿里云百炼 DashScope Rerank（默认 `qwen3-rerank`），通过配置切换
+- **DashScope Key 复用**：DashScope rerank 未单独配置 API Key 时复用对话模型 Key（与 OpenRouter 行为一致）
 - **单 provider**：同一时间只配置一个 rerank provider
 - **管线位置**：rerank 在 RRF 融合后、上下文组装前执行
 - **降级策略**：rerank 失败时使用 RRF 融合结果，用户无感知
@@ -169,3 +177,4 @@
 - 关键词搜索 PRD：`docs/prd/document/keyword-search-support.md`
 - OpenRouter Rerank API：https://openrouter.ai/docs/api-reference/rerank
 - 智谱 BigModel Rerank API：https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E6%96%87%E6%9C%AC%E9%87%8D%E6%8E%92%E5%BA%8F
+- 阿里云百炼 Rerank API：https://help.aliyun.com/zh/model-studio/text-rerank-api

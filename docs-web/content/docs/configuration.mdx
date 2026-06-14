@@ -76,7 +76,15 @@ model = "gpt-4o"
 api_key = "your-glm-api-key"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "glm-4-flash"
+
+# Alibaba Cloud Bailian (DashScope)
+[llm]
+api_key = "sk-..."  # from Bailian console, starts with sk-
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen-plus"  # also qwen-max / qwen-turbo / qwen-long
 ```
+
+Users in China can drive chat, embedding, and rerank with a single Alibaba Cloud Bailian provider and one API key (set rerank `provider = "dash_scope"`, see the Rerank section below).
 
 ## Embedding
 
@@ -105,6 +113,13 @@ api_key = "your-bigmodel-api-key"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "embedding-3"
 dimensions = 2048   # Optional: 256 / 512 / 1024 / 2048
+
+# Alibaba Cloud Bailian (DashScope)
+[embedding]
+api_key = "sk-..."  # can share the same Bailian key with [llm]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "text-embedding-v3"
+dimensions = 1024   # Optional: 512 / 768 / 1024
 ```
 
 ## API Token
@@ -232,8 +247,8 @@ service_name = "rwiki-backend"
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `enable` | bool | No | `false` | Enable rerank re-scoring |
-| `provider` | string | No | `"open_router"` | Rerank provider: `"open_router"` or `"big_model"` |
-| `model` | string | No | Provider default | Model name. OpenRouter defaults to `cohere/rerank-v4-fast`, BigModel defaults to `rerank-pro` |
+| `provider` | string | No | `"open_router"` | Rerank provider: `"open_router"`, `"big_model"`, or `"dash_scope"` |
+| `model` | string | No | Provider default | Model name. OpenRouter defaults to `cohere/rerank-v4-fast`, BigModel defaults to `rerank-pro`, DashScope defaults to `qwen3-rerank` |
 | `top_n` | number | No | `20` | Max candidates sent to rerank |
 | `timeout_secs` | number | No | `3` | API call timeout in seconds |
 | `api_key` | string | No | — | Dedicated API Key. Falls back to `[llm].api_key` if not set. BigModel requires a separate key. Set via `RERANK_API_KEY` env var. |
@@ -260,6 +275,17 @@ model = "rerank-pro"
 top_n = 20
 timeout_secs = 3
 api_key = "your-bigmodel-api-key"
+```
+
+```toml
+# Alibaba Cloud Bailian (DashScope) Rerank
+[rerank]
+enable = true
+provider = "dash_scope"
+model = "qwen3-rerank"        # recommended; gte-rerank v1 retired on 2026-05-30
+top_n = 20
+timeout_secs = 3
+# api_key falls back to [llm].api_key when not set
 ```
 
 ## Widget

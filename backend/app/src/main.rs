@@ -368,6 +368,7 @@ async fn main() -> Result<()> {
                     .as_deref()
                     .unwrap_or(match &config.rerank.provider {
                         rwiki_core::config::RerankProviderType::BigModel => "rerank-pro",
+                        rwiki_core::config::RerankProviderType::DashScope => "qwen3-rerank",
                         _ => "cohere/rerank-v4-fast",
                     })
                     .to_string();
@@ -379,6 +380,18 @@ async fn main() -> Result<()> {
                         Some(
                             rwiki_core::infrastructure::reranker::RerankerProvider::BigModel(
                                 rwiki_core::infrastructure::reranker::BigModelReranker::new(
+                                    key.to_string(),
+                                    model,
+                                    timeout,
+                                ),
+                            ),
+                        )
+                    }
+                    rwiki_core::config::RerankProviderType::DashScope => {
+                        tracing::info!("Rerank enabled: provider=DashScope, model={}", model);
+                        Some(
+                            rwiki_core::infrastructure::reranker::RerankerProvider::DashScope(
+                                rwiki_core::infrastructure::reranker::DashScopeReranker::new(
                                     key.to_string(),
                                     model,
                                     timeout,

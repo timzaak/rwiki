@@ -255,11 +255,113 @@ impl Reranker for BigModelReranker {
     }
 }
 
+/// 阿里云百炼 (DashScope) Rerank provider
+///
+/// 接入百炼官方 OpenAI 兼容精排扁平端点
+/// `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`，
+/// 使用 `qwen3-rerank` 等模型。请求/响应结构与 OpenRouter Rerank 完全兼容。
+#[derive(Clone)]
+pub struct DashScopeReranker {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+    base_url: String,
+    timeout: Duration,
+}
+
+impl DashScopeReranker {
+    pub fn new(api_key: String, model: String, timeout: Duration) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model,
+            base_url: "https://dashscope.aliyuncs.com/compatible-api/v1/reranks".to_string(),
+            timeout,
+        }
+    }
+
+    /// Constructor with custom base_url for testing (mockito)
+    pub fn with_base_url(
+        api_key: String,
+        model: String,
+        timeout: Duration,
+        base_url: String,
+    ) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model,
+            base_url,
+            timeout,
+        }
+    }
+}
+
+impl Reranker for DashScopeReranker {
+    async fn rerank(
+        &self,
+        query: &str,
+        documents: &[String],
+        top_n: usize,
+    ) -> Result<Vec<RerankResult>, RerankError> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let body = RerankRequest {
+            model: self.model.clone(),
+            query: query.to_string(),
+            documents: documents.to_vec(),
+            top_n,
+        };
+
+        let response = self
+            .client
+            .post(&self.base_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .timeout(self.timeout)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    RerankError::Timeout(self.timeout)
+                } else {
+                    RerankError::Network(e.to_string())
+                }
+            })?;
+
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let message = response.text().await.unwrap_or_else(|e| e.to_string());
+            return Err(RerankError::Api { status, message });
+        }
+
+        let text = response.text().await.map_err(|e| {
+            RerankError::ResponseParse(format!("failed to read response body: {e}"))
+        })?;
+
+        let parsed: RerankResponse =
+            serde_json::from_str(&text).map_err(|e| RerankError::ResponseParse(e.to_string()))?;
+
+        Ok(parsed
+            .results
+            .into_iter()
+            .map(|r| RerankResult {
+                index: r.index,
+                relevance_score: r.relevance_score,
+            })
+            .collect())
+    }
+}
+
 /// Enum dispatch for reranker providers
 #[derive(Clone)]
 pub enum RerankerProvider {
     OpenRouter(OpenRouterReranker),
     BigModel(BigModelReranker),
+    DashScope(DashScopeReranker),
 }
 
 impl RerankerProvider {
@@ -272,6 +374,7 @@ impl RerankerProvider {
         match self {
             Self::OpenRouter(r) => r.rerank(query, documents, top_n).await,
             Self::BigModel(r) => r.rerank(query, documents, top_n).await,
+            Self::DashScope(r) => r.rerank(query, documents, top_n).await,
         }
     }
 }
@@ -349,6 +452,41 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].index, 2);
         assert!((results[0].relevance_score - 0.99).abs() < f64::EPSILON);
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn dashscope_rerank_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/reranks")
+            .match_header("Authorization", "Bearer ds-key")
+            .with_status(200)
+            .with_body(
+                r#"{"object":"list","results":[{"index":1,"relevance_score":0.95},{"index":0,"relevance_score":0.8}],"model":"qwen3-rerank","id":"x","usage":{"total_tokens":79}}"#,
+            )
+            .create_async()
+            .await;
+
+        let reranker = DashScopeReranker::with_base_url(
+            "ds-key".to_string(),
+            "qwen3-rerank".to_string(),
+            Duration::from_secs(3),
+            format!("{}/reranks", server.url()),
+        );
+
+        let docs = make_documents(3);
+        let results = reranker
+            .rerank("test query", &docs, 10)
+            .await
+            .expect("rerank should succeed");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].index, 1);
+        assert!((results[0].relevance_score - 0.95).abs() < f64::EPSILON);
+        assert_eq!(results[1].index, 0);
+        assert!((results[1].relevance_score - 0.8).abs() < f64::EPSILON);
 
         mock.assert_async().await;
     }

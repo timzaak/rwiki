@@ -44,4 +44,4 @@
 | document | OpenAPI 专门分词方案 | [document/openapi-specialized-tokenization.md](document/openapi-specialized-tokenization.md) | Draft | OpenAPI 文档 FTS 格式感知分词、路径层级分词、文档类型传播、向后兼容 |
 | chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Draft | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |
 | chat | 聊天回答反馈记录 | [chat/chat-feedback.md](chat/chat-feedback.md) | Implemented | 赞/踩反馈、状态切换、数据持久化、双入口一致、反馈查询 |
-| core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、双 Provider 支持、无感降级、配置管理 |
+| core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |

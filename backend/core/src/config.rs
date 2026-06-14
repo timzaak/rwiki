@@ -241,6 +241,7 @@ pub enum RerankProviderType {
     #[default]
     OpenRouter,
     BigModel,
+    DashScope,
 }
 
 fn default_top_n() -> usize {
@@ -702,6 +703,27 @@ mod tests {
         assert_eq!(config.top_n, 10);
         assert_eq!(config.timeout_secs, 5);
         assert_eq!(config.api_key.as_deref(), Some("sk-rerank-key"));
+    }
+
+    // Covers: BE Bailian — RerankConfig parses DashScope provider with default model.
+    #[test]
+    fn rerank_config_parses_dashscope_provider() {
+        let toml_str = r#"
+            enable = true
+            provider = "dash_scope"
+            model = "qwen3-rerank"
+            top_n = 20
+            timeout_secs = 3
+            api_key = "sk-dashscope-key"
+        "#;
+        let config: RerankConfig =
+            toml::from_str(toml_str).expect("rerank config should deserialize");
+        assert!(config.enable);
+        assert_eq!(config.provider, RerankProviderType::DashScope);
+        assert_eq!(config.model.as_deref(), Some("qwen3-rerank"));
+        assert_eq!(config.top_n, 20);
+        assert_eq!(config.timeout_secs, 3);
+        assert_eq!(config.api_key.as_deref(), Some("sk-dashscope-key"));
     }
 
     // Covers: Design 4.5.1 — Missing [rerank] section is backward compatible.
