@@ -8,7 +8,6 @@ use utoipa::ToSchema;
 
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
-use rwiki_core::domain::chat::evict_expired_sessions;
 
 use super::chat::{build_preamble, format_context_xml, rewrite_query, search_and_rerank};
 
@@ -173,15 +172,16 @@ pub async fn eval_query(
         .unwrap_or(state.retrieval_config.max_context_chunks)
         .max(1);
 
-    // Determine session ID and get history
+    // Read session history read-only: eval must not mutate the shared chat
+    // session map (no eviction, no touch) so it has zero side effects on
+    // production chat sessions. History is only consumed when the caller
+    // explicitly passes a sessionId that already exists.
     let session_id = req
         .session_id
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
     let (summary, history) = {
-        let mut sessions = state.chat_sessions.lock().await;
-        evict_expired_sessions(&mut sessions);
-        if let Some(session) = sessions.get_mut(&session_id) {
-            session.touch();
+        let sessions = state.chat_sessions.lock().await;
+        if let Some(session) = sessions.get(&session_id) {
             (session.summary.clone(), session.messages.clone())
         } else {
             (None, Vec::new())

@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -461,5 +462,96 @@ async fn eval_query_returns_open_source_evaluator_payloads() {
     assert!(
         evaluation["ragchecker"]["retrieved_context"].is_array(),
         "RAGChecker retrieved_context must be an array"
+    );
+}
+
+// User Story: Production isolation -- The eval endpoint must not mutate the
+// shared chat session map. Even when the caller passes an existing sessionId,
+// eval must not call session.touch(), so a production session's last_accessed
+// stays unchanged.
+// Covers: eval_query reads `chat_sessions` immutably (get, not get_mut) and
+//         performs no touch/eviction.
+
+#[tokio::test]
+async fn eval_query_does_not_touch_shared_session() {
+    let state = test_app_state(true).await;
+
+    // Pre-populate a session and snapshot its last_accessed timestamp.
+    let before = {
+        let mut sessions = state.chat_sessions.lock().await;
+        let mut session =
+            rwiki_core::domain::chat::ChatSession::new("eval-touch-probe".to_string());
+        session.add_message("user", "What is Rust?");
+        session.add_message("assistant", "Rust is a systems programming language.");
+        sessions.insert("eval-touch-probe".to_string(), session);
+        sessions
+            .get("eval-touch-probe")
+            .expect("session just inserted")
+            .last_accessed
+    };
+
+    let app = create_api_routes(state.clone());
+    let req = eval_request("How does memory work?", Some("eval-touch-probe"), true);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "eval should succeed with an existing sessionId, got {}",
+        resp.status()
+    );
+
+    // If eval had called touch(), last_accessed would have advanced to ~now.
+    let after = {
+        let sessions = state.chat_sessions.lock().await;
+        sessions
+            .get("eval-touch-probe")
+            .expect("session must still exist after eval")
+            .last_accessed
+    };
+    assert_eq!(
+        before, after,
+        "eval must not update last_accessed on a shared production session"
+    );
+}
+
+// User Story: Production isolation -- The eval endpoint must not run session
+// eviction against the shared chat session map. An expired production session
+// must survive an eval call (chat endpoint still owns housekeeping).
+// Covers: eval_query no longer calls evict_expired_sessions on `chat_sessions`.
+
+#[tokio::test]
+async fn eval_query_does_not_evict_sessions() {
+    let state = test_app_state(true).await;
+
+    // Pre-populate an EXPIRED session (last_accessed > SESSION_TTL_SECS ago).
+    {
+        let mut sessions = state.chat_sessions.lock().await;
+        let mut session =
+            rwiki_core::domain::chat::ChatSession::new("eval-evict-probe".to_string());
+        session.last_accessed = Instant::now()
+            .checked_sub(Duration::from_secs(7200))
+            .expect("monotonic clock supports a 2h lookback");
+        sessions.insert("eval-evict-probe".to_string(), session);
+    }
+
+    // Call eval with a DIFFERENT, non-existent sessionId.
+    let app = create_api_routes(state.clone());
+    let req = eval_request("How does memory work?", Some("some-other-session"), true);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "eval should succeed, got {}",
+        resp.status()
+    );
+
+    // Under the old behavior eval would have evicted the expired session.
+    let still_present = {
+        let sessions = state.chat_sessions.lock().await;
+        sessions.contains_key("eval-evict-probe")
+    };
+    assert!(
+        still_present,
+        "eval must not evict expired production sessions"
     );
 }
