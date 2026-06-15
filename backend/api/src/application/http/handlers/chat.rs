@@ -35,11 +35,24 @@ const RRF_K: u64 = 60;
 // DTOs
 // ---------------------------------------------------------------------------
 
+/// 公共聊天请求体：始终仅检索已发布内容（RetrievalScope::Published）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
+}
+
+/// 认证端点 `/api/chat/scoped` 的请求体：允许通过 documentIds 指定文档集合，
+/// 放开发布限制（构建 RetrievalScope::Collection）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ScopedChatRequest {
+    pub message: String,
+    #[serde(rename = "sessionId", default)]
+    pub session_id: Option<String>,
+    /// 指定文档集合检索（放开发布限制）；仅认证端点可用
+    #[serde(rename = "documentIds", default)]
+    pub document_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -444,6 +457,7 @@ pub(crate) async fn search_and_rerank(
     top_k_per_query: usize,
     max_total_context_chunks: usize,
     metrics: &RwikiMetrics,
+    scope: &rwiki_core::infrastructure::vector_store::RetrievalScope,
 ) -> Result<Vec<SearchResult>, ApiError> {
     let retrieval_start = Instant::now();
     let search_type = if search_queries.len() == 1 {
@@ -461,6 +475,7 @@ pub(crate) async fn search_and_rerank(
                 3,
                 max_total_context_chunks,
                 RRF_K,
+                scope,
             )
             .await
     } else {
@@ -472,6 +487,7 @@ pub(crate) async fn search_and_rerank(
                 3,
                 max_total_context_chunks,
                 RRF_K,
+                scope,
             )
             .await?;
         if results.is_empty() {
@@ -484,6 +500,7 @@ pub(crate) async fn search_and_rerank(
                     3,
                     max_total_context_chunks,
                     RRF_K,
+                    scope,
                 )
                 .await
         } else {
@@ -509,6 +526,10 @@ pub(crate) async fn search_and_rerank(
             return Err(ApiError::internal(e.to_string()));
         }
     };
+
+    // US-CORE-034: 同一内容的 chunk 在不同文档下只保留得分最高的一个，避免重复召回。
+    // 在 rerank 之前执行，保证 reranker 不会看到重复内容。
+    let search_results = dedupe_by_content(search_results);
 
     // Rerank
     let search_results = if let Some(reranker) = reranker {
@@ -555,6 +576,28 @@ pub(crate) async fn search_and_rerank(
     Ok(search_results)
 }
 
+/// 折叠内容完全相同的 chunk，仅保留得分最高的一个。
+/// 保持稳定：以首次出现的位置为准（US-CORE-034: 避免同一内容重复召回）。
+fn dedupe_by_content(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut out: Vec<SearchResult> = Vec::with_capacity(results.len());
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for r in results {
+        match index.get(&r.content).copied() {
+            Some(i) => {
+                // 同一内容已存在，仅在得分更高时原地替换
+                if r.score > out[i].score {
+                    out[i] = r;
+                }
+            }
+            None => {
+                index.insert(r.content.clone(), out.len());
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
 /// Format search results into XML context string for LLM consumption.
 pub(crate) fn format_context_xml(results: &[SearchResult]) -> String {
     format!(
@@ -587,28 +630,17 @@ fn has_valid_rewrite_json(raw: &str) -> bool {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// Chat with the knowledge base via SSE streaming.
-///
-/// Validates the request, searches the vector store for relevant context,
-/// builds a per-request rig-core agent with the context injected into the
-/// preamble, and streams the LLM response as SSE events.
-#[utoipa::path(
-    post,
-    path = "/api/chat",
-    tag = "chat",
-    request_body = ChatRequest,
-    responses(
-        (status = 200, description = "SSE stream of chat response events", content_type = "text/event-stream"),
-        (status = 400, description = "Message cannot be empty", body = ErrorResponse),
-        (status = 503, description = "Knowledge base is empty", body = ErrorResponse)
-    )
-)]
-pub async fn chat(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<ChatRequest>,
+/// 共享的 SSE 聊天主体：解析完请求、确定作用域之后的全部逻辑。
+/// public `/api/chat` 与认证的 `/api/chat/scoped` 均通过此函数复用，
+/// 仅检索作用域不同（前者恒为 Published，后者可由 documentIds 构建 Collection）。
+async fn chat_inner(
+    state: Arc<AppState>,
+    message: String,
+    session_id: Option<String>,
+    scope: rwiki_core::infrastructure::vector_store::RetrievalScope,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Validate message is not empty
-    if req.message.trim().is_empty() {
+    if message.trim().is_empty() {
         state
             .metrics
             .chat_error_count
@@ -628,13 +660,13 @@ pub async fn chat(
     }
 
     // Determine session ID
-    let is_new_session = req.session_id.is_none();
-    let session_id = req.session_id.unwrap_or_else(|| Uuid::now_v7().to_string());
+    let is_new_session = session_id.is_none();
+    let session_id = session_id.unwrap_or_else(|| Uuid::now_v7().to_string());
     let chat_span = tracing::info_span!(
         "chat_request",
         session_id = %session_id,
-        user_message_preview = %preview_chars(&req.message, 50),
-        user_message_len = req.message.chars().count(),
+        user_message_preview = %preview_chars(&message, 50),
+        user_message_len = message.chars().count(),
         is_new_session,
         error = tracing::field::Empty,
         error.message = tracing::field::Empty,
@@ -668,7 +700,7 @@ pub async fn chat(
         let search_queries = rewrite_query(
             &state.llm_client,
             &state.llm_model,
-            &req.message,
+            &message,
             &history,
             content_language,
             &state.metrics,
@@ -681,11 +713,12 @@ pub async fn chat(
             &state.vector_store,
             &state.reranker,
             &state.rerank_config,
-            &req.message,
+            &message,
             &search_queries,
             state.retrieval_config.search_top_k_per_query.max(1),
             state.retrieval_config.max_context_chunks.max(1),
             &state.metrics,
+            &scope,
         )
         .await?;
         tracing::debug!(
@@ -745,7 +778,7 @@ pub async fn chat(
             })
             .collect();
 
-        let user_message = req.message.clone();
+        let user_message = message.clone();
 
         // Extract config values before spawn (state moves into the closure)
         let compact_threshold = state.chat_config.compact_threshold;
@@ -950,6 +983,64 @@ pub async fn chat(
 }
 
 // ---------------------------------------------------------------------------
+// Handlers (thin wrappers over chat_inner)
+// ---------------------------------------------------------------------------
+
+/// 公共 SSE 聊天端点（无需鉴权）。
+///
+/// 始终仅检索已发布内容（RetrievalScope::Published）。
+#[utoipa::path(
+    post,
+    path = "/api/chat",
+    tag = "chat",
+    request_body = ChatRequest,
+    responses(
+        (status = 200, description = "SSE stream of chat response events", content_type = "text/event-stream"),
+        (status = 400, description = "Message cannot be empty", body = ErrorResponse),
+        (status = 503, description = "Knowledge base is empty", body = ErrorResponse)
+    )
+)]
+pub async fn chat(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    chat_inner(
+        state,
+        req.message,
+        req.session_id,
+        rwiki_core::infrastructure::vector_store::RetrievalScope::Published,
+    )
+    .await
+}
+
+/// 认证 SSE 聊天端点 `/api/chat/scoped`（需 API Key）。
+///
+/// 允许通过 documentIds 指定文档集合，构建 RetrievalScope::Collection，
+/// 放开发布限制检索。
+#[utoipa::path(
+    post,
+    path = "/api/chat/scoped",
+    tag = "chat",
+    security(("bearer_auth" = [])),
+    request_body = ScopedChatRequest,
+    responses(
+        (status = 200, description = "SSE stream of chat response events", content_type = "text/event-stream"),
+        (status = 400, description = "Message cannot be empty", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid API key", body = ErrorResponse),
+        (status = 503, description = "Knowledge base is empty", body = ErrorResponse)
+    )
+)]
+pub async fn chat_scoped(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ScopedChatRequest>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let scope = rwiki_core::infrastructure::vector_store::RetrievalScope::from_document_ids(
+        req.document_ids.as_ref(),
+    );
+    chat_inner(state, req.message, req.session_id, scope).await
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1020,6 +1111,62 @@ mod tests {
             tags: vec![],
             section: section.map(|s| s.to_string()),
         }
+    }
+
+    // --- dedupe_by_content tests (US-CORE-034) ---
+
+    /// Helper: build a SearchResult with a custom score. Only content/score matter for dedup.
+    fn make_result_with_score(content: &str, score: f64) -> SearchResult {
+        SearchResult {
+            chunk_id: format!("chunk-{score}"),
+            content: content.to_string(),
+            score,
+            document_id: "test-doc".to_string(),
+            page_id: "test-page-id".to_string(),
+            sub_index: None,
+            chunk_count: None,
+            title: "T".to_string(),
+            locale: None,
+            link: None,
+            tags: vec![],
+            section: None,
+        }
+    }
+
+    // Covers: US-CORE-034 场景1 —— 同一内容只保留得分最高者，且首次出现位置稳定，
+    // 第三条不同内容必须存活。若保留了两条相同内容或丢掉了更高分都会失败。
+    #[test]
+    fn dedupe_by_content_collapses_identical_content_keeping_highest_score() {
+        let input = vec![
+            make_result_with_score("shared chunk content", 0.5),
+            make_result_with_score("shared chunk content", 0.9),
+            make_result_with_score("distinct content", 0.3),
+        ];
+
+        let out = dedupe_by_content(input);
+
+        assert_eq!(out.len(), 2, "identical content must collapse to one entry");
+
+        // 首条目是首次出现的内容，得分取两者中更高的 0.9
+        assert_eq!(
+            out[0].content, "shared chunk content",
+            "first-occurrence content must survive"
+        );
+        assert!(
+            (out[0].score - 0.9).abs() < f64::EPSILON,
+            "must keep the HIGHER score (0.9), got {}",
+            out[0].score
+        );
+
+        // 第三条不同内容存活，位于第二位
+        assert_eq!(
+            out[1].content, "distinct content",
+            "distinct content must survive"
+        );
+        assert!(
+            (out[1].score - 0.3).abs() < f64::EPSILON,
+            "distinct content score must be untouched"
+        );
     }
 
     // --- format_context_block tests ---

@@ -18,7 +18,8 @@ use utoipa::OpenApi;
 /// - /api/documents/{documentId} — 删除文档（需鉴权）
 /// - /api/documents/{documentId}/publish — 发布文档（需鉴权）
 /// - /api/documents/{documentId}/unpublish — 取消发布文档（需鉴权）
-/// - /api/chat — SSE 流式聊天（无需鉴权）
+/// - /api/chat — SSE 流式聊天（无需鉴权，仅检索已发布内容）
+/// - /api/chat/scoped — SSE 流式聊天（需鉴权，可按 documentIds 限定集合检索）
 /// - /swagger — Swagger UI（仅 enable_openapi = true 时可用）
 /// - 其他路径 — 代理到前端静态文件
 pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
@@ -29,6 +30,7 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
 
     // Document routes behind auth middleware
     let doc_router = Router::new()
+        .route("/api/auth/verify", get(handlers::auth::verify_token))
         .route(
             "/api/documents/upload",
             post(handlers::document::upload_document),
@@ -48,6 +50,11 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/api/chat/feedback", get(handlers::feedback::list_feedback))
         .route("/api/eval/query", post(handlers::eval::eval_query))
+        .route("/api/chat/scoped", post(handlers::chat::chat_scoped))
+        .route(
+            "/api/documents/batch-status",
+            post(handlers::document::batch_update_status),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::application::http::middleware::auth_middleware,

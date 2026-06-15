@@ -1,9 +1,12 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
 
-use crate::application::http::handlers::chat::{ChatRequest, SuggestionsResponse};
+use crate::application::http::handlers::chat::{
+    ChatRequest, ScopedChatRequest, SuggestionsResponse,
+};
 use crate::application::http::handlers::document::{
-    DocumentListItem, DocumentListResponse, PublishDocumentResponse, UploadDocumentResponse,
+    BatchAction, BatchStatusItem, BatchStatusRequest, BatchStatusResponse, DocumentListItem,
+    DocumentListResponse, PublishDocumentResponse, UploadDocumentResponse,
 };
 use crate::application::http::handlers::feedback::{
     FeedbackItem, FeedbackListResponse, FeedbackQueryParams, FeedbackRequest,
@@ -28,15 +31,19 @@ use crate::application::http::handlers::feedback::{
     ),
     paths(
         crate::application::http::handlers::health_check,
+        crate::application::http::handlers::auth::verify_token,
         crate::application::http::handlers::document::upload_document,
         crate::application::http::handlers::document::list_documents,
         crate::application::http::handlers::document::delete_document,
         crate::application::http::handlers::document::publish_document,
         crate::application::http::handlers::document::unpublish_document,
+        crate::application::http::handlers::document::batch_update_status,
         crate::application::http::handlers::chat::chat,
+        crate::application::http::handlers::chat::chat_scoped,
         crate::application::http::handlers::chat::suggestions,
         crate::application::http::handlers::feedback::submit_feedback,
         crate::application::http::handlers::feedback::list_feedback,
+        crate::application::http::handlers::eval::eval_query,
     ),
     components(
         schemas(
@@ -45,7 +52,12 @@ use crate::application::http::handlers::feedback::{
             DocumentListItem,
             DocumentListResponse,
             PublishDocumentResponse,
+            BatchAction,
+            BatchStatusItem,
+            BatchStatusRequest,
+            BatchStatusResponse,
             ChatRequest,
+            ScopedChatRequest,
             SuggestionsResponse,
             FeedbackRequest,
             FeedbackItem,
@@ -55,6 +67,7 @@ use crate::application::http::handlers::feedback::{
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
+        (name = "auth", description = "Authentication endpoints"),
         (name = "documents", description = "Document upload, listing, deletion, and publishing"),
         (name = "chat", description = "Knowledge base chat with SSE streaming")
     ),

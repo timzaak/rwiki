@@ -20,6 +20,7 @@ use super::embedding_model::AppEmbeddingModel;
 use super::vector_store::rrf_fuse;
 use super::vector_store::sanitize_fts_query;
 use super::vector_store::tokenize_fallback;
+use super::vector_store::RetrievalScope;
 use super::vector_store::SearchResult;
 use super::vector_store::VectorStoreManager;
 use rig::client::EmbeddingsClient;
@@ -177,7 +178,7 @@ async fn get_neighbor_chunks_returns_only_published_chunks() {
     .await;
 
     let results = store
-        .get_neighbor_chunks("page_pub", 0, 3)
+        .get_neighbor_chunks("page_pub", 0, 3, &RetrievalScope::Published)
         .await
         .expect("get_neighbor_chunks should succeed");
 
@@ -209,7 +210,7 @@ async fn get_neighbor_chunks_excludes_draft_documents() {
     .await;
 
     let results = store
-        .get_neighbor_chunks("page_draft", 0, 1)
+        .get_neighbor_chunks("page_draft", 0, 1, &RetrievalScope::Published)
         .await
         .expect("get_neighbor_chunks should succeed");
 
@@ -238,7 +239,7 @@ async fn get_neighbor_chunks_excludes_processing_documents() {
     .await;
 
     let results = store
-        .get_neighbor_chunks("page_proc", 0, 1)
+        .get_neighbor_chunks("page_proc", 0, 1, &RetrievalScope::Published)
         .await
         .expect("get_neighbor_chunks should succeed");
 
@@ -269,7 +270,7 @@ async fn get_neighbor_chunks_excludes_failed_documents() {
     .await;
 
     let results = store
-        .get_neighbor_chunks("page_fail", 0, 1)
+        .get_neighbor_chunks("page_fail", 0, 1, &RetrievalScope::Published)
         .await
         .expect("get_neighbor_chunks should succeed");
 
@@ -324,7 +325,7 @@ async fn get_neighbor_chunks_filters_mixed_status_across_documents() {
 
     // Published doc returns neighbors
     let pub_results = store
-        .get_neighbor_chunks("page_pub", 0, 2)
+        .get_neighbor_chunks("page_pub", 0, 2, &RetrievalScope::Published)
         .await
         .expect("should succeed");
     assert_eq!(
@@ -335,7 +336,7 @@ async fn get_neighbor_chunks_filters_mixed_status_across_documents() {
 
     // Draft doc returns no neighbors (filtered by status)
     let drf_results = store
-        .get_neighbor_chunks("page_drf", 0, 1)
+        .get_neighbor_chunks("page_drf", 0, 1, &RetrievalScope::Published)
         .await
         .expect("should succeed");
     assert!(
@@ -379,7 +380,7 @@ async fn publishing_document_makes_chunks_searchable() {
 
     // Verify no results while draft
     let draft_results = store
-        .get_neighbor_chunks("page_lc", 0, 2)
+        .get_neighbor_chunks("page_lc", 0, 2, &RetrievalScope::Published)
         .await
         .expect("should succeed");
     assert!(
@@ -403,7 +404,7 @@ async fn publishing_document_makes_chunks_searchable() {
 
     // Verify chunks now appear after publishing
     let published_results = store
-        .get_neighbor_chunks("page_lc", 0, 2)
+        .get_neighbor_chunks("page_lc", 0, 2, &RetrievalScope::Published)
         .await
         .expect("should succeed");
     assert_eq!(
@@ -803,7 +804,7 @@ async fn fts_index_searchable_after_chunk_insert() {
     insert_fts_row(&store, "fts_chunk_0", "这是一段关于内存管理的测试文本").await;
 
     let results = store
-        .search_by_keyword("内存管理", 5)
+        .search_by_keyword("内存管理", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -840,7 +841,7 @@ async fn deleting_document_removes_fts_entries() {
 
     // Verify it is searchable before deletion
     let before = store
-        .search_by_keyword("部署流程", 5)
+        .search_by_keyword("部署流程", 5, &RetrievalScope::Published)
         .await
         .expect("search should succeed");
     assert_eq!(before.len(), 1, "should find chunk before deletion");
@@ -853,7 +854,7 @@ async fn deleting_document_removes_fts_entries() {
 
     // Verify FTS entries are gone
     let after = store
-        .search_by_keyword("部署流程", 5)
+        .search_by_keyword("部署流程", 5, &RetrievalScope::Published)
         .await
         .expect("search should succeed after deletion");
     assert!(
@@ -885,7 +886,7 @@ async fn fts_search_excludes_draft_documents() {
     insert_fts_row(&store, "draft_fts_chunk", "草稿文档中的网络协议分析内容").await;
 
     let results = store
-        .search_by_keyword("网络协议", 5)
+        .search_by_keyword("网络协议", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -918,12 +919,63 @@ async fn fts_search_includes_published_documents() {
     insert_fts_row(&store, "pub_fts_chunk", "已发布文档中的数据库优化策略").await;
 
     let results = store
-        .search_by_keyword("数据库优化", 5)
+        .search_by_keyword("数据库优化", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
     assert_eq!(results.len(), 1, "published document should be found");
     assert_eq!(results[0].chunk_id, "pub_fts_chunk");
+}
+
+// Regression: search_by_keyword under RetrievalScope::Collection must bind the
+// collection ids to the `cm.document_id IN (...)` placeholders and top_k to the
+// trailing `LIMIT ?`. A prior version pushed top_k BEFORE the ids, so the id
+// landed on LIMIT (coerced to 0) and top_k landed inside IN(...) — silently
+// returning empty for every scoped keyword query, which broke US-CORE-036
+// (eval on a draft batch runs hybrid = keyword + vector).
+#[tokio::test]
+async fn fts_search_collection_scope_returns_draft_chunks() {
+    let store = make_sql_only_store();
+
+    // Draft document — invisible under the default Published scope
+    insert_test_document(&store, "doc_fts_coll", "draft").await;
+    insert_test_chunk(
+        &store,
+        "doc_fts_coll",
+        "coll_fts_chunk",
+        "草稿批次的容器编排与弹性伸缩方案",
+        "page_fts_coll",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "coll_fts_chunk", "草稿批次的容器编排与弹性伸缩方案").await;
+
+    // Published scope must exclude the draft
+    let published = store
+        .search_by_keyword("容器编排", 5, &RetrievalScope::Published)
+        .await
+        .expect("published search should succeed");
+    assert!(
+        published.is_empty(),
+        "draft must not be visible under Published scope"
+    );
+
+    // Collection scope must surface the draft chunk — the eval-on-draft path
+    let scoped = store
+        .search_by_keyword(
+            "容器编排",
+            5,
+            &RetrievalScope::Collection(vec!["doc_fts_coll".to_string()]),
+        )
+        .await
+        .expect("collection search should succeed");
+    assert_eq!(
+        scoped.len(),
+        1,
+        "collection scope must return the draft chunk (param-order regression)"
+    );
+    assert_eq!(scoped[0].chunk_id, "coll_fts_chunk");
 }
 
 // User Story: US-CORE-002
@@ -969,7 +1021,7 @@ async fn fts_search_filters_mixed_status_returns_only_published() {
     .await;
 
     let results = store
-        .search_by_keyword("容器编排", 10)
+        .search_by_keyword("容器编排", 10, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -1016,7 +1068,7 @@ async fn fts_lifecycle_write_search_delete_search_empty() {
 
     // Phase 2: Search -- verify content is findable
     let search_after_write = store
-        .search_by_keyword("全文检索", 5)
+        .search_by_keyword("全文检索", 5, &RetrievalScope::Published)
         .await
         .expect("search after write should succeed");
     assert_eq!(
@@ -1034,7 +1086,7 @@ async fn fts_lifecycle_write_search_delete_search_empty() {
 
     // Phase 4: Search again -- should return empty
     let search_after_delete = store
-        .search_by_keyword("全文检索", 5)
+        .search_by_keyword("全文检索", 5, &RetrievalScope::Published)
         .await
         .expect("search after delete should succeed");
     assert!(
@@ -1071,7 +1123,7 @@ async fn chinese_keyword_exact_match_via_fts() {
     insert_fts_row(&store, "cn_exact_chunk", "Rust 语言的内存管理").await;
 
     let results = store
-        .search_by_keyword("内存", 5)
+        .search_by_keyword("内存", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -1106,7 +1158,7 @@ async fn english_keyword_exact_match_via_fts() {
     insert_fts_row(&store, "en_exact_chunk", "Kubernetes deployment guide").await;
 
     let results = store
-        .search_by_keyword("Kubernetes", 5)
+        .search_by_keyword("Kubernetes", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -1142,7 +1194,7 @@ async fn mixed_chinese_english_tokenization_searchable() {
 
     // Search by English token
     let en_results = store
-        .search_by_keyword("Rust", 5)
+        .search_by_keyword("Rust", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword for 'Rust' should succeed");
     assert_eq!(
@@ -1154,7 +1206,7 @@ async fn mixed_chinese_english_tokenization_searchable() {
 
     // Search by Chinese token
     let cn_results = store
-        .search_by_keyword("内存", 5)
+        .search_by_keyword("内存", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword for '内存' should succeed");
     assert_eq!(
@@ -1283,7 +1335,7 @@ async fn fts_search_no_match_returns_empty_not_error() {
 
     // No documents or chunks inserted at all
     let results = store
-        .search_by_keyword("完全不相关的查询内容", 5)
+        .search_by_keyword("完全不相关的查询内容", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should return Ok even with no matches");
 
@@ -1497,7 +1549,7 @@ async fn startup_backfill_populates_fts_index_from_existing_chunks() {
 
     // Verify FTS is empty before backfill -- search should return nothing
     let results_before = store
-        .search_by_keyword("负载均衡", 5)
+        .search_by_keyword("负载均衡", 5, &RetrievalScope::Published)
         .await
         .expect("search before backfill should succeed");
     assert!(
@@ -1513,7 +1565,7 @@ async fn startup_backfill_populates_fts_index_from_existing_chunks() {
 
     // Verify the chunk is now findable via keyword search
     let results = store
-        .search_by_keyword("负载均衡", 5)
+        .search_by_keyword("负载均衡", 5, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed after backfill");
 
@@ -1553,7 +1605,7 @@ async fn backfill_idempotent_multiple_runs_no_duplicates() {
         .expect("first backfill should succeed");
 
     let results_after_first = store
-        .search_by_keyword("并发控制", 5)
+        .search_by_keyword("并发控制", 5, &RetrievalScope::Published)
         .await
         .expect("search after first backfill should succeed");
     assert_eq!(
@@ -1570,7 +1622,7 @@ async fn backfill_idempotent_multiple_runs_no_duplicates() {
 
     // Verify no duplicate results -- still exactly 1, not 2
     let results_after_second = store
-        .search_by_keyword("并发控制", 5)
+        .search_by_keyword("并发控制", 5, &RetrievalScope::Published)
         .await
         .expect("search after second backfill should succeed");
     assert_eq!(
@@ -1618,7 +1670,9 @@ async fn fts_failure_degrades_gracefully_not_error() {
         .expect("dropping fts_chunks should succeed");
 
     // search_by_keyword should return Ok(empty) rather than Err
-    let result = store.search_by_keyword("缓存穿透", 5).await;
+    let result = store
+        .search_by_keyword("缓存穿透", 5, &RetrievalScope::Published)
+        .await;
 
     match result {
         Ok(results) => {
@@ -1635,6 +1689,126 @@ async fn fts_failure_degrades_gracefully_not_error() {
             panic!("search_by_keyword returned Err on missing fts_chunks, expected Ok(empty): {e}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Self-contained deduplication scenario tests
+// ---------------------------------------------------------------------------
+
+// User Story: batch-refresh
+// Covers: Self-contained deduplication - two documents with identical content
+//         both have independent chunk_metadata entries. When the old document goes
+//         offline and the new document goes online, the new document's chunks are
+//         still retrievable. This validates the core benefit of self-contained
+//         deduplication over the old skip-based approach.
+#[tokio::test]
+async fn old_offline_new_still_retrievable() {
+    let store = make_sql_only_store();
+
+    // Given: 新老批次有相同内容
+    let old_doc_id = "doc_old_batch".to_string();
+    let new_doc_id = "doc_new_batch".to_string();
+
+    // Insert old document as published with chunks
+    insert_test_document(&store, &old_doc_id, "published").await;
+    insert_test_chunk(
+        &store,
+        &old_doc_id,
+        "chunk_shared_old",
+        "shared content across old and new batches",
+        "page_shared",
+        Some(0),
+        Some(1),
+    )
+    .await;
+
+    // Insert new document with same content (as draft)
+    insert_test_document(&store, &new_doc_id, "draft").await;
+    insert_test_chunk(
+        &store,
+        &new_doc_id,
+        "chunk_shared_new",
+        "shared content across old and new batches",
+        "page_shared",
+        Some(0),
+        Some(1),
+    )
+    .await;
+
+    // Verify both documents have their own independent chunk entries
+    let old_doc_id_for_query = old_doc_id.clone();
+    let old_doc_chunks = store
+        .conn
+        .call(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",
+                rusqlite::params![old_doc_id_for_query],
+                |row| row.get(0),
+            )?;
+            Ok::<i64, rusqlite::Error>(count)
+        })
+        .await
+        .expect("query should succeed");
+
+    let new_doc_id_for_query = new_doc_id.clone();
+    let new_doc_chunks = store
+        .conn
+        .call(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",
+                rusqlite::params![new_doc_id_for_query],
+                |row| row.get(0),
+            )?;
+            Ok::<i64, rusqlite::Error>(count)
+        })
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(old_doc_chunks, 1, "老文档应有 1 条 chunk_metadata");
+    assert_eq!(
+        new_doc_chunks, 1,
+        "新文档应有 1 条 chunk_metadata（自包含）"
+    );
+
+    // When: 老文档下线（状态改为 draft）
+    let old_doc_id_for_update = old_doc_id.clone();
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE documents SET status = 'draft' WHERE id = ?",
+                rusqlite::params![old_doc_id_for_update],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("update old doc status should succeed");
+
+    // And: 新文档上线（状态改为 published）
+    let new_doc_id_for_update = new_doc_id.clone();
+    store
+        .conn
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE documents SET status = 'published' WHERE id = ?",
+                rusqlite::params![new_doc_id_for_update],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("update new doc status should succeed");
+
+    // Then: 新文档仍能检索到相同内容（通过 get_neighbor_chunks）
+    let results = store
+        .get_neighbor_chunks("page_shared", 0, 5, &RetrievalScope::Published)
+        .await
+        .expect("get_neighbor_chunks should succeed");
+
+    assert_eq!(results.len(), 1, "应能检索到新文档的 chunk");
+    assert_eq!(
+        results[0].chunk_id, "chunk_shared_new",
+        "应返回新文档的 chunk ID"
+    );
 }
 
 // User Story: US-CORE-002
@@ -1714,7 +1888,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 
     // Search should only return the published document's chunk
     let results = store
-        .search_by_keyword("API网关", 10)
+        .search_by_keyword("API网关", 10, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed");
 
@@ -1750,7 +1924,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
         .expect("temp publish should succeed");
 
     let all_results = store
-        .search_by_keyword("API网关", 10)
+        .search_by_keyword("API网关", 10, &RetrievalScope::Published)
         .await
         .expect("search for all chunks should succeed");
     assert_eq!(
@@ -1790,7 +1964,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 
     // Search again -- now both chunks should be returned
     let results_after_publish = store
-        .search_by_keyword("API网关", 10)
+        .search_by_keyword("API网关", 10, &RetrievalScope::Published)
         .await
         .expect("search_by_keyword should succeed after publishing");
 

@@ -12,6 +12,7 @@ use rwiki_core::infrastructure::text_chunker;
 use rwiki_core::infrastructure::vector_store::IndexOptions;
 use rwiki_core::infrastructure::xlsx_parser;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -55,6 +56,35 @@ pub struct DocumentListResponse {
 pub struct PublishDocumentResponse {
     pub id: Uuid,
     pub status: DocumentStatus,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchStatusRequest {
+    pub publish: Vec<Uuid>,
+    pub unpublish: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchAction {
+    Publish,
+    Unpublish,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchStatusItem {
+    pub document_id: Uuid,
+    pub action: BatchAction,
+    pub applied: bool,
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BatchStatusResponse {
+    pub results: Vec<BatchStatusItem>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,13 +268,13 @@ pub async fn upload_document(
         .await
     {
         Ok(stats) => {
-            // 写入去重 reporting：跳过已存在于 published 文档的重复内容（Rule 12 fail loud）
-            if stats.skipped_duplicate > 0 {
-                tracing::warn!(
+            // 向量复用 reporting：记录复用缓存向量的 chunk 数（Rule 12 fail loud）
+            if stats.reused > 0 {
+                tracing::info!(
                     %document_id,
                     indexed = stats.indexed,
-                    skipped_duplicate = stats.skipped_duplicate,
-                    "上传文档跳过重复内容（已存在于 published 文档）"
+                    reused = stats.reused,
+                    "上传文档索引完成（复用缓存向量）"
                 );
             } else {
                 tracing::info!(%document_id, indexed = stats.indexed, "上传文档索引完成");
@@ -545,4 +575,200 @@ pub async fn unpublish_document(
         id: document_id,
         status: DocumentStatus::Draft,
     }))
+}
+
+/// Batch update document status (publish/unpublish multiple documents).
+///
+/// Atomically updates multiple document statuses in a single transaction.
+/// Only valid status transitions are applied (draft→published, published→draft).
+/// Invalid transitions or missing documents are reported in the response without blocking valid operations.
+#[utoipa::path(
+    post,
+    path = "/api/documents/batch-status",
+    tag = "documents",
+    security(("bearer_auth" = [])),
+    request_body = BatchStatusRequest,
+    responses(
+        (status = 200, description = "Batch status update completed", body = BatchStatusResponse),
+        (status = 400, description = "Publish and unpublish arrays cannot both be empty", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub async fn batch_update_status(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BatchStatusRequest>,
+) -> Result<Json<BatchStatusResponse>, ApiError> {
+    // Validate at least one collection is non-empty
+    if req.publish.is_empty() && req.unpublish.is_empty() {
+        return Err(ApiError::bad_request("publish 和 unpublish 不能同时为空"));
+    }
+
+    // 去重:同一列表内重复 UUID 会产生重复结果项与重复 IN 参数。
+    // publish 与 unpublish 各自独立去重,保留首次出现顺序;
+    // 同时存在于两个列表的 ID 是合法输入(由状态守卫处理),保持两条结果项。
+    let publish_ids = dedupe_preserve_order(req.publish);
+    let unpublish_ids = dedupe_preserve_order(req.unpublish);
+
+    let all_ids: Vec<Uuid> = publish_ids
+        .iter()
+        .chain(unpublish_ids.iter())
+        .copied()
+        .collect();
+
+    let results = state
+        .sqlite
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+
+            // 1. Fetch current status for all requested IDs using parameterized query
+            let mut current_statuses = HashMap::new();
+            if !all_ids.is_empty() {
+                // Build parameterized query with proper rusqlite params handling
+                let statuses: Vec<(String, String)> = if all_ids.len() <= 900 {
+                    // rusqlite supports up to ~900 parameters, use direct IN clause
+                    let placeholders = (0..all_ids.len())
+                        .map(|_| "?")
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!(
+                        "SELECT id, status FROM documents WHERE id IN ({})",
+                        placeholders
+                    );
+
+                    let ids_as_strings: Vec<String> =
+                        all_ids.iter().map(|u| u.to_string()).collect();
+                    let params: Vec<&str> = ids_as_strings.iter().map(|s| s.as_str()).collect();
+
+                    // 占位符数量随批次大小变化,prepare_cached 按 SQL 文本做缓存键,
+                    // 此处永远命中不到缓存且会持续泄漏条目,改用 prepare。
+                    let mut stmt = tx.prepare(&sql)?;
+                    let rows =
+                        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                            let id: String = row.get(0)?;
+                            let status: String = row.get(1)?;
+                            Ok((id, status))
+                        })?;
+
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    // For very large batches, use iterative approach (unlikely in practice)
+                    all_ids
+                        .iter()
+                        .filter_map(|id| {
+                            tx.query_row(
+                                "SELECT id, status FROM documents WHERE id = ?",
+                                [&id.to_string()],
+                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                            )
+                            .ok()
+                        })
+                        .collect()
+                };
+
+                for (id_str, status) in statuses {
+                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                        current_statuses.insert(uuid, status);
+                    }
+                }
+            }
+
+            // 2. Build results array with individual guards
+            let mut response_items = Vec::new();
+            let mut valid_publish_ids = Vec::new();
+            let mut valid_unpublish_ids = Vec::new();
+
+            for id in &publish_ids {
+                let (applied, final_status, reason) = match current_statuses.get(id) {
+                    None => (
+                        false,
+                        "not_found".to_string(),
+                        Some("not_found".to_string()),
+                    ),
+                    Some(status) if status == "draft" => {
+                        valid_publish_ids.push(*id);
+                        (true, "published".to_string(), None)
+                    }
+                    Some(status) => (false, status.clone(), Some("invalid_status".to_string())),
+                };
+                response_items.push(BatchStatusItem {
+                    document_id: *id,
+                    action: BatchAction::Publish,
+                    applied,
+                    status: final_status,
+                    reason,
+                });
+            }
+
+            for id in &unpublish_ids {
+                let (applied, final_status, reason) = match current_statuses.get(id) {
+                    None => (
+                        false,
+                        "not_found".to_string(),
+                        Some("not_found".to_string()),
+                    ),
+                    Some(status) if status == "published" => {
+                        valid_unpublish_ids.push(*id);
+                        (true, "draft".to_string(), None)
+                    }
+                    Some(status) => (false, status.clone(), Some("invalid_status".to_string())),
+                };
+                response_items.push(BatchStatusItem {
+                    document_id: *id,
+                    action: BatchAction::Unpublish,
+                    applied,
+                    status: final_status,
+                    reason,
+                });
+            }
+
+            // 3. Execute batched updates with proper parameterization.
+            // SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER=999,单臂 >999 个合法 ID 会让
+            // IN 子句参数超限并回滚整个事务。按 900 分块,每块仍保留状态守卫。
+            const UPDATE_CHUNK: usize = 900;
+
+            for chunk in valid_publish_ids.chunks(UPDATE_CHUNK) {
+                let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
+                let params: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                let placeholders = (0..params.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "UPDATE documents SET status='published' WHERE id IN ({}) AND status='draft'",
+                    placeholders
+                );
+                tx.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+            }
+
+            for chunk in valid_unpublish_ids.chunks(UPDATE_CHUNK) {
+                let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
+                let params: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                let placeholders = (0..params.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "UPDATE documents SET status='draft' WHERE id IN ({}) AND status='published'",
+                    placeholders
+                );
+                tx.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+            }
+
+            tx.commit()?;
+
+            Ok::<BatchStatusResponse, rusqlite::Error>(BatchStatusResponse {
+                results: response_items,
+            })
+        })
+        .await
+        .map_err(|e| ApiError::internal(format!("批量状态更新失败: {}", e)))?;
+
+    Ok(Json(results))
+}
+
+/// 去重并保留首次出现顺序。
+fn dedupe_preserve_order(ids: Vec<Uuid>) -> Vec<Uuid> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(id) {
+            out.push(id);
+        }
+    }
+    out
 }

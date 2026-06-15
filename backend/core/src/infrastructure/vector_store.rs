@@ -132,6 +132,49 @@ fn content_hash(text: &str) -> String {
     format!("{:x}", digest)
 }
 
+/// 检索作用域：默认只命中已发布；集合模式限定到指定文档并放开发布限制。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum RetrievalScope {
+    /// 现有行为：d.status='published'
+    #[default]
+    Published,
+    /// eval 用：cm.document_id IN (...)，无发布限制
+    Collection(Vec<String>),
+}
+
+impl RetrievalScope {
+    /// 由可选的 document_ids 构造作用域：None 或空 → Published；否则 Collection。
+    /// 统一 chat/eval 的"缺省/空维持线上行为"语义，避免两处手写分支漂移。
+    pub fn from_document_ids(ids: Option<&Vec<String>>) -> Self {
+        match ids {
+            Some(ids) if !ids.is_empty() => RetrievalScope::Collection(ids.clone()),
+            _ => RetrievalScope::Published,
+        }
+    }
+
+    /// 返回 `(WHERE 片段, 绑定参数列表)`，供检索 SQL 拼接：
+    /// - Published / 空 Collection → `AND d.status = 'published'`（无绑定参数）
+    /// - 非空 Collection → `AND cm.document_id IN (?, ...)` + 文档 id 列表
+    ///
+    /// 注意：返回的绑定参数必须在 SQL 中**按片段出现顺序**填入。
+    /// search_by_keyword 的 `LIMIT ?` 位于该片段**之后**，故 top_k 必须最后压入 params。
+    pub fn filter_sql(&self) -> (String, Vec<String>) {
+        match self {
+            RetrievalScope::Collection(ids) if !ids.is_empty() => {
+                let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+                (
+                    format!("AND cm.document_id IN ({})", placeholders),
+                    ids.clone(),
+                )
+            }
+            // Published 或空 Collection 都回退到"仅已发布"线上行为
+            RetrievalScope::Published | RetrievalScope::Collection(_) => {
+                ("AND d.status = 'published'".to_string(), Vec::new())
+            }
+        }
+    }
+}
+
 /// Options controlling embedding dedup behavior during indexing.
 #[derive(Default)]
 pub struct IndexOptions {
@@ -139,14 +182,13 @@ pub struct IndexOptions {
     pub refresh_embed: bool,
 }
 
-/// Result of indexing a document: how many chunks were written vs skipped.
+/// Result of indexing a document: how many chunks were written vs reused.
 #[derive(Debug, Clone, Default)]
 pub struct IndexStats {
     /// Number of chunks actually written to the store.
     pub indexed: usize,
-    /// Number of chunks skipped because identical content already exists in a
-    /// `published` document (write-time dedup). Independent of `refresh_embed`.
-    pub skipped_duplicate: usize,
+    /// Number of chunks that reused cached embeddings (no re-embedding needed).
+    pub reused: usize,
 }
 
 /// Existing embedding lookup result for a content_hash.
@@ -154,8 +196,6 @@ pub struct IndexStats {
 struct ExistingEmbedding {
     /// Cached embedding bytes (for reuse, avoiding a re-call to the embedding API).
     embedding_bytes: Vec<u8>,
-    /// True if at least one chunk with this hash belongs to a `published` document.
-    already_published: bool,
 }
 
 impl VectorStoreManager {
@@ -176,10 +216,9 @@ impl VectorStoreManager {
         }
     }
 
-    /// 根据 content_hash 批量查找已有向量及是否已上线(published)。
+    /// 根据 content_hash 批量查找已有向量（仅缓存，不判断上线状态）。
     /// 排除 content_hash IS NULL 的旧记录，且只返回与当前模型一致的记录。
-    /// 注意：若同一 content_hash 匹配多行，任取一行读 bytes 即可（向量相同）；
-    ///       already_published 是聚合级判断（该 hash 存在任意 published 文档即 true）。
+    /// 注意：若同一 content_hash 匹配多行，任取一行读 bytes 即可（向量相同）。
     async fn find_existing_embeddings(
         &self,
         content_hashes: &[String],
@@ -193,14 +232,10 @@ impl VectorStoreManager {
 
         self.conn
             .call(move |conn| {
-                // Step 1: 从 chunk_metadata 查找匹配的 rowid + 是否已上线
+                // Step 1: 从 chunk_metadata 查找匹配的 rowid（仅取缓存向量）
                 let placeholders: Vec<String> = hashes.iter().map(|_| "?".to_string()).collect();
                 let sql = format!(
-                    "SELECT cm.content_hash, cm.rowid, \
-                            EXISTS(SELECT 1 FROM chunk_metadata cm2 \
-                                   JOIN documents d2 ON cm2.document_id = d2.id \
-                                   WHERE cm2.content_hash = cm.content_hash \
-                                     AND d2.status = 'published') AS already_published \
+                    "SELECT cm.content_hash, cm.rowid \
                      FROM chunk_metadata cm \
                      WHERE cm.content_hash IN ({}) \
                      AND cm.content_hash IS NOT NULL \
@@ -218,19 +253,18 @@ impl VectorStoreManager {
                 let rows = stmt.query_map(params.as_slice(), |row| {
                     let hash: String = row.get(0)?;
                     let rowid: i64 = row.get(1)?;
-                    let already_published: i64 = row.get(2)?;
-                    Ok((hash, rowid, already_published != 0))
+                    Ok((hash, rowid))
                 })?;
 
-                let mut rowid_map: std::collections::HashMap<String, (i64, bool)> =
+                let mut rowid_map: std::collections::HashMap<String, i64> =
                     std::collections::HashMap::new();
-                for (hash, rowid, already_published) in rows.flatten() {
-                    rowid_map.insert(hash, (rowid, already_published));
+                for (hash, rowid) in rows.flatten() {
+                    rowid_map.insert(hash, rowid);
                 }
 
                 // Step 2: 逐行从 vec_chunks 读取 embedding bytes
                 let mut result = std::collections::HashMap::new();
-                for (hash, (rowid, already_published)) in rowid_map {
+                for (hash, rowid) in rowid_map {
                     let bytes: Vec<u8> = conn.query_row(
                         "SELECT embedding FROM vec_chunks WHERE rowid = ?",
                         rusqlite::params![rowid],
@@ -240,7 +274,6 @@ impl VectorStoreManager {
                         hash,
                         ExistingEmbedding {
                             embedding_bytes: bytes,
-                            already_published,
                         },
                     );
                 }
@@ -267,18 +300,18 @@ impl VectorStoreManager {
     ///
     /// When refresh_embed is false, chunks with content matching existing embeddings
     /// (same content_hash and embedding_model) reuse the cached vector bytes instead
-    /// of calling the embedding API. Returns the number of chunks indexed.
+    /// of calling the embedding API. Always creates independent chunk entries for
+    /// new documents (self-contained deduplication). Returns the number of chunks indexed.
     pub async fn index_document_with_options(
         &self,
         document_id: Uuid,
         chunks: Vec<DocumentChunk>,
         options: IndexOptions,
     ) -> Result<IndexStats, CoreError> {
-        // 写入去重始终先执行（独立于 refresh_embed）：
-        //   - content_hash 已出现在任意 published 文档 → 跳过（防重复上线）
-        //   - 否则 !refresh_embed 且有缓存向量 → 复用向量写入
+        // 自包含去重：始终为新文档创建独立 chunk 条目
+        //   - 有缓存向量且未强制刷新 → 复用向量写入（reused 计数）
         //   - 其余 → 重新 embedding
-        let (reusable, new_chunks, skipped_duplicate) = if !chunks.is_empty() {
+        let (reusable, new_chunks) = if !chunks.is_empty() {
             // 计算每个 chunk 的 content_hash（基于 content.join("\n")）
             let hashes: Vec<String> = chunks
                 .iter()
@@ -289,14 +322,9 @@ impl VectorStoreManager {
 
             let mut reusable = Vec::new();
             let mut new_chunks = Vec::new();
-            let mut skipped_duplicate = 0usize;
             for (chunk, hash) in chunks.into_iter().zip(hashes) {
                 match existing.get(&hash) {
-                    // 内容已在 published 文档上线 → 跳过
-                    Some(info) if info.already_published => {
-                        skipped_duplicate += 1;
-                    }
-                    // 非 published 且未强制刷新 → 复用缓存向量
+                    // 有缓存向量且未强制刷新 → 复用向量写入
                     Some(info) if !options.refresh_embed => {
                         reusable.push((chunk, hash, info.embedding_bytes.clone()));
                     }
@@ -305,13 +333,15 @@ impl VectorStoreManager {
                     }
                 }
             }
-            (reusable, new_chunks, skipped_duplicate)
+            (reusable, new_chunks)
         } else {
-            (Vec::new(), Vec::new(), 0)
+            (Vec::new(), Vec::new())
         };
 
         // indexed = 实际写入数；在 reusable/new_chunks 被 move 进事务前记录
         let indexed = reusable.len() + new_chunks.len();
+        // reused = 复用缓存向量的 chunk 数
+        let reused = reusable.len();
 
         // new_chunks 走正常 embedding 流程（按 64 条分批，避免超出 API 限制）
         let embedded: Vec<(DocumentChunk, OneOrMany<Embedding>)> = if !new_chunks.is_empty() {
@@ -416,10 +446,7 @@ impl VectorStoreManager {
             .await
             .map_err(|e| CoreError::DatabaseError(format!("插入文档向量失败: {e}")))?;
 
-        Ok(IndexStats {
-            indexed,
-            skipped_duplicate,
-        })
+        Ok(IndexStats { indexed, reused })
     }
 
     /// 分批补齐旧数据的 content_hash 和 embedding_model。
@@ -542,23 +569,40 @@ impl VectorStoreManager {
         &self,
         query_vec: &[f64],
         top_k: usize,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         let query_bytes = embedding_to_bytes(query_vec);
         let top_k_i64 = top_k as i64;
 
+        let (status_filter, collection_ids) = scope.filter_sql();
+
         self.conn
             .call(move |conn| {
-                let mut stmt = conn.prepare(
+                let sql = format!(
                     "SELECT cm.chunk_id, cm.content, cm.title, cm.locale, cm.link, cm.tags, cm.section, \
                             cm.document_id, cm.page_id, cm.sub_index, cm.chunk_count, v.distance \
                      FROM vec_chunks v \
                      LEFT JOIN chunk_metadata cm ON v.rowid = cm.rowid \
                      JOIN documents d ON cm.document_id = d.id \
                      WHERE v.embedding MATCH ? AND k = ? \
-                       AND d.status = 'published'"
-                )?;
+                       {}",
+                    status_filter
+                );
 
-                let rows = stmt.query_map(rusqlite::params![query_bytes, top_k_i64], |row| {
+                let mut stmt = conn.prepare(&sql)?;
+
+                // Build params based on scope
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(query_bytes),
+                    Box::new(top_k_i64),
+                ];
+                for id in &collection_ids {
+                    params.push(Box::new(id.clone()));
+                }
+
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter()),
+                    |row| {
                     let chunk_id: String = row.get(0)?;
                     let content_text: String = row.get(1)?;
                     let title: String = row.get(2)?;
@@ -607,12 +651,13 @@ impl VectorStoreManager {
 
     /// Search by keyword using FTS5 BM25 ranking.
     /// Tokenizes the query with jieba, sanitizes FTS operators, then runs MATCH.
-    /// Only returns chunks from published documents.
+    /// Only returns chunks from published documents (or collection-specified documents).
     /// Returns Ok(empty) if the FTS index is missing or corrupted, degrading gracefully.
     pub async fn search_by_keyword(
         &self,
         query: &str,
         top_k: usize,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         let tokens = tokenize_for_fts(query);
         let fts_query = sanitize_fts_query(&tokens);
@@ -623,28 +668,45 @@ impl VectorStoreManager {
 
         let top_k_i64 = top_k as i64;
 
+        let (status_filter, collection_ids) = scope.filter_sql();
+
         let result = self
             .conn
             .call(move |conn| {
-                let sql = "SELECT cm.chunk_id, cm.content, cm.title, cm.locale, cm.link, cm.tags, cm.section, \
+                let sql = format!(
+                    "SELECT cm.chunk_id, cm.content, cm.title, cm.locale, cm.link, cm.tags, cm.section, \
                             cm.document_id, cm.page_id, cm.sub_index, cm.chunk_count, \
                             bm25(fts_chunks) as score \
                      FROM fts_chunks fts \
                      JOIN chunk_metadata cm ON fts.rowid = cm.rowid \
                      JOIN documents d ON cm.document_id = d.id \
                      WHERE fts_chunks MATCH ? \
-                       AND d.status = 'published' \
+                       {} \
                      ORDER BY score \
-                     LIMIT ?";
+                     LIMIT ?",
+                    status_filter
+                );
 
-                let mut stmt = match conn.prepare(sql) {
+                let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!("FTS keyword search prepare failed (FTS index may be missing): {e}");
                         return Ok::<Vec<SearchResult>, rusqlite::Error>(Vec::new());
                     }
                 };
-                let rows = stmt.query_map(rusqlite::params![fts_query, top_k_i64], |row| {
+
+                // Build params based on scope. SQL placeholder order is:
+                //   MATCH ?  ,  (status_filter: cm.document_id IN (?, ...))  ,  LIMIT ?
+                // so the collection ids must be bound BEFORE top_k (which fills LIMIT).
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query)];
+                for id in &collection_ids {
+                    params.push(Box::new(id.clone()));
+                }
+                params.push(Box::new(top_k_i64));
+
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter()),
+                    |row| {
                     let chunk_id: String = row.get(0)?;
                     let content: String = row.get(1)?;
                     let title: String = row.get(2)?;
@@ -702,7 +764,12 @@ impl VectorStoreManager {
     /// Search the vector store for similar document chunks.
     ///
     /// Generates a query embedding, then uses sqlite-vec cosine distance search.
-    pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, CoreError> {
+    pub async fn search(
+        &self,
+        query: &str,
+        top_k: usize,
+        scope: &RetrievalScope,
+    ) -> Result<Vec<SearchResult>, CoreError> {
         if self.is_empty().await {
             return Err(CoreError::ProcessingError(
                 "知识库为空，请先上传文档".into(),
@@ -721,7 +788,7 @@ impl VectorStoreManager {
             .first()
             .ok_or_else(|| CoreError::ProcessingError("查询向量化返回空结果".into()))?;
 
-        self.search_by_vector(&query_vec.vec, top_k).await
+        self.search_by_vector(&query_vec.vec, top_k, scope).await
     }
 
     /// Retrieve neighbor chunks within a sub_index range for a given page_id.
@@ -733,23 +800,39 @@ impl VectorStoreManager {
         page_id: &str,
         start_sub: i64,
         end_sub: i64,
+        scope: &RetrievalScope,
     ) -> Result<Vec<NeighborChunk>, CoreError> {
         let pid = page_id.to_string();
 
+        let (status_filter, collection_ids) = scope.filter_sql();
+
         self.conn
             .call(move |conn| {
-                let mut stmt = conn.prepare(
+                let sql = format!(
                     "SELECT chunk_id, content, sub_index, chunk_count, title, locale, link, tags, section, page_id, document_id \
                      FROM chunk_metadata cm \
                      JOIN documents d ON cm.document_id = d.id \
                      WHERE cm.page_id = ? AND cm.sub_index >= ? AND cm.sub_index < ? \
                        AND cm.chunk_count IS NOT NULL \
-                       AND d.status = 'published' \
-                     ORDER BY cm.sub_index"
-                )?;
+                       {} \
+                     ORDER BY cm.sub_index",
+                    status_filter
+                );
+
+                let mut stmt = conn.prepare(&sql)?;
+
+                // Build params based on scope
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(pid),
+                    Box::new(start_sub),
+                    Box::new(end_sub),
+                ];
+                for id in &collection_ids {
+                    params.push(Box::new(id.clone()));
+                }
 
                 let rows = stmt.query_map(
-                    rusqlite::params![pid, start_sub, end_sub],
+                    rusqlite::params_from_iter(params.iter()),
                     |row| {
                         let chunk_id: String = row.get(0)?;
                         let content: String = row.get(1)?;
@@ -803,6 +886,7 @@ impl VectorStoreManager {
         window_size: usize,
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         if seed_hits.is_empty() || window_size == 0 {
             return Ok(seed_hits);
@@ -853,7 +937,7 @@ impl VectorStoreManager {
             let start = 0i64.max(min_sub - window_size as i64);
             let end = max_sub + window_size as i64 + 1;
 
-            let neighbors = self.get_neighbor_chunks(page_id, start, end).await?;
+            let neighbors = self.get_neighbor_chunks(page_id, start, end, scope).await?;
 
             neighbor_map.insert(page_id.clone(), neighbors);
         }
@@ -887,13 +971,15 @@ impl VectorStoreManager {
         window_size: usize,
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
-        let seed_hits = self.search(query, top_k).await?;
+        let seed_hits = self.search(query, top_k, scope).await?;
         self.expand_window(
             seed_hits,
             window_size,
             max_chunks_per_row,
             max_total_context_chunks,
+            scope,
         )
         .await
     }
@@ -904,6 +990,7 @@ impl VectorStoreManager {
     /// 2. Search each query independently via search_by_vector
     /// 3. RRF fuse all results
     /// 4. Window expansion on fused seed hits
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_multi_query(
         &self,
         queries: &[String],
@@ -912,6 +999,7 @@ impl VectorStoreManager {
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
         rrf_k: u64,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         if queries.is_empty() {
             return Ok(Vec::new());
@@ -926,6 +1014,7 @@ impl VectorStoreManager {
                     window_size,
                     max_chunks_per_row,
                     max_total_context_chunks,
+                    scope,
                 )
                 .await;
         }
@@ -940,7 +1029,10 @@ impl VectorStoreManager {
         // Step 2: Search each query sequentially (sqlite-vec single-connection serialization)
         let mut all_results: Vec<Vec<SearchResult>> = Vec::with_capacity(queries.len());
         for (i, embedding) in all_embeddings.iter().enumerate() {
-            match self.search_by_vector(&embedding.vec, top_k_per_query).await {
+            match self
+                .search_by_vector(&embedding.vec, top_k_per_query, scope)
+                .await
+            {
                 Ok(results) => {
                     tracing::debug!("query {} returned {} results", i, results.len());
                     all_results.push(results);
@@ -968,6 +1060,7 @@ impl VectorStoreManager {
             window_size,
             max_chunks_per_row,
             max_total_context_chunks,
+            scope,
         )
         .await
     }
@@ -1047,6 +1140,7 @@ impl VectorStoreManager {
 
     /// Hybrid search combining FTS keyword search and vector search via RRF fusion.
     /// Falls back to pure vector search if FTS fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_hybrid(
         &self,
         query: &str,
@@ -1055,6 +1149,7 @@ impl VectorStoreManager {
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
         rrf_k: u64,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         if self.is_empty().await {
             return Err(CoreError::ProcessingError(
@@ -1076,7 +1171,7 @@ impl VectorStoreManager {
             .vec
             .clone();
 
-        let fts_results = match self.search_by_keyword(query, top_k).await {
+        let fts_results = match self.search_by_keyword(query, top_k, scope).await {
             Ok(results) => {
                 tracing::debug!(
                     "hybrid search FTS hits: {} for query={:?}",
@@ -1100,7 +1195,7 @@ impl VectorStoreManager {
         };
 
         let fts_hit_count = fts_results.len();
-        let vec_results = self.search_by_vector(&query_vec, top_k).await?;
+        let vec_results = self.search_by_vector(&query_vec, top_k, scope).await?;
         let vector_hit_count = vec_results.len();
         tracing::debug!(
             "hybrid search vector hits: {} for query={:?}",
@@ -1136,11 +1231,13 @@ impl VectorStoreManager {
             window_size,
             max_chunks_per_row,
             max_total_context_chunks,
+            scope,
         )
         .await
     }
 
     /// Multi-query hybrid search: keyword + vector per query, RRF fuse all, then window expansion.
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_multi_query_hybrid(
         &self,
         queries: &[String],
@@ -1149,6 +1246,7 @@ impl VectorStoreManager {
         max_chunks_per_row: usize,
         max_total_context_chunks: usize,
         rrf_k: u64,
+        scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
         if queries.is_empty() {
             return Ok(Vec::new());
@@ -1169,6 +1267,7 @@ impl VectorStoreManager {
                     max_chunks_per_row,
                     max_total_context_chunks,
                     rrf_k,
+                    scope,
                 )
                 .await;
         }
@@ -1184,7 +1283,7 @@ impl VectorStoreManager {
         let mut vector_hit_count = 0usize;
 
         for (i, query) in queries.iter().enumerate() {
-            match self.search_by_keyword(query, top_k_per_query).await {
+            match self.search_by_keyword(query, top_k_per_query, scope).await {
                 Ok(fts_results) if !fts_results.is_empty() => {
                     fts_hit_count += fts_results.len();
                     all_results.push(fts_results);
@@ -1196,7 +1295,10 @@ impl VectorStoreManager {
             }
 
             if let Some(embedding) = all_embeddings.get(i) {
-                match self.search_by_vector(&embedding.vec, top_k_per_query).await {
+                match self
+                    .search_by_vector(&embedding.vec, top_k_per_query, scope)
+                    .await
+                {
                     Ok(vec_results) => {
                         vector_hit_count += vec_results.len();
                         all_results.push(vec_results);
@@ -1233,6 +1335,7 @@ impl VectorStoreManager {
             window_size,
             max_chunks_per_row,
             max_total_context_chunks,
+            scope,
         )
         .await
     }
@@ -1597,7 +1700,7 @@ mod tests {
         .await;
 
         let results = store
-            .get_neighbor_chunks("page_5", 0, 3)
+            .get_neighbor_chunks("page_5", 0, 3, &RetrievalScope::Published)
             .await
             .expect("get_neighbor_chunks should succeed");
 
@@ -1628,7 +1731,7 @@ mod tests {
         .await;
 
         let results = store
-            .get_neighbor_chunks("page_old", 0, 1)
+            .get_neighbor_chunks("page_old", 0, 1, &RetrievalScope::Published)
             .await
             .expect("get_neighbor_chunks should succeed");
 
@@ -1687,7 +1790,7 @@ mod tests {
         .await;
 
         let results = store
-            .get_neighbor_chunks("page_A", 0, 2)
+            .get_neighbor_chunks("page_A", 0, 2, &RetrievalScope::Published)
             .await
             .expect("get_neighbor_chunks should succeed");
 
@@ -1748,7 +1851,7 @@ mod tests {
         .await;
 
         let results = store
-            .get_neighbor_chunks("page_0", 0, 2)
+            .get_neighbor_chunks("page_0", 0, 2, &RetrievalScope::Published)
             .await
             .expect("get_neighbor_chunks should succeed");
 
@@ -2167,7 +2270,7 @@ mod tests {
             .expect("FTS insert should succeed");
 
         let results = store
-            .search_by_keyword("xyznonexistent", 5)
+            .search_by_keyword("xyznonexistent", 5, &RetrievalScope::Published)
             .await
             .expect("search_by_keyword should not error on non-matching query");
 
@@ -2389,10 +2492,10 @@ mod tests {
             .expect("count should succeed")
     }
 
-    // Covers: content_hash 已存在于 published 文档 → 跳过写入（治本去重的核心）。
-    //         新文档不应产生任何 chunk_metadata 行，skipped_duplicate == 1。
+    // Covers: 重复内容已存在于 published 文档 → 新文档仍写入自包含条目（复用向量）。
+    //         验证新文档独立创建 chunk_metadata，reused 计数正确，无重复向量化。
     #[tokio::test]
-    async fn index_skips_chunk_already_in_published_document() {
+    async fn index_reuses_vector_when_content_matches_published() {
         let store = make_sql_only_store();
 
         seed_existing_chunk(
@@ -2413,16 +2516,16 @@ mod tests {
             .await
             .expect("index should succeed");
 
-        assert_eq!(stats.skipped_duplicate, 1, "published 重复应被跳过");
-        assert_eq!(stats.indexed, 0, "无 chunk 写入");
+        assert_eq!(stats.reused, 1, "应复用已缓存的向量");
+        assert_eq!(stats.indexed, 1, "应写入 1 条 chunk（自包含）");
 
         let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
-        assert_eq!(count, 0, "新文档不应写入任何 chunk");
+        assert_eq!(count, 1, "新文档应写入自包含 chunk 条目");
     }
 
-    // Covers: 重复内容仅存在于 draft 文档 → 不跳过（draft 间不去重），复用向量写入。
+    // Covers: 重复内容仅存在于 draft 文档 → 新文档写入自包含条目（复用向量）。
     #[tokio::test]
-    async fn index_keeps_chunk_only_in_draft_document() {
+    async fn index_reuses_vector_when_content_matches_draft() {
         let store = make_sql_only_store();
 
         seed_existing_chunk(
@@ -2443,16 +2546,16 @@ mod tests {
             .await
             .expect("index should succeed");
 
-        assert_eq!(stats.skipped_duplicate, 0, "draft 内容不应被当作重复跳过");
-        assert_eq!(stats.indexed, 1, "应写入 1 条 chunk（复用向量）");
+        assert_eq!(stats.reused, 1, "应复用已缓存的向量");
+        assert_eq!(stats.indexed, 1, "应写入 1 条 chunk（自包含）");
 
         let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
         assert_eq!(count, 1, "新文档应写入 1 条 chunk");
     }
 
-    // Covers: refresh_embed=true 时 published 去重仍生效（去重独立于 refresh_embed）。
+    // Covers: refresh_embed=true 时强制重新向量化，不复用缓存（但仍写入自包含条目）。
     #[tokio::test]
-    async fn index_dedup_independent_of_refresh_embed() {
+    async fn refresh_embed_forces_reembedding() {
         let store = make_sql_only_store();
 
         seed_existing_chunk(
@@ -2479,10 +2582,10 @@ mod tests {
             .await
             .expect("index should succeed");
 
-        assert_eq!(
-            stats.skipped_duplicate, 1,
-            "refresh_embed=true 下 published 重复仍应被跳过"
-        );
-        assert_eq!(stats.indexed, 0);
+        assert_eq!(stats.reused, 0, "refresh_embed=true 时不复用缓存向量");
+        assert_eq!(stats.indexed, 1, "应写入 1 条 chunk（强制重新向量化）");
+
+        let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
+        assert_eq!(count, 1, "新文档应写入自包含 chunk 条目");
     }
 }

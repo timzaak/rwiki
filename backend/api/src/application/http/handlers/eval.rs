@@ -31,6 +31,9 @@ pub struct EvalQueryRequest {
     /// Session ID to reuse chat SessionStore for history context
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
+    /// 指定文档集合评测（放开发布限制，可评测草稿）；缺省/空维持线上行为
+    #[serde(rename = "documentIds", default)]
+    pub document_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -208,6 +211,11 @@ pub async fn eval_query(
     let rewrite_ms = rewrite_start.elapsed().as_millis() as u64;
 
     // Stage 2: Hybrid search + rerank
+    // Convert documentIds to RetrievalScope (None/empty → published-only)
+    let scope = rwiki_core::infrastructure::vector_store::RetrievalScope::from_document_ids(
+        req.document_ids.as_ref(),
+    );
+
     let search_start = Instant::now();
     let search_results = search_and_rerank(
         &state.vector_store,
@@ -218,6 +226,7 @@ pub async fn eval_query(
         top_k,
         top_k,
         &state.metrics,
+        &scope,
     )
     .await?;
     let search_ms = search_start.elapsed().as_millis() as u64;
