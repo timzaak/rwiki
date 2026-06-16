@@ -273,6 +273,11 @@ pub struct RerankConfig {
     /// 独立 API Key
     #[serde(default)]
     pub api_key: Option<String>,
+    /// 可选 base_url 覆盖。
+    /// 对 `dash_scope` provider：默认从 `[llm].base_url` 自动推导区域（中国/国际），
+    /// 仅当 LLM provider 非百炼时才需要显式设置。
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 impl Default for RerankConfig {
@@ -284,6 +289,7 @@ impl Default for RerankConfig {
             top_n: default_top_n(),
             timeout_secs: default_timeout_secs(),
             api_key: None,
+            base_url: None,
         }
     }
 }
@@ -794,6 +800,35 @@ mod tests {
         assert!(
             config.api_key.is_none(),
             "missing api_key should default to None"
+        );
+        assert!(
+            config.base_url.is_none(),
+            "missing base_url should default to None"
+        );
+    }
+
+    // Covers: DashScope 区域一致性 — base_url 字段可显式配置，默认 None（向后兼容）。
+    #[test]
+    fn rerank_config_parses_base_url_and_defaults_to_none() {
+        // 默认 None
+        assert_eq!(
+            RerankConfig::default().base_url,
+            None,
+            "default base_url should be None (backward compatible)"
+        );
+
+        // 显式配置
+        let toml_str = r#"
+            enable = true
+            provider = "dash_scope"
+            base_url = "https://custom.example.com/reranks"
+        "#;
+        let config: RerankConfig =
+            toml::from_str(toml_str).expect("rerank config with base_url should deserialize");
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://custom.example.com/reranks"),
+            "base_url should parse explicit value"
         );
     }
 }

@@ -1,6 +1,27 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tracing_futures::Instrument;
+
+use crate::config::RerankProviderType;
+use crate::infrastructure::otel::gen_ai;
+
+/// OpenRouter rerank 默认端点
+const OPENROUTER_RERANK_DEFAULT: &str = "https://openrouter.ai/api/v1/rerank";
+/// 智谱 BigModel rerank 默认端点
+const BIGMODEL_RERANK_DEFAULT: &str = "https://open.bigmodel.cn/api/paas/v4/rerank";
+/// DashScope rerank 默认端点（中国大陆）
+const DASHSCOPE_RERANK_DEFAULT: &str = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks";
+
+/// Rerank provider identifier used for `gen_ai.system` / `gen_ai.provider.name`.
+/// Must stay in sync with the `RerankerProvider` variants.
+fn provider_tag(provider: &RerankerProvider) -> &'static str {
+    match provider {
+        RerankerProvider::OpenRouter(_) => "openrouter",
+        RerankerProvider::BigModel(_) => "bigmodel",
+        RerankerProvider::DashScope(_) => "dashscope",
+    }
+}
 
 /// Rerank 请求结果
 #[derive(Debug, Clone, PartialEq)]
@@ -61,9 +82,11 @@ struct RerankResultRaw {
     relevance_score: f64,
 }
 
-/// OpenRouter Rerank provider
+/// 共享内部状态：三个 provider（OpenRouter/BigModel/DashScope）字段同构
+/// （client, api_key, model, base_url, timeout），只有 HTTP 协议/默认端点不同。
+/// provider 作为 newtype 持有它，避免三份重复字段与 `model()` 访问器。
 #[derive(Clone)]
-pub struct OpenRouterReranker {
+struct BaseReranker {
     client: reqwest::Client,
     api_key: String,
     model: String,
@@ -71,15 +94,26 @@ pub struct OpenRouterReranker {
     timeout: Duration,
 }
 
+impl BaseReranker {
+    /// Model name for gen_ai span instrumentation.
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+/// OpenRouter Rerank provider
+#[derive(Clone)]
+pub struct OpenRouterReranker(BaseReranker);
+
 impl OpenRouterReranker {
+    /// Construct with the OpenRouter default endpoint.
     pub fn new(api_key: String, model: String, timeout: Duration) -> Self {
-        Self {
-            client: reqwest::Client::new(),
+        Self::with_base_url(
             api_key,
             model,
-            base_url: "https://openrouter.ai/api/v1/rerank".to_string(),
             timeout,
-        }
+            OPENROUTER_RERANK_DEFAULT.to_string(),
+        )
     }
 
     /// Constructor with custom base_url for testing (mockito)
@@ -89,13 +123,18 @@ impl OpenRouterReranker {
         timeout: Duration,
         base_url: String,
     ) -> Self {
-        Self {
+        Self(BaseReranker {
             client: reqwest::Client::new(),
             api_key,
             model,
             base_url,
             timeout,
-        }
+        })
+    }
+
+    /// Model name for gen_ai span instrumentation.
+    pub fn model(&self) -> &str {
+        self.0.model()
     }
 }
 
@@ -111,24 +150,25 @@ impl Reranker for OpenRouterReranker {
         }
 
         let body = RerankRequest {
-            model: self.model.clone(),
+            model: self.0.model.clone(),
             query: query.to_string(),
             documents: documents.to_vec(),
             top_n,
         };
 
         let response = self
+            .0
             .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .post(&self.0.base_url)
+            .header("Authorization", format!("Bearer {}", self.0.api_key))
             .header("Content-Type", "application/json")
-            .timeout(self.timeout)
+            .timeout(self.0.timeout)
             .json(&body)
             .send()
             .await
             .map_err(|e| {
                 if e.is_timeout() {
-                    RerankError::Timeout(self.timeout)
+                    RerankError::Timeout(self.0.timeout)
                 } else {
                     RerankError::Network(e.to_string())
                 }
@@ -160,23 +200,12 @@ impl Reranker for OpenRouterReranker {
 
 /// 智谱 BigModel Rerank provider
 #[derive(Clone)]
-pub struct BigModelReranker {
-    client: reqwest::Client,
-    api_key: String,
-    model: String,
-    base_url: String,
-    timeout: Duration,
-}
+pub struct BigModelReranker(BaseReranker);
 
 impl BigModelReranker {
+    /// Construct with the BigModel default endpoint.
     pub fn new(api_key: String, model: String, timeout: Duration) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-            model,
-            base_url: "https://open.bigmodel.cn/api/paas/v4/rerank".to_string(),
-            timeout,
-        }
+        Self::with_base_url(api_key, model, timeout, BIGMODEL_RERANK_DEFAULT.to_string())
     }
 
     /// Constructor with custom base_url for testing (mockito)
@@ -186,13 +215,18 @@ impl BigModelReranker {
         timeout: Duration,
         base_url: String,
     ) -> Self {
-        Self {
+        Self(BaseReranker {
             client: reqwest::Client::new(),
             api_key,
             model,
             base_url,
             timeout,
-        }
+        })
+    }
+
+    /// Model name for gen_ai span instrumentation.
+    pub fn model(&self) -> &str {
+        self.0.model()
     }
 }
 
@@ -208,24 +242,25 @@ impl Reranker for BigModelReranker {
         }
 
         let body = RerankRequest {
-            model: self.model.clone(),
+            model: self.0.model.clone(),
             query: query.to_string(),
             documents: documents.to_vec(),
             top_n,
         };
 
         let response = self
+            .0
             .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .post(&self.0.base_url)
+            .header("Authorization", format!("Bearer {}", self.0.api_key))
             .header("Content-Type", "application/json")
-            .timeout(self.timeout)
+            .timeout(self.0.timeout)
             .json(&body)
             .send()
             .await
             .map_err(|e| {
                 if e.is_timeout() {
-                    RerankError::Timeout(self.timeout)
+                    RerankError::Timeout(self.0.timeout)
                 } else {
                     RerankError::Network(e.to_string())
                 }
@@ -255,29 +290,65 @@ impl Reranker for BigModelReranker {
     }
 }
 
+/// 解析 `[llm].base_url` 的 DashScope origin（`scheme://host[:port]`）。
+///
+/// 供 chat/embedding/rerank 三面复用，保证区域一致。host 判据：host 等于
+/// `dashscope.aliyuncs.com`，或以 `dashscope` 开头且以 `.aliyuncs.com` 结尾
+/// （覆盖国际区 `dashscope-us.aliyuncs.com` 等）。该判据同时拒绝
+/// `my-dashscope-proxy.internal` 这类把 dashscope 当子串的代理 host。
+/// 返回 None 表示 `llm_base_url` 不是 DashScope（或 URL 解析失败）。
+fn dashscope_origin_for(llm_base_url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(llm_base_url).ok()?;
+    let host = parsed.host_str()?;
+    let is_dashscope = host == "dashscope.aliyuncs.com"
+        || (host.starts_with("dashscope") && host.ends_with(".aliyuncs.com"));
+    if !is_dashscope {
+        return None;
+    }
+    let scheme = parsed.scheme();
+    let origin = match parsed.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    };
+    Some(origin)
+}
+
+/// 解析 DashScope rerank 的 base_url，使 chat/embedding/rerank 三个面保持区域一致。
+///
+/// 优先级：
+/// 1. `explicit` 非空 → 原样返回。
+/// 2. 否则从 `llm_base_url` 推导 DashScope origin，返回
+///    `{origin}/compatible-api/v1/reranks`。例如国际区
+///    `https://dashscope-us.aliyuncs.com/compatible-mode/v1`
+///    → `https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks`。
+/// 3. 其他情况（LLM 非 dashscope，或 URL 解析失败）→ 返回中国大陆默认端点。
+pub fn dashscope_rerank_base(explicit: Option<&str>, llm_base_url: &str) -> String {
+    if let Some(url) = explicit.filter(|s| !s.is_empty()) {
+        return url.to_string();
+    }
+    match dashscope_origin_for(llm_base_url) {
+        Some(origin) => format!("{origin}/compatible-api/v1/reranks"),
+        None => DASHSCOPE_RERANK_DEFAULT.to_string(),
+    }
+}
+
 /// 阿里云百炼 (DashScope) Rerank provider
 ///
 /// 接入百炼官方 OpenAI 兼容精排扁平端点
 /// `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`，
 /// 使用 `qwen3-rerank` 等模型。请求/响应结构与 OpenRouter Rerank 完全兼容。
 #[derive(Clone)]
-pub struct DashScopeReranker {
-    client: reqwest::Client,
-    api_key: String,
-    model: String,
-    base_url: String,
-    timeout: Duration,
-}
+pub struct DashScopeReranker(BaseReranker);
 
 impl DashScopeReranker {
+    /// Construct with the DashScope China default endpoint.
     pub fn new(api_key: String, model: String, timeout: Duration) -> Self {
-        Self {
-            client: reqwest::Client::new(),
+        Self::with_base_url(
             api_key,
             model,
-            base_url: "https://dashscope.aliyuncs.com/compatible-api/v1/reranks".to_string(),
             timeout,
-        }
+            DASHSCOPE_RERANK_DEFAULT.to_string(),
+        )
     }
 
     /// Constructor with custom base_url for testing (mockito)
@@ -287,13 +358,18 @@ impl DashScopeReranker {
         timeout: Duration,
         base_url: String,
     ) -> Self {
-        Self {
+        Self(BaseReranker {
             client: reqwest::Client::new(),
             api_key,
             model,
             base_url,
             timeout,
-        }
+        })
+    }
+
+    /// Model name for gen_ai span instrumentation.
+    pub fn model(&self) -> &str {
+        self.0.model()
     }
 }
 
@@ -309,24 +385,25 @@ impl Reranker for DashScopeReranker {
         }
 
         let body = RerankRequest {
-            model: self.model.clone(),
+            model: self.0.model.clone(),
             query: query.to_string(),
             documents: documents.to_vec(),
             top_n,
         };
 
         let response = self
+            .0
             .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .post(&self.0.base_url)
+            .header("Authorization", format!("Bearer {}", self.0.api_key))
             .header("Content-Type", "application/json")
-            .timeout(self.timeout)
+            .timeout(self.0.timeout)
             .json(&body)
             .send()
             .await
             .map_err(|e| {
                 if e.is_timeout() {
-                    RerankError::Timeout(self.timeout)
+                    RerankError::Timeout(self.0.timeout)
                 } else {
                     RerankError::Network(e.to_string())
                 }
@@ -365,17 +442,81 @@ pub enum RerankerProvider {
 }
 
 impl RerankerProvider {
+    /// 根据 provider 类型与配置构造 reranker，把 provider 匹配 + base_url
+    /// 默认/推导全部收口在 core。main.rs 三种 provider 收敛为一次调用。
+    ///
+    /// - `rerank_base_url`：`[rerank].base_url` 显式覆盖（优先级最高）。
+    /// - `llm_base_url`：`[llm].base_url`，仅 DashScope 用它推导区域。
+    /// - `api_key`：已归一化的 API key（空字符串视为未配置，应在外层提前拦截）。
+    pub fn from_rerank_config(
+        provider: RerankProviderType,
+        rerank_base_url: Option<&str>,
+        llm_base_url: &str,
+        api_key: String,
+        model: String,
+        timeout: Duration,
+    ) -> Self {
+        match provider {
+            RerankProviderType::OpenRouter => Self::OpenRouter(OpenRouterReranker::with_base_url(
+                api_key,
+                model,
+                timeout,
+                rerank_base_url
+                    .unwrap_or(OPENROUTER_RERANK_DEFAULT)
+                    .to_string(),
+            )),
+            RerankProviderType::BigModel => Self::BigModel(BigModelReranker::with_base_url(
+                api_key,
+                model,
+                timeout,
+                rerank_base_url
+                    .unwrap_or(BIGMODEL_RERANK_DEFAULT)
+                    .to_string(),
+            )),
+            RerankProviderType::DashScope => Self::DashScope(DashScopeReranker::with_base_url(
+                api_key,
+                model,
+                timeout,
+                // DashScope rerank 区域随 [llm].base_url 自动推导，保证
+                // chat/embedding/rerank 三面区域一致；显式 base_url 优先级最高。
+                dashscope_rerank_base(rerank_base_url, llm_base_url),
+            )),
+        }
+    }
+
     pub async fn rerank(
         &self,
         query: &str,
         documents: &[String],
         top_n: usize,
     ) -> Result<Vec<RerankResult>, RerankError> {
-        match self {
-            Self::OpenRouter(r) => r.rerank(query, documents, top_n).await,
-            Self::BigModel(r) => r.rerank(query, documents, top_n).await,
-            Self::DashScope(r) => r.rerank(query, documents, top_n).await,
+        let provider = provider_tag(self);
+        let model = match self {
+            Self::OpenRouter(r) => r.model(),
+            Self::BigModel(r) => r.model(),
+            Self::DashScope(r) => r.model(),
+        };
+        // Single choke point: every provider's rerank call is wrapped once here
+        // so the gen_ai span attributes are consistent regardless of provider.
+        // 用 `.instrument(span)` 而非 `span.enter()`：enter guard 跨 .await 时
+        // 无法可靠保持父子 span 关联，instrument 让 span 真正包裹整个 future，
+        // 使内部 reqwest HTTP 子 span 能挂到这个 gen_ai 父 span 下。
+        let span = tracing::info_span!(
+            "rerank",
+            { gen_ai::OPERATION_NAME } = "rerank",
+            { gen_ai::SYSTEM } = provider,
+            { gen_ai::PROVIDER_NAME } = provider,
+            { gen_ai::REQUEST_MODEL } = model,
+        );
+        async move {
+            match self {
+                Self::OpenRouter(r) => r.rerank(query, documents, top_n).await,
+                Self::BigModel(r) => r.rerank(query, documents, top_n).await,
+                Self::DashScope(r) => r.rerank(query, documents, top_n).await,
+            }
         }
+        .instrument(span)
+        .await
     }
 }
 
@@ -385,6 +526,102 @@ mod tests {
 
     fn make_documents(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("document {i}")).collect()
+    }
+
+    // --- gen_ai span instrumentation tests -------------------------------------
+    //
+    // Intent (Rule 9): prove rerank emits an OpenTelemetry GenAI-semconv span
+    // carrying `gen_ai.request.model` and `gen_ai.operation.name` so ARMS groups
+    // rerank with rig's chat spans. Uses a per-test scoped subscriber
+    // (tracing::subscriber::with_default) to avoid process-wide global-subscriber
+    // flakiness when run alongside other tests.
+
+    async fn rerank_once(provider: RerankerProvider) {
+        let _ = provider.rerank("q", &["d".to_string()], 1).await;
+    }
+
+    // NOTE on the global subscriber: tracing + tracing-opentelemetry route span
+    // data through whatever subscriber is current when a span is *entered*. For
+    // async code the current subscriber must be the process-wide global default
+    // (thread-local `with_default` does not reliably follow awaits across worker
+    // threads). Therefore this test installs a global subscriber. Only one
+    // global subscriber may exist per process, so this test must NOT run in
+    // parallel with any other global-subscriber test — run the suite with
+    // `--test-threads=1`. It encodes intent: an ARMS-groupable GenAI span with
+    // gen_ai.* attributes is emitted for rerank.
+    #[tokio::test]
+    async fn rerank_emits_gen_ai_span_with_model_and_operation() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer));
+
+        // Install as the global default so spans survive awaits. Ignore the
+        // error if another test already installed one (still single-threaded).
+        let _ = tracing::subscriber::set_global_default(subscriber);
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/rerank")
+            .with_status(200)
+            .with_body(r#"{"results":[{"index":0,"relevance_score":0.9}]}"#)
+            .create_async()
+            .await;
+        let reranker = RerankerProvider::OpenRouter(OpenRouterReranker::with_base_url(
+            "key".to_string(),
+            "cohere/rerank-v4-fast".to_string(),
+            Duration::from_secs(3),
+            format!("{}/rerank", server.url()),
+        ));
+
+        rerank_once(reranker).await;
+
+        let _ = provider.force_flush();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let gen_ai_span = spans
+            .iter()
+            .find(|s| {
+                s.attributes
+                    .iter()
+                    .any(|kv| kv.key.as_str() == gen_ai::OPERATION_NAME)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a span carrying {}; got spans: {:?}",
+                    gen_ai::OPERATION_NAME,
+                    spans.iter().map(|s| &*s.name).collect::<Vec<_>>()
+                )
+            });
+
+        let attrs: std::collections::HashMap<&str, String> = gen_ai_span
+            .attributes
+            .iter()
+            .map(|kv| (kv.key.as_str(), kv.value.to_string()))
+            .collect();
+
+        assert_eq!(
+            attrs.get(gen_ai::OPERATION_NAME).map(String::as_str),
+            Some("rerank"),
+            "gen_ai.operation.name must be rerank"
+        );
+        assert_eq!(
+            attrs.get(gen_ai::REQUEST_MODEL).map(String::as_str),
+            Some("cohere/rerank-v4-fast"),
+            "gen_ai.request.model must carry the configured model"
+        );
+        assert_eq!(
+            attrs.get(gen_ai::SYSTEM).map(String::as_str),
+            Some("openrouter"),
+            "gen_ai.system must identify the provider"
+        );
+        assert_eq!(&*gen_ai_span.name, "rerank");
     }
 
     #[tokio::test]
@@ -604,5 +841,105 @@ mod tests {
             }
             other => panic!("expected ResponseParse error, got: {other:?}"),
         }
+    }
+
+    // --- dashscope_rerank_base 区域推导测试 ---
+
+    #[test]
+    fn dashscope_rerank_base_explicit_overrides_everything() {
+        // 意图：显式 base_url 必须原样返回，不被 llm_base_url 覆盖。
+        let got = dashscope_rerank_base(
+            Some("https://my-proxy.example.com/rerank"),
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        );
+        assert_eq!(
+            got, "https://my-proxy.example.com/rerank",
+            "explicit override must win"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_explicit_empty_falls_through() {
+        // 意图：空字符串 explicit 视同未配置，继续走 llm_base_url 推导。
+        let got = dashscope_rerank_base(
+            Some(""),
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        );
+        assert_eq!(
+            got, "https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks",
+            "empty explicit should fall through to llm_base_url derivation"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_derives_us_region_from_llm_base() {
+        // 意图：国际区 LLM base → rerank 端点也走国际区 host，避免中美 Key 错配。
+        let got =
+            dashscope_rerank_base(None, "https://dashscope-us.aliyuncs.com/compatible-mode/v1");
+        assert_eq!(
+            got,
+            "https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_derives_china_region_from_llm_base() {
+        // 意图：中国大陆 LLM base → rerank 端点保持默认中国 host。
+        let got = dashscope_rerank_base(None, "https://dashscope.aliyuncs.com/compatible-mode/v1");
+        assert_eq!(
+            got,
+            "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_preserves_custom_port() {
+        // 意图：推导时端口必须保留（自托管网关/区域代理场景）。
+        // 注意：host 判据已收紧为"等于 dashscope.aliyuncs.com 或 dashscope*.aliyuncs.com"，
+        // 旧的 `dashscope.example` 会落入回退分支；这里用真正的 DashScope host 加端口，
+        // 仍验证端口保留意图（Rule 9）。
+        let got = dashscope_rerank_base(
+            None,
+            "https://dashscope-us.aliyuncs.com:8443/compatible-mode/v1",
+        );
+        assert_eq!(
+            got, "https://dashscope-us.aliyuncs.com:8443/compatible-api/v1/reranks",
+            "non-default port must be preserved in derived origin"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_rejects_dashscope_substring_proxy() {
+        // 意图（Rule 9）：host 判据收紧后，`my-dashscope-proxy.internal` 这类把
+        // dashscope 当子串的代理 host 不得被误判为可推导区域，必须降级到中国默认。
+        // 旧判据 `host.contains("dashscope")` 会误命中，存在用错 Key/区域的风险。
+        let got = dashscope_rerank_base(
+            None,
+            "https://my-dashscope-proxy.internal/compatible-mode/v1",
+        );
+        assert_eq!(
+            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
+            "dashscope-substring proxy host must not be treated as derivable"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_non_dashscope_llm_falls_back_to_default() {
+        // 意图：LLM 非 dashscope（如 OpenAI）时，rerank 无法推导区域 → 用中国默认。
+        let got = dashscope_rerank_base(None, "https://api.openai.com/v1");
+        assert_eq!(
+            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
+            "non-dashscope llm base should fall back to China default"
+        );
+    }
+
+    #[test]
+    fn dashscope_rerank_base_malformed_llm_falls_back_without_panic() {
+        // 意图：畸形 URL 不得 panic，必须安全降级到中国默认。
+        let got = dashscope_rerank_base(None, "not a valid url at all");
+        assert_eq!(
+            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
+            "malformed llm base should fall back to China default without panic"
+        );
     }
 }

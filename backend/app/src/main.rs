@@ -374,44 +374,24 @@ async fn main() -> Result<()> {
                     .to_string();
                 let timeout = std::time::Duration::from_secs(config.rerank.timeout_secs);
 
-                match &config.rerank.provider {
-                    rwiki_core::config::RerankProviderType::BigModel => {
-                        tracing::info!("Rerank enabled: provider=BigModel, model={}", model);
-                        Some(
-                            rwiki_core::infrastructure::reranker::RerankerProvider::BigModel(
-                                rwiki_core::infrastructure::reranker::BigModelReranker::new(
-                                    key.to_string(),
-                                    model,
-                                    timeout,
-                                ),
-                            ),
-                        )
-                    }
-                    rwiki_core::config::RerankProviderType::DashScope => {
-                        tracing::info!("Rerank enabled: provider=DashScope, model={}", model);
-                        Some(
-                            rwiki_core::infrastructure::reranker::RerankerProvider::DashScope(
-                                rwiki_core::infrastructure::reranker::DashScopeReranker::new(
-                                    key.to_string(),
-                                    model,
-                                    timeout,
-                                ),
-                            ),
-                        )
-                    }
-                    _ => {
-                        tracing::info!("Rerank enabled: provider=OpenRouter, model={}", model);
-                        Some(
-                            rwiki_core::infrastructure::reranker::RerankerProvider::OpenRouter(
-                                rwiki_core::infrastructure::reranker::OpenRouterReranker::new(
-                                    key.to_string(),
-                                    model,
-                                    timeout,
-                                ),
-                            ),
-                        )
-                    }
-                }
+                // provider 匹配 + base_url 默认/推导全部收口在 core 的
+                // `RerankerProvider::from_rerank_config`，main.rs 收敛为一次调用。
+                let provider_tag = match &config.rerank.provider {
+                    rwiki_core::config::RerankProviderType::BigModel => "BigModel",
+                    rwiki_core::config::RerankProviderType::DashScope => "DashScope",
+                    _ => "OpenRouter",
+                };
+                tracing::info!("Rerank enabled: provider={}, model={}", provider_tag, model);
+                Some(
+                    rwiki_core::infrastructure::reranker::RerankerProvider::from_rerank_config(
+                        config.rerank.provider.clone(),
+                        config.rerank.base_url.as_deref(),
+                        &config.llm.base_url,
+                        key.to_string(),
+                        model,
+                        timeout,
+                    ),
+                )
             }
             None => {
                 tracing::warn!(

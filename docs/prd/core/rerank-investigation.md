@@ -160,6 +160,7 @@
 - **默认关闭**：rerank 引入额外延迟，默认不启用，管理员按需开启
 - **多 provider**：支持 OpenRouter Rerank、智谱 BigModel Rerank 和阿里云百炼 DashScope Rerank（默认 `qwen3-rerank`），通过配置切换
 - **DashScope Key 复用**：DashScope rerank 未单独配置 API Key 时复用对话模型 Key（与 OpenRouter 行为一致）
+- **DashScope 区域随 LLM 自动推导**：`dash_scope` 的 rerank `base_url` 默认从 `[llm].base_url` 自动推导区域（中国 `dashscope.aliyuncs.com` / 国际 `dashscope-us.aliyuncs.com`），保证 chat/embedding/rerank 三面区域一致；可通过 `[rerank].base_url` 显式覆盖，仅当 LLM provider 非百炼时才需要设置。
 - **单 provider**：同一时间只配置一个 rerank provider
 - **管线位置**：rerank 在 RRF 融合后、上下文组装前执行
 - **降级策略**：rerank 失败时使用 RRF 融合结果，用户无感知

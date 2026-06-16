@@ -126,6 +126,15 @@ RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用
 
 不需要额外配置——指标复用 `[otel]` 的端点和凭据，与 tracing 共享。参见[配置 > OpenTelemetry](/docs/zh/configuration#opentelemetry)。
 
+### GenAI 链路（`gen_ai.*`）
+
+除上方的 `rag.*` 指标外，RWiki 还为 LLM 类调用产生 OpenTelemetry GenAI 语义约定的 span（`gen_ai.*`）。当 `[otel]` 配置向阿里云 ARMS 导出 OTLP 时，这些 span 会出现在 ARMS 的 AI/LLM 可观测视图：
+
+- **对话**：由 rig 自动产生（operation 为 `chat` / `chat_streaming`），携带 provider、模型和 token 用量，无需运维操作。
+- **Rerank 与 embedding**：同样会产生 `gen_ai.*` span（operation 分别为 `rerank` 和 `embeddings`）。
+
+注意：rerank 使用**自定义**的 `rerank` operation 名称，因为 OTel GenAI 语义规范未定义 rerank 操作。
+
 ### 推荐问题
 
 `GET /api/chat/suggestions?locale=zh-CN` 返回预配置的推荐问题列表，用于聊天空状态展示。locale 匹配在服务端完成：精确匹配、最长前缀匹配、然后回退到 `default`。这样主聊天界面不需要内置 locale 逻辑（但 widget 支持通过 `suggestedQuestions` 配置在客户端做 locale 匹配）。

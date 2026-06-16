@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-futures = { workspace = true }
 
 # API Documentation
 utoipa = { version = "5", features = ["chrono", "uuid"] }
@@ -49,4 +50,6 @@ rust_xlsxwriter = "0.79"
 sqlite-vec = { workspace = true }
 tempfile = "3"
 opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

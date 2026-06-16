@@ -6,6 +6,7 @@ pub mod metrics;
 pub mod migration;
 pub mod openapi_parser;
 pub mod openapi_tokenizer;
+pub mod otel;
 pub mod reranker;
 pub mod text_chunker;
 pub mod vector_store;

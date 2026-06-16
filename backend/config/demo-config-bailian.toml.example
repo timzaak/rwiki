@@ -65,6 +65,9 @@ model = "qwen3-rerank"      # 推荐模型；gte-rerank v1 已下线
 top_n = 20
 timeout_secs = 3
 # api_key = ""              # 不填则复用 [llm].api_key
+# base_url 自动从 [llm].base_url 推导区域（此处为国际区 dashscope-us）；
+# 仅当 LLM provider 非百炼时才需显式设置。
+# base_url = ""
 
 [otel]
 endpoint = "http://127.0.0.1:4317"

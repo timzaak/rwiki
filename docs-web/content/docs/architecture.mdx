@@ -121,6 +121,15 @@ RWiki exposes OpenTelemetry metrics for the entire RAG pipeline. All metrics sha
 
 No extra configuration is needed — metrics reuse the same `[otel]` endpoint and credentials as tracing. See [Configuration > OpenTelemetry](/docs/configuration#opentelemetry).
 
+### GenAI spans (`gen_ai.*`)
+
+Alongside the `rag.*` metrics above, RWiki emits OpenTelemetry GenAI semantic-convention spans (`gen_ai.*`) for LLM-shaped calls, so they surface in ARMS's AI/LLM observability view when `[otel]` exports OTLP to Alibaba Cloud ARMS:
+
+- **Chat** — emitted automatically by rig (operation `chat` / `chat_streaming`), carrying provider, model, and token usage. No deployer action needed.
+- **Rerank** and **embedding** — also emit `gen_ai.*` spans (operation names `rerank` and `embeddings`).
+
+Note: rerank uses a **custom** `rerank` operation name because the OTel GenAI semantic-convention spec defines no rerank operation.
+
 ### Suggested questions
 
 `GET /api/chat/suggestions?locale=en` returns a list of pre-configured questions for the chat empty state. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. This way the frontend doesn't need to bundle locale logic for the main chat view (though the widget supports client-side locale matching via its `suggestedQuestions` config).
