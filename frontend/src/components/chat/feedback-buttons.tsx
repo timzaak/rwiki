@@ -1,6 +1,7 @@
 import { ThumbsDown, ThumbsUp } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useWidgetI18n } from './widget-i18n'
 
 interface FeedbackButtonsProps {
   feedback: 'like' | 'dislike' | undefined
@@ -13,6 +14,7 @@ export function FeedbackButtons({
   onFeedback,
   isSubmitting,
 }: FeedbackButtonsProps) {
+  const t = useWidgetI18n()
   return (
     <div className="flex items-center gap-1 mt-1.5 justify-end">
       <button
@@ -26,7 +28,7 @@ export function FeedbackButtons({
         )}
         onClick={() => onFeedback('like')}
         disabled={isSubmitting}
-        aria-label="Like"
+        aria-label={t.a11yLike}
         aria-pressed={feedback === 'like'}
       >
         <ThumbsUp className="size-3.5" />
@@ -42,7 +44,7 @@ export function FeedbackButtons({
         )}
         onClick={() => onFeedback('dislike')}
         disabled={isSubmitting}
-        aria-label="Dislike"
+        aria-label={t.a11yDislike}
         aria-pressed={feedback === 'dislike'}
       >
         <ThumbsDown className="size-3.5" />

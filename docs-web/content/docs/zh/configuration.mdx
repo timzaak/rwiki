@@ -298,10 +298,12 @@ timeout_secs = 3
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `apiUrl` | string | 是 | — | 后端地址，需以 `http://` 或 `https://` 开头 |
-| `title` | string | 否 | `"Chat Assistant"` | 聊天窗口标题 |
+| `locale` | string | 否 | `navigator.language` | 界面语言。接受 BCP-47 标签，解析为受支持的语言（`en`、`zh-CN`）。任意中文变体（`zh`、`zh-Hans`、`zh-TW` 等）均解析为 `zh-CN`，其余回退到 `en`。 |
+| `title` | string | 否 | 语言默认值 | 聊天窗口标题。不传时取语言默认值（`en`→`Rwiki Chat`，`zh-CN`→`Rwiki 助手`）。 |
 | `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
 | `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
 | `welcomeMessage` | string | 否 | — | 欢迎语 |
+| `messages` | object | 否 | — | 覆盖当前语言下的界面文案，可传任意子集：`titleDefault`、`inputPlaceholder`、`responseFailed`、`retry`、`a11yOpen`、`a11yClose`、`a11yClear`、`a11yLike`、`a11yDislike`、`errorBoundary`。 |
 | `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。 |
 
 ### HTML 集成
@@ -311,10 +313,12 @@ timeout_secs = 3
 <script>
   RWikiChat.init({
     apiUrl: 'https://your-rwiki-instance.com',
+    locale: 'zh-CN',
     title: '智能助手',
     primaryColor: '#6366f1',
     position: 'right',
     welcomeMessage: '有什么可以帮你？',
+    messages: { inputPlaceholder: '请输入问题…' },
     suggestedQuestions: {
       default: ['如何快速上手', '系统支持哪些文件格式'],
       en: ['How to get started', 'What file formats are supported'],

@@ -4,11 +4,13 @@ import { SendHorizonalIcon } from 'lucide-react'
 import { useChatStreamContext } from './chat-stream-context'
 import { useChatStore } from '@/stores/chat-store'
 import { Button } from '@/components/ui/button'
+import { useWidgetI18n } from './widget-i18n'
 
 export function ChatInput() {
   const [input, setInput] = useState('')
   const { sendMessage } = useChatStreamContext()
   const isLoading = useChatStore((s) => s.isLoading)
+  const t = useWidgetI18n()
 
   const trimmed = input.trim()
 
@@ -33,7 +35,7 @@ export function ChatInput() {
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={isLoading}
-        placeholder="Ask anything..."
+        placeholder={t.inputPlaceholder}
         rows={1}
         className="max-h-32 min-h-[2.25rem] flex-1 resize-none rounded-xl border border-border/60 bg-card px-3.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/15 disabled:opacity-50 transition-colors"
       />

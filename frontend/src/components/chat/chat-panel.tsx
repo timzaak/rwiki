@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
 import { SuggestedQuestions } from './suggested-questions'
+import { useWidgetI18n } from './widget-i18n'
 
 interface ChatPanelProps {
   className?: string
@@ -30,6 +31,7 @@ export function ChatPanel({
   const setError = useChatStore((s) => s.setError)
   const clearMessages = useChatStore((s) => s.clearMessages)
   const { sendMessage, stopStreaming } = useChatStreamContext()
+  const t = useWidgetI18n()
   const hasConversation = messages.length > 0 || Boolean(sessionId) || Boolean(error)
 
   function handleClearConversation() {
@@ -55,7 +57,7 @@ export function ChatPanel({
       size="icon-xs"
       variant="ghost"
       onClick={handleClearConversation}
-      aria-label="Clear current conversation"
+      aria-label={t.a11yClear}
     >
       <PlusIcon className="size-3.5" />
     </Button>
@@ -68,7 +70,7 @@ export function ChatPanel({
     >
       {showHeader && (
         <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
-          <span className="font-serif text-sm font-medium">{headerTitle}</span>
+          <span className="font-serif text-sm font-medium">{headerTitle ?? t.titleDefault}</span>
           {clearButton}
         </div>
       )}

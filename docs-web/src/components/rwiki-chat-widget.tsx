@@ -6,10 +6,12 @@ const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 // 字段与 configuration 文档的 Widget 配置一致。
 type RWikiChatOptions = {
   apiUrl: string;
+  locale?: string;
   title?: string;
   primaryColor?: string;
   position?: "left" | "right";
   welcomeMessage?: string;
+  messages?: Record<string, string>;
   suggestedQuestions?: string[] | Record<string, string[]>;
 };
 

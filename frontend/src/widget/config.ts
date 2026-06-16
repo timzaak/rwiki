@@ -1,3 +1,6 @@
+import type { Locale, WidgetMessages } from '@/components/chat/messages';
+import { resolveLocale } from '@/components/chat/messages';
+
 export interface WidgetConfig {
   apiUrl: string;
   primaryColor?: string;
@@ -5,17 +8,22 @@ export interface WidgetConfig {
   position?: 'left' | 'right';
   welcomeMessage?: string;
   suggestedQuestions?: string[] | Record<string, string[]>;
+  locale?: string;
+  messages?: Partial<WidgetMessages>;
 }
 
 export const WIDGET_DEFAULTS = {
   primaryColor: '#3b82f6',
-  title: 'Chat Assistant',
   position: 'right' as const,
 };
 
-export interface ValidatedWidgetConfig extends Required<Omit<WidgetConfig, 'welcomeMessage' | 'suggestedQuestions'>> {
+export interface ValidatedWidgetConfig
+  extends Required<Omit<WidgetConfig, 'welcomeMessage' | 'suggestedQuestions' | 'title' | 'locale' | 'messages'>> {
+  title?: string;
   welcomeMessage?: string;
   suggestedQuestions?: string[] | Record<string, string[]>;
+  locale: Locale;
+  messages?: Partial<WidgetMessages>;
 }
 
 export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWidgetConfig | null {
@@ -49,14 +57,28 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     }
   }
 
+  if (config.locale !== undefined && typeof config.locale !== 'string') {
+    console.error('[RWikiChat] locale must be a string');
+    return null;
+  }
+
+  if (config.locale !== undefined && config.locale.trim() === '') {
+    console.error('[RWikiChat] locale must be a non-empty string');
+    return null;
+  }
+
   const apiUrl = config.apiUrl.replace(/\/+$/, '');
 
-  return {
+  const validated: ValidatedWidgetConfig = {
     apiUrl,
     primaryColor: config.primaryColor ?? WIDGET_DEFAULTS.primaryColor,
-    title: config.title ?? WIDGET_DEFAULTS.title,
     position: config.position ?? WIDGET_DEFAULTS.position,
+    locale: resolveLocale(config.locale ?? navigator.language),
+    ...(config.title && { title: config.title }),
     ...(config.welcomeMessage && { welcomeMessage: config.welcomeMessage }),
     ...(config.suggestedQuestions && { suggestedQuestions: config.suggestedQuestions }),
+    ...(config.messages && { messages: config.messages }),
   };
+
+  return validated;
 }

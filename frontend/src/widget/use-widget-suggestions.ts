@@ -1,20 +1,21 @@
 import { useEffect, useState } from 'react'
 
+import type { Locale } from '@/components/chat/messages'
 import { matchSuggestedQuestions } from '@/utils/match-suggested-questions'
 
 const cache = new Map<string, string[]>()
 
 export function useWidgetSuggestions(
   apiUrl: string,
+  locale: Locale,
   fallback?: string[] | Record<string, string[]>,
 ): string[] {
   const [questions, setQuestions] = useState<string[]>(() => {
-    const cached = cache.get(navigator.language)
-    return cached ?? matchSuggestedQuestions(fallback, navigator.language)
+    const cached = cache.get(locale)
+    return cached ?? matchSuggestedQuestions(fallback, locale)
   })
 
   useEffect(() => {
-    const locale = navigator.language
     if (cache.has(locale)) {
       setQuestions(cache.get(locale)!)
       return
@@ -34,7 +35,7 @@ export function useWidgetSuggestions(
     return () => {
       cancelled = true
     }
-  }, [apiUrl])
+  }, [apiUrl, locale])
 
   return questions
 }

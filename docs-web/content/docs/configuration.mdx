@@ -298,10 +298,12 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `apiUrl` | string | Yes | — | Backend URL, must start with `http://` or `https://` |
-| `title` | string | No | `"Chat Assistant"` | Chat window title |
+| `locale` | string | No | `navigator.language` | UI language. Accepts a BCP-47 tag and resolves to a supported locale (`en`, `zh-CN`). Any Chinese variant (`zh`, `zh-Hans`, `zh-TW`, …) resolves to `zh-CN`; everything else falls back to `en`. |
+| `title` | string | No | locale default | Chat window title. Omit to use the locale default (`Rwiki Chat` for `en`, `Rwiki 助手` for `zh-CN`). |
 | `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
 | `position` | string | No | `"right"` | Button position: `left` or `right` |
 | `welcomeMessage` | string | No | — | Welcome message |
+| `messages` | object | No | — | Override individual UI strings for the resolved locale. Any subset of: `titleDefault`, `inputPlaceholder`, `responseFailed`, `retry`, `a11yOpen`, `a11yClose`, `a11yClear`, `a11yLike`, `a11yDislike`, `errorBoundary`. |
 | `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). |
 
 ### HTML integration
@@ -311,10 +313,12 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 <script>
   RWikiChat.init({
     apiUrl: 'https://your-rwiki-instance.com',
+    locale: 'en',
     title: 'Assistant',
     primaryColor: '#6366f1',
     position: 'right',
     welcomeMessage: 'How can I help?',
+    messages: { inputPlaceholder: 'Ask me anything…' },
     suggestedQuestions: {
       default: ['How to get started', 'What file formats are supported'],
       zh: ['如何快速上手', '系统支持哪些文件格式'],

@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { useChatModalStore } from '@/stores/chat-store'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { Button } from '@/components/ui/button'
+import { useWidgetI18n } from './widget-i18n'
 
 interface ChatModalProps {
   title?: string
@@ -16,6 +17,7 @@ interface ChatModalProps {
 export function ChatModal({ title, position = 'right', welcomeMessage, suggestedQuestions }: ChatModalProps) {
   const isModalOpen = useChatModalStore((s) => s.isModalOpen)
   const closeModal = useChatModalStore((s) => s.closeModal)
+  const t = useWidgetI18n()
 
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({
     x: 0,
@@ -130,14 +132,14 @@ export function ChatModal({ title, position = 'right', welcomeMessage, suggested
             <div className="flex size-7 items-center justify-center rounded-lg bg-primary">
               <span className="font-serif text-xs font-bold text-primary-foreground">R</span>
             </div>
-            <span className="font-serif text-sm font-medium">{title ?? 'Rwiki Chat'}</span>
+            <span className="font-serif text-sm font-medium">{title ?? t.titleDefault}</span>
           </div>
           <Button
             data-testid="chat-modal-close"
             size="icon-xs"
             variant="ghost"
             onClick={closeModal}
-            aria-label="Close chat modal"
+            aria-label={t.a11yClose}
           >
             <XIcon className="size-3.5" />
           </Button>

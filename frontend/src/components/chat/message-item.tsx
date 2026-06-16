@@ -16,6 +16,7 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import { AlertCircleIcon, BotIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 
 import { FeedbackButtons } from './feedback-buttons'
+import { useWidgetI18n } from './widget-i18n'
 import { useFeedback } from '@/hooks/use-feedback'
 import { useChatStore } from '@/stores/chat-store'
 import type { ChatMessage } from '@/stores/chat-store'
@@ -102,6 +103,7 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
     userMessage,
     assistantMessage: message.content,
   })
+  const t = useWidgetI18n()
 
   return (
     <div
@@ -141,7 +143,7 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
             <div className="flex items-start gap-2 text-muted-foreground">
               <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0 text-destructive/70" />
               <span className="text-xs leading-relaxed">
-                Response generation failed. Please try again.
+                {t.responseFailed}
               </span>
             </div>
             {onRetry && (
@@ -152,7 +154,7 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
                 onClick={onRetry}
               >
                 <RefreshCwIcon className="size-3" />
-                Retry
+                {t.retry}
               </button>
             )}
           </div>

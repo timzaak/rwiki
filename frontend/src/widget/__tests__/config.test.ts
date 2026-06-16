@@ -71,6 +71,7 @@ describe('validateWidgetConfig', () => {
       primaryColor: '#ff5500',
       title: 'My Bot',
       position: 'left',
+      locale: 'en',
       welcomeMessage: 'Hi!',
     })
   })
@@ -80,9 +81,73 @@ describe('validateWidgetConfig', () => {
     expect(result).toEqual({
       apiUrl: 'http://example.com',
       primaryColor: '#3b82f6',
-      title: 'Chat Assistant',
       position: 'right',
+      locale: 'en',
     })
+  })
+
+  it('does not include a title key when no title is provided (resolved at render time)', () => {
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+    expect(result).not.toHaveProperty('title')
+  })
+
+  it('resolves locale from navigator.language by default (en-US -> en)', () => {
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+    expect(result!.locale).toBe('en')
+  })
+
+  it('preserves an explicit supported locale', () => {
+    const result = validateWidgetConfig({
+      apiUrl: 'http://example.com',
+      locale: 'zh-CN',
+    })
+    expect(result!.locale).toBe('zh-CN')
+  })
+
+  it('resolves an explicit locale prefix to a supported locale (zh-CN-Hans -> zh-CN)', () => {
+    const result = validateWidgetConfig({
+      apiUrl: 'http://example.com',
+      locale: 'zh-CN-Hans',
+    })
+    expect(result!.locale).toBe('zh-CN')
+  })
+
+  it('resolves Chinese variants (zh-Hans / zh-TW / zh-HK / zh) to zh-CN', () => {
+    for (const locale of ['zh-Hans', 'zh-TW', 'zh-HK', 'zh']) {
+      const result = validateWidgetConfig({
+        apiUrl: 'http://example.com',
+        locale,
+      })
+      expect(result!.locale).toBe('zh-CN')
+    }
+  })
+
+  it('falls back to en for an unsupported locale', () => {
+    const result = validateWidgetConfig({
+      apiUrl: 'http://example.com',
+      locale: 'fr',
+    })
+    expect(result!.locale).toBe('en')
+  })
+
+  it('passes messages overrides through to the validated config', () => {
+    const overrides = { inputPlaceholder: 'Custom' }
+    const result = validateWidgetConfig({
+      apiUrl: 'http://example.com',
+      messages: overrides,
+    })
+    expect(result).toHaveProperty('messages', overrides)
+  })
+
+  it('returns null when locale is an empty string', () => {
+    const result = validateWidgetConfig({
+      apiUrl: 'http://example.com',
+      locale: '',
+    })
+    expect(result).toBeNull()
+    expect(console.error).toHaveBeenCalledWith(
+      '[RWikiChat] locale must be a non-empty string',
+    )
   })
 
   it('omits welcomeMessage when undefined', () => {

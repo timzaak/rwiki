@@ -4,6 +4,8 @@ import { useCallback } from 'react';
 import { ChatStreamProvider } from '@/components/chat/chat-stream-context';
 import { FloatingButton } from '@/components/chat/floating-button';
 import { ChatModal } from '@/components/chat/chat-modal';
+import { WidgetI18nProvider } from '@/components/chat/widget-i18n';
+import { WIDGET_MESSAGES, resolveWidgetMessages } from '@/components/chat/messages';
 import { FeedbackSubmitFnContext } from '@/hooks/feedback-context';
 import { client } from '@/lib/api-generated/client.gen';
 import { submitFeedback } from '@/lib/api-generated/sdk.gen';
@@ -18,7 +20,9 @@ interface WidgetAppProps {
 
 function WidgetAppContent({ config }: WidgetAppProps) {
   const streamValue = useWidgetChatStream(config.apiUrl);
-  const suggestedQuestions = useWidgetSuggestions(config.apiUrl, config.suggestedQuestions);
+  const suggestedQuestions = useWidgetSuggestions(config.apiUrl, config.locale, config.suggestedQuestions);
+  const t = resolveWidgetMessages(config.locale, config.messages);
+  const effectiveTitle = config.title ?? t.titleDefault;
 
   const feedbackSubmitFn = useCallback(
     async (body: FeedbackRequest) => {
@@ -29,22 +33,24 @@ function WidgetAppContent({ config }: WidgetAppProps) {
   )
 
   return (
-    <FeedbackSubmitFnContext.Provider value={feedbackSubmitFn}>
-      <ChatStreamProvider value={streamValue}>
-        <FloatingButton position={config.position} />
-        <ChatModal
-          title={config.title}
-          position={config.position}
-          welcomeMessage={config.welcomeMessage}
-          suggestedQuestions={suggestedQuestions}
-        />
-      </ChatStreamProvider>
-    </FeedbackSubmitFnContext.Provider>
+    <WidgetI18nProvider messages={t}>
+      <FeedbackSubmitFnContext.Provider value={feedbackSubmitFn}>
+        <ChatStreamProvider value={streamValue}>
+          <FloatingButton position={config.position} />
+          <ChatModal
+            title={effectiveTitle}
+            position={config.position}
+            welcomeMessage={config.welcomeMessage}
+            suggestedQuestions={suggestedQuestions}
+          />
+        </ChatStreamProvider>
+      </FeedbackSubmitFnContext.Provider>
+    </WidgetI18nProvider>
   );
 }
 
 class WidgetErrorBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; errorText?: string },
   { hasError: boolean }
 > {
   state = { hasError: false };
@@ -62,7 +68,7 @@ class WidgetErrorBoundary extends Component<
           fontSize: '14px',
           fontFamily: 'sans-serif',
         }}>
-          Widget encountered an error. Call RWikiChat.destroy() and try again.
+          {this.props.errorText ?? WIDGET_MESSAGES.en.errorBoundary}
         </div>
       );
     }
@@ -71,8 +77,9 @@ class WidgetErrorBoundary extends Component<
 }
 
 export function WidgetApp({ config }: WidgetAppProps) {
+  const errorText = resolveWidgetMessages(config.locale, config.messages).errorBoundary;
   return (
-    <WidgetErrorBoundary>
+    <WidgetErrorBoundary errorText={errorText}>
       <WidgetAppContent config={config} />
     </WidgetErrorBoundary>
   );

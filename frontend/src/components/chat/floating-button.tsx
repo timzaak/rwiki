@@ -2,6 +2,7 @@ import { MessageCircleIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useChatModalStore } from '@/stores/chat-store'
+import { useWidgetI18n } from './widget-i18n'
 
 interface FloatingButtonProps {
   visible?: boolean
@@ -11,6 +12,7 @@ interface FloatingButtonProps {
 export function FloatingButton({ visible = true, position = 'right' }: FloatingButtonProps) {
   const isModalOpen = useChatModalStore((s) => s.isModalOpen)
   const openModal = useChatModalStore((s) => s.openModal)
+  const t = useWidgetI18n()
 
   if (!visible || isModalOpen) return null
 
@@ -23,7 +25,7 @@ export function FloatingButton({ visible = true, position = 'right' }: FloatingB
         position === 'left' ? 'left-6' : 'right-6',
         'animate-glow-pulse',
       )}
-      aria-label="Open chat assistant"
+      aria-label={t.a11yOpen}
     >
       <MessageCircleIcon className="size-5" />
     </button>
