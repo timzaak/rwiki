@@ -15,6 +15,9 @@
  * - 修改路由行为 → 编辑 src/routes/__root.tsx
  */
 import './styles.css'
+// 鉴权基础设施：全局 Bearer 注入 + 401 清 Key 跳登录（FE-D01）。
+// 副作用 import，模块内部自带幂等守卫，只会安装一次。
+import './lib/api-client-setup'
 import { StrictMode } from 'react'
 import { createRouter } from '@tanstack/react-router'
 import { RouterProvider } from '@tanstack/react-router'

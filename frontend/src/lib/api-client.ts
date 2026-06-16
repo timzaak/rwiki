@@ -1,3 +1,7 @@
+// 历史遗留：此 axios 实例当前无生产调用方（Grep 仅本文件自引用）。
+// 生产请求路径走 src/lib/api-generated 的 hey-api client（原生 fetch）。
+// Bearer 注入与 401 处理集中在 src/lib/api-client-setup.ts。
+// 不要在此文件新增业务相关注入；如需复用 axios，请先与维护者确认。
 /**
  * API 客户端配置
  *

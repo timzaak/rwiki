@@ -34,6 +34,22 @@ pub struct UploadDocumentResponse {
     pub created_at: String,
 }
 
+/// multipart/form-data body for document upload.
+///
+/// NOTE: 此 struct 仅用于 OpenAPI schema 生成（utoipa），handler 不会反序列化它。
+/// 实际 multipart 字段解析见 `upload_document`（按字段名 "file" / "refresh_embed"
+/// 读取，`refresh_embed` 以 `text == "true"` 判定，与 Option<bool> 语义略有出入）。
+/// 新增/重命名字段时，此处 schema 与 handler 解析必须同步，否则生成的客户端与
+/// 服务器契约会静默偏离。
+#[derive(utoipa::ToSchema)]
+pub struct UploadDocumentRequest {
+    /// The uploaded file (binary).
+    #[schema(value_type = String, format = Binary)]
+    pub file: Vec<u8>,
+    /// Whether to re-embed if the content already exists. Optional, defaults false.
+    pub refresh_embed: Option<bool>,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentListItem {
@@ -101,6 +117,7 @@ pub struct BatchStatusResponse {
     path = "/api/documents/upload",
     tag = "documents",
     security(("bearer_auth" = [])),
+    request_body(content = inline(UploadDocumentRequest), content_type = "multipart/form-data"),
     responses(
         (status = 200, description = "Document uploaded successfully as draft", body = UploadDocumentResponse),
         (status = 400, description = "Invalid file (unsupported format, empty, encoding error, or frontmatter error)", body = ErrorResponse),
