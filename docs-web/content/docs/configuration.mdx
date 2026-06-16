@@ -251,7 +251,7 @@ service_name = "rwiki-backend"
 | `enable` | bool | No | `false` | Enable rerank re-scoring |
 | `provider` | string | No | `"open_router"` | Rerank provider: `"open_router"`, `"big_model"`, or `"dash_scope"` |
 | `model` | string | No | Provider default | Model name. OpenRouter defaults to `cohere/rerank-v4-fast`, BigModel defaults to `rerank-pro`, DashScope defaults to `qwen3-rerank` |
-| `base_url` | string | No | Provider default | API Base URL. When unset, each provider uses its correct default host. For `dash_scope`, the region is **auto-derived from `[llm].base_url`** (keeps chat/embedding/rerank region-consistent — previously the DashScope rerank endpoint was hardcoded to the China-mainland host `dashscope.aliyuncs.com`, which silently failed rerank auth when the LLM pointed at the international host `dashscope-us.aliyuncs.com`). Set `[rerank].base_url` explicitly only when the LLM provider is not Bailian. |
+| `base_url` | string | No | Provider default | API Base URL. When unset, each provider uses its own default endpoint (DashScope defaults to the China-mainland `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`). Set `[rerank].base_url` explicitly when you need another region (e.g. the international host `dashscope-us.aliyuncs.com`) or a custom gateway. Rerank does not derive its region from `[llm].base_url`. |
 | `top_n` | number | No | `20` | Max candidates sent to rerank |
 | `timeout_secs` | number | No | `3` | API call timeout in seconds |
 | `api_key` | string | No | — | Dedicated API Key. Falls back to `[llm].api_key` if not set. BigModel requires a separate key. Set via `RERANK_API_KEY` env var. |

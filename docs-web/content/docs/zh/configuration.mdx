@@ -251,7 +251,7 @@ service_name = "rwiki-backend"
 | `enable` | bool | 否 | `false` | 启用 rerank 精排 |
 | `provider` | string | 否 | `"open_router"` | Rerank 服务提供商：`"open_router"`、`"big_model"` 或 `"dash_scope"` |
 | `model` | string | 否 | Provider 默认值 | 模型名称。OpenRouter 默认 `cohere/rerank-v4-fast`，BigModel 默认 `rerank-pro`，DashScope 默认 `qwen3-rerank` |
-| `base_url` | string | 否 | Provider 默认值 | API Base URL。不配置时各 provider 使用各自正确的默认 host。对于 `dash_scope`，**会从 `[llm].base_url` 自动推导地域**，保持 chat/embedding/rerank 地域一致（此前 DashScope rerank 端点被硬编码为中国大陆 host `dashscope.aliyuncs.com`，当 LLM 指向国际 host `dashscope-us.aliyuncs.com` 时会静默 rerank 鉴权失败）。仅当 LLM provider 不是百炼时才需要显式设置 `[rerank].base_url`。 |
+| `base_url` | string | 否 | Provider 默认值 | API Base URL。不配置时各 provider 使用各自默认端点（DashScope 默认中国大陆 `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`）。需要其他地域（如国际 host `dashscope-us.aliyuncs.com`）或自定义网关时，显式设置 `[rerank].base_url`。rerank 不从 `[llm].base_url` 推导地域。 |
 | `top_n` | number | 否 | `20` | 送入 rerank 的最大候选数量 |
 | `timeout_secs` | number | 否 | `3` | API 调用超时（秒） |
 | `api_key` | string | 否 | — | 独立 API Key。不配置时复用 `[llm].api_key`。BigModel 必须配置独立 key。可通过 `RERANK_API_KEY` 环境变量设置 |

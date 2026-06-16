@@ -290,48 +290,6 @@ impl Reranker for BigModelReranker {
     }
 }
 
-/// 解析 `[llm].base_url` 的 DashScope origin（`scheme://host[:port]`）。
-///
-/// 供 chat/embedding/rerank 三面复用，保证区域一致。host 判据：host 等于
-/// `dashscope.aliyuncs.com`，或以 `dashscope` 开头且以 `.aliyuncs.com` 结尾
-/// （覆盖国际区 `dashscope-us.aliyuncs.com` 等）。该判据同时拒绝
-/// `my-dashscope-proxy.internal` 这类把 dashscope 当子串的代理 host。
-/// 返回 None 表示 `llm_base_url` 不是 DashScope（或 URL 解析失败）。
-fn dashscope_origin_for(llm_base_url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(llm_base_url).ok()?;
-    let host = parsed.host_str()?;
-    let is_dashscope = host == "dashscope.aliyuncs.com"
-        || (host.starts_with("dashscope") && host.ends_with(".aliyuncs.com"));
-    if !is_dashscope {
-        return None;
-    }
-    let scheme = parsed.scheme();
-    let origin = match parsed.port() {
-        Some(port) => format!("{scheme}://{host}:{port}"),
-        None => format!("{scheme}://{host}"),
-    };
-    Some(origin)
-}
-
-/// 解析 DashScope rerank 的 base_url，使 chat/embedding/rerank 三个面保持区域一致。
-///
-/// 优先级：
-/// 1. `explicit` 非空 → 原样返回。
-/// 2. 否则从 `llm_base_url` 推导 DashScope origin，返回
-///    `{origin}/compatible-api/v1/reranks`。例如国际区
-///    `https://dashscope-us.aliyuncs.com/compatible-mode/v1`
-///    → `https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks`。
-/// 3. 其他情况（LLM 非 dashscope，或 URL 解析失败）→ 返回中国大陆默认端点。
-pub fn dashscope_rerank_base(explicit: Option<&str>, llm_base_url: &str) -> String {
-    if let Some(url) = explicit.filter(|s| !s.is_empty()) {
-        return url.to_string();
-    }
-    match dashscope_origin_for(llm_base_url) {
-        Some(origin) => format!("{origin}/compatible-api/v1/reranks"),
-        None => DASHSCOPE_RERANK_DEFAULT.to_string(),
-    }
-}
-
 /// 阿里云百炼 (DashScope) Rerank provider
 ///
 /// 接入百炼官方 OpenAI 兼容精排扁平端点
@@ -443,15 +401,13 @@ pub enum RerankerProvider {
 
 impl RerankerProvider {
     /// 根据 provider 类型与配置构造 reranker，把 provider 匹配 + base_url
-    /// 默认/推导全部收口在 core。main.rs 三种 provider 收敛为一次调用。
+    /// 默认全部收口在 core。main.rs 三种 provider 收敛为一次调用。
     ///
-    /// - `rerank_base_url`：`[rerank].base_url` 显式覆盖（优先级最高）。
-    /// - `llm_base_url`：`[llm].base_url`，仅 DashScope 用它推导区域。
+    /// - `rerank_base_url`：`[rerank].base_url` 显式覆盖（可选，未设置时用 provider 默认端点）。
     /// - `api_key`：已归一化的 API key（空字符串视为未配置，应在外层提前拦截）。
     pub fn from_rerank_config(
         provider: RerankProviderType,
         rerank_base_url: Option<&str>,
-        llm_base_url: &str,
         api_key: String,
         model: String,
         timeout: Duration,
@@ -477,9 +433,9 @@ impl RerankerProvider {
                 api_key,
                 model,
                 timeout,
-                // DashScope rerank 区域随 [llm].base_url 自动推导，保证
-                // chat/embedding/rerank 三面区域一致；显式 base_url 优先级最高。
-                dashscope_rerank_base(rerank_base_url, llm_base_url),
+                rerank_base_url
+                    .unwrap_or(DASHSCOPE_RERANK_DEFAULT)
+                    .to_string(),
             )),
         }
     }
@@ -841,105 +797,5 @@ mod tests {
             }
             other => panic!("expected ResponseParse error, got: {other:?}"),
         }
-    }
-
-    // --- dashscope_rerank_base 区域推导测试 ---
-
-    #[test]
-    fn dashscope_rerank_base_explicit_overrides_everything() {
-        // 意图：显式 base_url 必须原样返回，不被 llm_base_url 覆盖。
-        let got = dashscope_rerank_base(
-            Some("https://my-proxy.example.com/rerank"),
-            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
-        );
-        assert_eq!(
-            got, "https://my-proxy.example.com/rerank",
-            "explicit override must win"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_explicit_empty_falls_through() {
-        // 意图：空字符串 explicit 视同未配置，继续走 llm_base_url 推导。
-        let got = dashscope_rerank_base(
-            Some(""),
-            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
-        );
-        assert_eq!(
-            got, "https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks",
-            "empty explicit should fall through to llm_base_url derivation"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_derives_us_region_from_llm_base() {
-        // 意图：国际区 LLM base → rerank 端点也走国际区 host，避免中美 Key 错配。
-        let got =
-            dashscope_rerank_base(None, "https://dashscope-us.aliyuncs.com/compatible-mode/v1");
-        assert_eq!(
-            got,
-            "https://dashscope-us.aliyuncs.com/compatible-api/v1/reranks"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_derives_china_region_from_llm_base() {
-        // 意图：中国大陆 LLM base → rerank 端点保持默认中国 host。
-        let got = dashscope_rerank_base(None, "https://dashscope.aliyuncs.com/compatible-mode/v1");
-        assert_eq!(
-            got,
-            "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_preserves_custom_port() {
-        // 意图：推导时端口必须保留（自托管网关/区域代理场景）。
-        // 注意：host 判据已收紧为"等于 dashscope.aliyuncs.com 或 dashscope*.aliyuncs.com"，
-        // 旧的 `dashscope.example` 会落入回退分支；这里用真正的 DashScope host 加端口，
-        // 仍验证端口保留意图（Rule 9）。
-        let got = dashscope_rerank_base(
-            None,
-            "https://dashscope-us.aliyuncs.com:8443/compatible-mode/v1",
-        );
-        assert_eq!(
-            got, "https://dashscope-us.aliyuncs.com:8443/compatible-api/v1/reranks",
-            "non-default port must be preserved in derived origin"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_rejects_dashscope_substring_proxy() {
-        // 意图（Rule 9）：host 判据收紧后，`my-dashscope-proxy.internal` 这类把
-        // dashscope 当子串的代理 host 不得被误判为可推导区域，必须降级到中国默认。
-        // 旧判据 `host.contains("dashscope")` 会误命中，存在用错 Key/区域的风险。
-        let got = dashscope_rerank_base(
-            None,
-            "https://my-dashscope-proxy.internal/compatible-mode/v1",
-        );
-        assert_eq!(
-            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
-            "dashscope-substring proxy host must not be treated as derivable"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_non_dashscope_llm_falls_back_to_default() {
-        // 意图：LLM 非 dashscope（如 OpenAI）时，rerank 无法推导区域 → 用中国默认。
-        let got = dashscope_rerank_base(None, "https://api.openai.com/v1");
-        assert_eq!(
-            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
-            "non-dashscope llm base should fall back to China default"
-        );
-    }
-
-    #[test]
-    fn dashscope_rerank_base_malformed_llm_falls_back_without_panic() {
-        // 意图：畸形 URL 不得 panic，必须安全降级到中国默认。
-        let got = dashscope_rerank_base(None, "not a valid url at all");
-        assert_eq!(
-            got, "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
-            "malformed llm base should fall back to China default without panic"
-        );
     }
 }

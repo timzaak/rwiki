@@ -374,7 +374,7 @@ async fn main() -> Result<()> {
                     .to_string();
                 let timeout = std::time::Duration::from_secs(config.rerank.timeout_secs);
 
-                // provider 匹配 + base_url 默认/推导全部收口在 core 的
+                // provider 匹配 + base_url 默认全部收口在 core 的
                 // `RerankerProvider::from_rerank_config`，main.rs 收敛为一次调用。
                 let provider_tag = match &config.rerank.provider {
                     rwiki_core::config::RerankProviderType::BigModel => "BigModel",
@@ -386,7 +386,6 @@ async fn main() -> Result<()> {
                     rwiki_core::infrastructure::reranker::RerankerProvider::from_rerank_config(
                         config.rerank.provider.clone(),
                         config.rerank.base_url.as_deref(),
-                        &config.llm.base_url,
                         key.to_string(),
                         model,
                         timeout,

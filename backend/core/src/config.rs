@@ -273,9 +273,7 @@ pub struct RerankConfig {
     /// 独立 API Key
     #[serde(default)]
     pub api_key: Option<String>,
-    /// 可选 base_url 覆盖。
-    /// 对 `dash_scope` provider：默认从 `[llm].base_url` 自动推导区域（中国/国际），
-    /// 仅当 LLM provider 非百炼时才需要显式设置。
+    /// 可选显式 base_url 覆盖；未设置时使用 provider 默认端点。
     #[serde(default)]
     pub base_url: Option<String>,
 }
