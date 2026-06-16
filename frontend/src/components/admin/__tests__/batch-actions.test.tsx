@@ -185,8 +185,29 @@ describe('BatchActions — CORE: exactly one batch-status request', () => {
   })
 })
 
-describe('BatchActions — per-item feedback', () => {
-  it('renders per-item feedback rows from results[] (applied + reason)', async () => {
+describe('BatchActions — concise feedback (summary + only failures)', () => {
+  it('summarizes all-applied results with one line and NO per-item rows', async () => {
+    installCountingHandlers([
+      makeResult({ documentId: 'a', applied: true, status: 'published', reason: null }),
+      makeResult({ documentId: 'b', applied: true, status: 'published', reason: null }),
+    ])
+
+    const documents = [makeDoc('a', 'draft'), makeDoc('b', 'draft')]
+    const user = userEvent.setup()
+    renderBatchActions({
+      selectedIds: new Set(['a', 'b']),
+      documents,
+    })
+
+    await user.click(screen.getByTestId('batch-publish-button'))
+
+    // One summary line; success noise is removed entirely.
+    const feedback = await screen.findByTestId('batch-feedback')
+    expect(feedback).toHaveTextContent('Published 2 documents.')
+    expect(screen.queryAllByTestId('batch-feedback-item')).toHaveLength(0)
+  })
+
+  it('enumerates ONLY failed items (name + reason) when some did not apply', async () => {
     installCountingHandlers([
       makeResult({ documentId: 'a', applied: true, status: 'published', reason: null }),
       makeResult({ documentId: 'b', applied: false, status: 'draft', reason: 'invalid_status' }),
@@ -201,15 +222,15 @@ describe('BatchActions — per-item feedback', () => {
 
     await user.click(screen.getByTestId('batch-publish-button'))
 
-    const items = await screen.findAllByTestId('batch-feedback-item')
-    expect(items).toHaveLength(2)
-    // First row: applied
-    expect(items[0]).toHaveTextContent('doc-a.pdf')
-    expect(items[0]).toHaveTextContent('已生效')
-    // Second row: not applied + reason label
-    expect(items[1]).toHaveTextContent('doc-b.pdf')
-    expect(items[1]).toHaveTextContent('未生效')
-    expect(items[1]).toHaveTextContent('状态不允许')
+    const feedback = await screen.findByTestId('batch-feedback')
+    expect(feedback).toHaveTextContent('Published 1 of 2 documents.')
+
+    // Only the failure is listed; the applied doc is NOT.
+    const items = screen.getAllByTestId('batch-feedback-item')
+    expect(items).toHaveLength(1)
+    expect(items[0]).toHaveTextContent('doc-b.pdf')
+    expect(items[0]).toHaveTextContent('Not applied')
+    expect(items[0]).toHaveTextContent('Invalid status')
   })
 })
 

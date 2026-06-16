@@ -14,7 +14,7 @@ import type { DocumentListItem } from '@/lib/api-generated/types.gen'
  *  - on mount calls `listDocuments` (GET /api/documents) once
  *  - success → `documents` populated from `result.data.documents`,
  *    `loading` false, `error` null
- *  - failure (non-2xx / network) → `error` set to `'加载失败'`, `loading` false
+ *  - failure (non-2xx / network) → `error` set to `'Failed to load'`, `loading` false
  *  - `refreshList()` re-fetches (the hook calls it on mount via useEffect)
  *
  * Strategy mirrors `use-feedback.test.tsx`: `renderHook` + MSW +
@@ -98,7 +98,7 @@ describe('useDocumentList — failure path', () => {
       body: { code: 401, message: 'Unauthorized' },
     },
   ])(
-    'sets error to 加载失败 and keeps documents empty on $label',
+    'sets error to Failed to load and keeps documents empty on $label',
     async ({ status, body }) => {
       server.use(
         http.get(LIST_URL, () => HttpResponse.json(body, { status })),
@@ -107,7 +107,7 @@ describe('useDocumentList — failure path', () => {
       const { result } = renderHook(() => useDocumentList())
 
       await waitFor(() => {
-        expect(result.current.error).toBe('加载失败')
+        expect(result.current.error).toBe('Failed to load')
       })
 
       expect(result.current.loading).toBe(false)
@@ -121,7 +121,7 @@ describe('useDocumentList — failure path', () => {
     const { result } = renderHook(() => useDocumentList())
 
     await waitFor(() => {
-      expect(result.current.error).toBe('加载失败')
+      expect(result.current.error).toBe('Failed to load')
     })
     expect(result.current.loading).toBe(false)
   })
@@ -171,7 +171,7 @@ describe('useDocumentList — refreshList', () => {
     const { result } = renderHook(() => useDocumentList())
 
     await waitFor(() => {
-      expect(result.current.error).toBe('加载失败')
+      expect(result.current.error).toBe('Failed to load')
     })
 
     // Subsequent fetch succeeds.

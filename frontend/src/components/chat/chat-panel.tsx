@@ -1,4 +1,4 @@
-import { Trash2Icon } from 'lucide-react'
+import { PlusIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chat-store'
@@ -57,7 +57,7 @@ export function ChatPanel({
       onClick={handleClearConversation}
       aria-label="Clear current conversation"
     >
-      <Trash2Icon className="size-3.5" />
+      <PlusIcon className="size-3.5" />
     </Button>
   ) : null
 

@@ -7,6 +7,8 @@ pub mod state;
 
 #[cfg(test)]
 mod middleware_scenarios;
+#[cfg(test)]
+mod routes_scenarios;
 
 pub use openapi::ApiDoc;
 pub use routes::create_api_routes;

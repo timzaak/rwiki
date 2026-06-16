@@ -4,7 +4,7 @@ description: 技术选型、RAG 核心流程
 icon: Boxes
 ---
 
-RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处理文档解析、向量化、检索和流式对话，前端用 React SPA 提供聊天界面，同时支持以 widget 形式嵌入外部站点。
+RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处理文档解析、向量化、检索和流式对话，前端用 React SPA 提供聊天界面和文档管理后台，同时支持以 widget 形式嵌入外部站点。
 
 ## 技术栈
 
@@ -57,7 +57,7 @@ flowchart LR
 
 ### 向量化与存储
 
-每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重分两层：**已存在于已发布（`published`）文档的相同内容直接跳过写入**，避免重复内容上线污染检索；其余相同内容复用已缓存向量，跳过重复的 API 调用。
+每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重是自包含的：上传时始终为每个新文档建立独立的检索条目；相同内容（相同 content_hash 和 embedding 模型）只复用已缓存的向量，不重复调用 embedding API。这样批量上下线时，下线老文档不影响新文档下的未改动内容（见[文档管理后台](/docs/zh/admin)）。
 
 同时，每个 chunk 的文本会用 [jieba](https://github.com/messense/jieba-rs)（中文分词）进行分词，写入 FTS5 虚拟表（`fts_chunks`）。这样检索时可以同时做 BM25 关键词搜索和向量相似度搜索，两种结果通过 Reciprocal Rank Fusion（RRF）融合排序。
 

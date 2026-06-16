@@ -45,6 +45,7 @@
 | chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Draft | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |
 | chat | 聊天回答反馈记录 | [chat/chat-feedback.md](chat/chat-feedback.md) | Implemented | 赞/踩反馈、状态切换、数据持久化、双入口一致、反馈查询 |
 | core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |
+| core | 知识库文档管理后台（勾选式批量上下线） | [core/batch-refresh.md](core/batch-refresh.md) | Implemented | 文档管理后台、批量上下线、写入去重自包含、API Key 登录、eval 指定文档集合评测 |
 
 ## 内部工程工具（无 PRD）
 
@@ -52,4 +53,4 @@
 
 | 能力 | 说明 |
 |------|------|
-| eval | RAG 质量评估端点 `POST /api/eval/query`，暴露检索中间结果（召回、RAG 上下文）供外部 Ragas/Python 评估，复用 chat 检索 + rerank 管线；受 API Token 鉴权 |
+| eval | RAG 质量评估端点 `POST /api/eval/query`，暴露检索中间结果（召回、RAG 上下文）供外部 Ragas/Python 评估，复用 chat 检索 + rerank 管线；支持指定文档集合评测（`documentIds`，可评测未发布批次）；受 API Token 鉴权 |

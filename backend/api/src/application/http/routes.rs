@@ -3,8 +3,9 @@ use axum::http::Method;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use std::path::Path;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use utoipa::OpenApi;
 
 /// 创建 API 路由
@@ -89,10 +90,17 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             )
     };
 
-    // 托管静态文件（widget JS 等）
+    // 托管静态文件
+    // - /widget/*  → widget JS（向后兼容第三方嵌入引用 /widget/rwiki-chat.js）
+    // - 其余未匹配路径 → Web SPA：先按文件查找（index.html、assets/*），
+    //   找不到时回退到 index.html（返回 200 而非 404），让 TanStack Router
+    //   的客户端路由（/admin、/auth/login 等）在深链/刷新时仍可工作。
     if let Some(ref static_dir) = state.static_dir {
         tracing::info!("Serving static files from: {}", static_dir);
+        let spa = ServeDir::new(static_dir)
+            .fallback(ServeFile::new(Path::new(static_dir).join("index.html")));
         app.nest_service("/widget", ServeDir::new(static_dir))
+            .fallback_service(spa)
     } else {
         app
     }

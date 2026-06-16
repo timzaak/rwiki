@@ -1,5 +1,12 @@
-import { useState } from 'react'
-import { LoaderCircleIcon, UploadCloudIcon } from 'lucide-react'
+import { useRef, useState } from 'react'
+import {
+  CircleCheckIcon,
+  CircleXIcon,
+  FileIcon,
+  LoaderCircleIcon,
+  UploadCloudIcon,
+  XIcon,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { uploadDocument } from '@/lib/api-generated/sdk.gen'
 
@@ -8,107 +15,219 @@ export interface UploadDocumentProps {
   onUploaded: () => void
 }
 
-export function UploadDocument({ onUploaded }: UploadDocumentProps) {
-  const [file, setFile] = useState<File | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
+type UploadStatus = 'pending' | 'uploading' | 'done' | 'error'
 
-  function selectFile(next: File | null) {
-    setFile(next)
-    setError(null)
-    setSuccess(false)
+interface UploadItem {
+  id: string
+  file: File
+  status: UploadStatus
+}
+
+function StatusIcon({ status }: { status: UploadStatus }) {
+  switch (status) {
+    case 'uploading':
+      return (
+        <LoaderCircleIcon className="size-4 shrink-0 animate-spin text-primary" />
+      )
+    case 'done':
+      return (
+        <CircleCheckIcon className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      )
+    case 'error':
+      return <CircleXIcon className="size-4 shrink-0 text-destructive" />
+    default:
+      return <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+  }
+}
+
+export function UploadDocument({ onUploaded }: UploadDocumentProps) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const idRef = useRef(0)
+  const [items, setItems] = useState<UploadItem[]>([])
+  const [uploading, setUploading] = useState(false)
+
+  const pending = items.filter((item) => item.status === 'pending')
+  const done = items.filter((item) => item.status === 'done')
+  const failed = items.filter((item) => item.status === 'error')
+  const finished =
+    !uploading && (done.length > 0 || failed.length > 0) && pending.length === 0
+
+  // Stage one or more files. Terminal (done/error) items from a previous run
+  // are dropped so each new selection starts a clean batch; still-pending or
+  // in-flight items are kept.
+  function stageFiles(fileList: FileList | null | undefined) {
+    if (!fileList || fileList.length === 0) return
+    const fresh: UploadItem[] = Array.from(fileList).map((file) => ({
+      id: `u${(idRef.current += 1)}`,
+      file,
+      status: 'pending' as const,
+    }))
+    setItems((prev) => [
+      ...prev.filter((i) => i.status === 'pending' || i.status === 'uploading'),
+      ...fresh,
+    ])
   }
 
+  function updateStatus(id: string, status: UploadStatus) {
+    setItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, status } : item)),
+    )
+  }
+
+  function removeItem(id: string) {
+    setItems((prev) => prev.filter((item) => item.id !== id))
+  }
+
+  function clearAll() {
+    setItems([])
+    if (inputRef.current) inputRef.current.value = ''
+  }
+
+  // Sequential upload: one POST /api/documents/upload per file, in order.
+  // Sequential (not parallel) to avoid rate-limiting the embedding provider
+  // and contending on SQLite writes. The table is refreshed once after the
+  // whole batch, not per file.
   async function doUpload() {
-    if (!file) return
-    setLoading(true)
-    setError(null)
-    setSuccess(false)
-    try {
-      // multipart serialization is handled by the generated SDK
-      // (formDataBodySerializer + Content-Type cleared); no manual work here.
-      const result = await uploadDocument({ body: { file } })
-      if (result.error || (result.response && !result.response.ok)) {
-        setError('上传失败')
-      } else {
-        setSuccess(true)
-        setFile(null)
-        onUploaded()
+    const queue = items.filter((item) => item.status === 'pending')
+    if (queue.length === 0) return
+
+    setUploading(true)
+    let anyNew = false
+    for (const item of queue) {
+      updateStatus(item.id, 'uploading')
+      try {
+        // multipart serialization is handled by the generated SDK
+        // (formDataBodySerializer + Content-Type cleared); no manual work here.
+        const result = await uploadDocument({ body: { file: item.file } })
+        if (result.error || (result.response && !result.response.ok)) {
+          updateStatus(item.id, 'error')
+        } else {
+          updateStatus(item.id, 'done')
+          anyNew = true
+        }
+      } catch {
+        updateStatus(item.id, 'error')
       }
-    } catch {
-      setError('上传失败')
-    } finally {
-      setLoading(false)
     }
+    setUploading(false)
+    if (anyNew) onUploaded()
   }
 
   return (
-    <div
-      data-testid="upload-document"
-      className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card p-4"
-    >
-      <div
-        data-testid="upload-dropzone"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault()
-          const dropped = e.dataTransfer.files?.[0]
-          if (dropped) selectFile(dropped)
+    <div data-testid="upload-document" className="relative">
+      {/* Always-mounted hidden input so tests/drivers can target it directly. */}
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        data-testid="file-input"
+        className="hidden"
+        onChange={(e) => {
+          stageFiles(e.target.files)
+          // Reset so the same file can be re-selected in a later batch.
+          e.target.value = ''
         }}
-        className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border/60 px-4 py-8 text-center text-sm text-muted-foreground"
-      >
-        <UploadCloudIcon className="size-5" />
-        <span>Drag a file here, or select one below.</span>
-        {/* 内联 label（非 Button）：这是一个包裹隐藏 file input 的 <label>，
-            Button 渲染 <button>，语义上无法承载 file input，故保留内联样式。 */}
-        <label className="mt-1 inline-flex h-8 cursor-pointer items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90">
-          Select file
-          <input
-            type="file"
-            data-testid="file-input"
-            className="hidden"
-            onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
-          />
-        </label>
-        {file ? (
-          <span className="text-xs text-foreground">{file.name}</span>
-        ) : null}
-      </div>
+      />
 
-      {error ? (
-        <div
-          data-testid="upload-error"
-          className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      ) : null}
-
-      {success && !error ? (
-        <div
-          data-testid="upload-success"
-          className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400"
-        >
-          Upload succeeded.
-        </div>
-      ) : null}
-
+      {/* Idle footprint = one button. Opens the picker and accepts drag-drop. */}
       <Button
         type="button"
         variant="default"
         size="lg"
-        data-testid="upload-button"
-        onClick={doUpload}
-        disabled={!file || loading}
+        data-testid="upload-dropzone"
+        disabled={uploading}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault()
+          if (uploading) return
+          stageFiles(e.dataTransfer.files)
+        }}
       >
-        {loading ? (
-          <LoaderCircleIcon className="size-4 animate-spin" />
-        ) : (
-          <UploadCloudIcon className="size-4" />
-        )}
-        {loading ? 'Uploading...' : 'Upload'}
+        <UploadCloudIcon />
+        Upload document
       </Button>
+
+      {/* Popover: appears only when files are staged. */}
+      {items.length > 0 ? (
+        <div className="absolute right-0 top-full z-20 mt-2 w-80 animate-fade-in rounded-lg border border-border/60 bg-card p-3 shadow-lg">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {items.length} file{items.length === 1 ? '' : 's'}
+            </span>
+            <button
+              type="button"
+              aria-label="Clear all"
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              disabled={uploading}
+              onClick={clearAll}
+            >
+              <XIcon className="size-3.5" />
+            </button>
+          </div>
+
+          <ul className="mt-2 flex max-h-56 flex-col gap-1 overflow-y-auto">
+            {items.map((item) => (
+              <li
+                key={item.id}
+                className="flex items-center gap-2 rounded-md px-1 py-1"
+              >
+                <StatusIcon status={item.status} />
+                <span className="truncate text-sm">{item.file.name}</span>
+                {item.status === 'pending' && !uploading ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove ${item.file.name}`}
+                    className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={() => removeItem(item.id)}
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+
+          {(pending.length > 0 || uploading) && !finished ? (
+            <Button
+              type="button"
+              variant="default"
+              size="lg"
+              className="mt-3 w-full"
+              data-testid="upload-button"
+              onClick={doUpload}
+              disabled={uploading || pending.length === 0}
+            >
+              {uploading ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <UploadCloudIcon />
+              )}
+              {uploading
+                ? 'Uploading...'
+                : `Upload ${pending.length} file${pending.length === 1 ? '' : 's'}`}
+            </Button>
+          ) : null}
+
+          {finished ? (
+            failed.length === 0 ? (
+              <div
+                data-testid="upload-success"
+                className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-xs text-emerald-600 dark:text-emerald-400"
+              >
+                Uploaded {done.length} file{done.length === 1 ? '' : 's'}.
+              </div>
+            ) : (
+              <div
+                data-testid="upload-error"
+                className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-xs text-destructive"
+              >
+                Uploaded {done.length}, {failed.length} failed.
+              </div>
+            )
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

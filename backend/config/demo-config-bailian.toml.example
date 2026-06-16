@@ -21,7 +21,7 @@ model = "qwen-plus"          # 或 qwen-turbo, qwen-max
 [embedding]
 api_key = "sk-你的百炼API-Key"  # 可与 LLM 共用同一 Key
 base_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
-model = "text-embedding-v3"
+model = "text-embedding-v4"
 dimensions = 1024             # 可选：512/768/1024
 
 [api]

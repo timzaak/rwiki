@@ -1,0 +1,82 @@
+---
+title: 文档管理后台
+description: 用 API Key 登录，批量上下线文档
+icon: LayoutDashboard
+---
+
+管理后台是运营刷新 wiki 的入口：上传新内容、批量上线/下线、删除文档。地址是前端的 `/admin`，需要用 API Key 登录。
+
+后台跑在前端项目（默认 `http://localhost:3000/admin`），不是 docs-web。它复用后端现有的文档管理接口和鉴权，没有单独的账户体系。
+
+## 登录
+
+访问 `/admin`，未登录会跳到 `/auth/login`。输入 API Key——就是配置文件里的 `[api] token`，见[配置 → API Token](/docs/zh/configuration#api-token)。
+
+登录时前端用这个 Key 调 `POST /api/auth/verify` 探活：返回 204 表示 Key 有效，前端把 Key 存进浏览器，之后所有管理请求都带上它。Key 无效（401）或网络失败都提示 "Invalid API key"。
+
+Key 失效后（比如后端换了 token），下一次请求会被 401 拦截，前端清掉 Key 并回到登录页。
+
+## 文档列表
+
+列表展示每个文档的文件名、状态、行数、上传时间、错误信息。
+
+状态含义见[架构 → 文档状态](/docs/zh/architecture#文档状态)：`processing`（解析中）、`draft`（待发布）、`published`（已上线）、`failed`（失败）。只有 `published` 的文档参与检索。
+
+顶部下拉框按状态筛选（全部 / Draft / Published / Processing / Failed）。切筛选会清空当前勾选，避免对被筛掉的隐藏文档误操作。
+
+## 上传与删除
+
+上传走拖拽或选择文件，行为和 `POST /api/documents/upload` 一致；上传后状态是 `draft`，不会自动上线。支持的格式和限制见[文档格式](/docs/zh/document-formats)。
+
+删除支持单条和批量：勾选后点 Delete。没有批量删除接口，前端对每个选中文档并发调 `DELETE /api/documents/{documentId}`，任一失败提示 "Some deletions failed"。
+
+## 刷新 wiki：批量上下线
+
+这是后台的主要用途。运营定期刷新内容时，典型动作：
+
+1. 上传新批次（一批文档，可能含未改动、修改、新增的混合）。
+2. 勾选新批次，点 Batch Publish。
+3. 勾选要下线的老批次，点 Batch Unpublish。
+
+Batch Publish 和 Batch Unpublish 是同一个请求：前端把上线集合和下线集合打包成一次 `POST /api/documents/batch-status`，两组状态变更在同一请求内一起生效。
+
+```json
+{
+  "publish": ["0196a1b2-...", "0196a1b3-..."],
+  "unpublish": ["0196a0ff-...", "0196a100-..."]
+}
+```
+
+为什么非要一次提交：如果先上线新的、再下线老的，中间有个窗口新老同时在线，同一段内容会被召回两次。一次提交消掉这个窗口——提交前检索见老的，提交后见新的，没有重叠。
+
+```bash
+curl -X POST http://localhost:8080/api/documents/batch-status \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
+```
+
+接口逐条返回结果，每项带 `applied` 和 `reason`：
+
+```json
+{
+  "results": [
+    { "documentId": "0196a1b2-...", "action": "publish", "applied": true, "status": "published" },
+    { "documentId": "0196a0ff-...", "action": "unpublish", "applied": false, "status": "draft", "reason": "invalid_status" }
+  ]
+}
+```
+
+`reason` 有两种：`not_found`（文档不存在）和 `invalid_status`（当前状态不允许该操作，比如对已发布的文档再 publish）。已生效的项不回滚，失败的只是那几条，前端会把失败项逐条列出来。
+
+单文档的 publish / unpublish 接口还在（见 OpenAPI），但用它们分别操作会重新引入上面说的重叠窗口，刷新场景优先用批量。
+
+## 为什么下线老文档后内容不丢
+
+新批次里经常有和老批次完全一样的内容。如果上传时跳过这些重复内容，下线老文档后这些内容就没了。
+
+所以上传改成自包含：每个新文档都建立自己的检索条目，相同内容只复用已缓存的向量、不重复向量化。下线老文档不影响新文档下的同名内容。细节见[架构 → 向量化与存储](/docs/zh/architecture#向量化与存储)。
+
+## 上线前预演：评测指定文档集合
+
+新批次还是 `draft` 时，可以用 eval 限定到这批文档做预演评测，确认质量再上线。给 `POST /api/eval/query` 传 `documentIds`，检索就限定在这个集合，并且不受"仅 published 可见"的限制。用法见[评估（Eval）](/docs/zh/eval)。

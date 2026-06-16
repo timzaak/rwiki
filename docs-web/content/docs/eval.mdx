@@ -36,6 +36,7 @@ document management APIs.
 | `topK` | number | No | Number of retrieved contexts to return. Defaults to `[retrieval].max_context_chunks`. |
 | `referenceAnswer` | string | No | Golden answer for correctness metrics. |
 | `sessionId` | string | No | Reuse an existing chat session for rewrite context. |
+| `documentIds` | string[] | No | Scope eval to a set of documents. Retrieval only hits that set and bypasses the publish restriction (you can eval `draft` batches). Omit or pass an empty array for live behavior (`published` only). |
 
 ### Response
 
@@ -97,6 +98,17 @@ document management APIs.
     "generate": 2100
   }
 }
+```
+
+## Eval a document set
+
+Pass `documentIds` to scope retrieval to a set of documents and bypass the publish restriction — you can eval a batch that is still in `draft` to rehearse quality before going live (see [Admin Console](/docs/admin)). Omit it (or pass an empty array) for live behavior, which only hits published documents.
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"How to upload documents?","documentIds":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"topK":5}'
 ```
 
 ## Recommended Tools

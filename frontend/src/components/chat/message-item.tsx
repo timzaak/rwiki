@@ -158,7 +158,7 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
           </div>
         ) : (
           <>
-            <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em]">
+            <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em] [&_table]:w-full [&_table]:border-collapse [&_table]:my-2 [&_table]:text-xs [&_th]:border [&_th]:border-border/60 [&_td]:border [&_td]:border-border/60 [&_th]:bg-secondary/50 [&_th]:px-2 [&_td]:px-2 [&_th]:py-1.5 [&_td]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_td]:align-top [&_table]:overflow-x-auto [&_table]:block">
               <Markdown
                 remarkPlugins={[remarkGfm]}
                 components={markdownComponents}

@@ -22,12 +22,12 @@ export function useDocumentList() {
     try {
       const result = await listDocuments()
       if (result.error) {
-        setError('加载失败')
+        setError('Failed to load')
       } else if (result.data) {
         setDocuments(result.data.documents)
       }
     } catch {
-      setError('加载失败')
+      setError('Failed to load')
     } finally {
       setLoading(false)
     }

@@ -4,7 +4,7 @@ description: Project structure, tech choices, RAG pipeline
 icon: Boxes
 ---
 
-RWiki is a RAG + Agent knowledge base Q&A platform. The Rust backend (Axum) handles document parsing, vectorization, retrieval, and streaming chat. The React SPA provides the chat UI, and a widget lets you embed it in external sites.
+RWiki is a RAG + Agent knowledge base Q&A platform. The Rust backend (Axum) handles document parsing, vectorization, retrieval, and streaming chat. The React SPA provides the chat UI and an admin console for managing documents, and a widget lets you embed chat in external sites.
 
 ## Tech Stack
 
@@ -57,7 +57,7 @@ Overlong chunks are further split at Markdown semantic boundaries.
 
 ### Vectorization & Storage
 
-Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication runs at two levels: **identical content already present in a `published` document is skipped entirely** (preventing duplicates from polluting retrieval); other identical content reuses cached vectors, skipping redundant API calls.
+Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication is self-contained: every new document always gets its own retrieval entries. Identical content (same `content_hash` and embedding model) reuses the cached vectors instead of calling the embedding API again. This way, batch publishing and unpublishing can retire an old document without losing its unchanged content under the new one (see [Admin Console](/docs/admin)).
 
 In parallel, each chunk's text is tokenized with [jieba](https://github.com/messense/jieba-rs) (Chinese word segmentation) and indexed into an FTS5 virtual table (`fts_chunks`). This enables BM25 keyword search alongside vector similarity search — the two are fused via Reciprocal Rank Fusion (RRF) at retrieval time.
 

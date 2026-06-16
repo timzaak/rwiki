@@ -189,7 +189,7 @@ curl -X POST http://localhost:8080/api/documents/upload \
 
 记下返回的 `id`。状态是 `draft`，说明文档已经解析和向量化完成，但还没发布。
 
-也可以在前端界面上传：打开 `http://localhost:3000`，在文档管理页面上传文件。
+也可以在前端界面上传：打开 `http://localhost:3000/admin`，用 API Key（就是 `[api] token`）登录后在文档管理后台上传文件。后台还支持批量上下线，见[文档管理后台](/docs/zh/admin)。
 
 ### 发布文档
 

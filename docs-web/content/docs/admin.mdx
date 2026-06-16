@@ -1,0 +1,82 @@
+---
+title: Admin Console
+description: Sign in with an API key, batch-publish and unpublish documents
+icon: LayoutDashboard
+---
+
+The admin console is where you refresh the wiki: upload new content, batch-publish and unpublish, delete documents. It lives at `/admin` on the frontend and requires an API key.
+
+The console runs in the frontend app (default `http://localhost:3000/admin`), not docs-web. It reuses the backend's existing document management endpoints and auth — there is no separate account system.
+
+## Sign in
+
+Visit `/admin`; if you're not signed in, it redirects to `/auth/login`. Enter the API key — this is the `[api] token` from the config file, see [Configuration → API Token](/docs/configuration#api-token).
+
+On submit, the frontend probes the key with `POST /api/auth/verify`: a 204 response means the key is valid, and the frontend stores it in the browser. All subsequent management requests carry it. An invalid key (401) or network failure both show "Invalid API key".
+
+If the key later stops working (the backend rotated the token), the next request returns 401, the frontend clears the key, and you land back on the login page.
+
+## Document list
+
+The list shows each document's file name, status, row count, upload time, and error message.
+
+Status meaning is in [Architecture → Document States](/docs/architecture#document-states): `processing` (parsing), `draft` (awaiting publish), `published` (live), `failed`. Only `published` documents are retrievable.
+
+A dropdown at the top filters by status (All / Draft / Published / Processing / Failed). Switching the filter clears the current selection, so you can't act on documents that the filter just hid.
+
+## Upload and delete
+
+Upload via drag-and-drop or file picker, same behavior as `POST /api/documents/upload`. The new document lands in `draft` — it does not auto-publish. Supported formats and limits are in [Document Formats](/docs/document-formats).
+
+Delete works for one or many: select rows and click Delete. There is no batch-delete endpoint, so the frontend calls `DELETE /api/documents/{documentId}` concurrently per selected document; if any fail it shows "Some deletions failed".
+
+## Refreshing the wiki: batch publish / unpublish
+
+This is the console's main job. The typical refresh flow:
+
+1. Upload the new batch (a set of documents, possibly a mix of unchanged, modified, and new).
+2. Select the new batch, click Batch Publish.
+3. Select the old batch you want to retire, click Batch Unpublish.
+
+Batch Publish and Batch Unpublish are the same request: the frontend packs the publish set and unpublish set into a single `POST /api/documents/batch-status`, and both status changes take effect in that one request.
+
+```json
+{
+  "publish": ["0196a1b2-...", "0196a1b3-..."],
+  "unpublish": ["0196a0ff-...", "0196a100-..."]
+}
+```
+
+Why one request: if you publish the new batch first and unpublish the old one second, there is a window where both are live and the same passage gets recalled twice. A single submission removes that window — before it, search sees the old content; after it, search sees the new content, with no overlap.
+
+```bash
+curl -X POST http://localhost:8080/api/documents/batch-status \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
+```
+
+The endpoint returns a per-item result, each with `applied` and `reason`:
+
+```json
+{
+  "results": [
+    { "documentId": "0196a1b2-...", "action": "publish", "applied": true, "status": "published" },
+    { "documentId": "0196a0ff-...", "action": "unpublish", "applied": false, "status": "draft", "reason": "invalid_status" }
+  ]
+}
+```
+
+`reason` has two values: `not_found` (the document does not exist) and `invalid_status` (the current status doesn't allow the action, e.g. publishing an already-published document). Applied items are not rolled back — only the failing rows fail, and the frontend lists each one.
+
+The single-document publish / unpublish endpoints still exist (see OpenAPI), but calling them separately reintroduces the overlap window above. For refreshes, prefer the batch path.
+
+## Why retiring an old document doesn't lose content
+
+A new batch often contains content identical to the old batch. If upload skipped that duplicate content, retiring the old document would make it disappear.
+
+So upload is now self-contained: every new document gets its own retrieval entries, and identical content only reuses the cached vectors without re-embedding. Retiring the old document doesn't affect the same content under the new one. Details in [Architecture → Vectorization & Storage](/docs/architecture#vectorization--storage).
+
+## Dry-run before publishing: eval a document set
+
+While the new batch is still in `draft`, you can scope eval to just those documents to rehearse quality before going live. Pass `documentIds` to `POST /api/eval/query` and retrieval is limited to that set, bypassing the "published only" restriction. See [Eval](/docs/eval).

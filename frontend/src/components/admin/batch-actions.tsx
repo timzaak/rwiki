@@ -1,5 +1,10 @@
 import { useMemo, useState } from 'react'
-import { LoaderCircleIcon, TrashIcon } from 'lucide-react'
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  LoaderCircleIcon,
+  TrashIcon,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type {
   BatchStatusItem,
@@ -17,8 +22,8 @@ export interface BatchActionsProps {
 }
 
 const REASON_LABEL: Record<string, string> = {
-  not_found: '文档不存在',
-  invalid_status: '状态不允许',
+  not_found: 'Document not found',
+  invalid_status: 'Invalid status',
 }
 
 function describeReason(reason: string | null | undefined): string | null {
@@ -33,6 +38,9 @@ export function BatchActions({
 }: BatchActionsProps) {
   const [submitting, setSubmitting] = useState(false)
   const [feedback, setFeedback] = useState<BatchStatusItem[] | null>(null)
+  const [lastAction, setLastAction] = useState<'publish' | 'unpublish' | null>(
+    null,
+  )
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,6 +60,17 @@ export function BatchActions({
   )
   const disabled = selected.length === 0 || submitting
 
+  // Concise feedback: a single summary line, with only the failures enumerated
+  // (success noise removed). Derivation is pure over `feedback`.
+  const appliedCount = feedback?.filter((item) => item.applied).length ?? 0
+  const failedItems = feedback?.filter((item) => !item.applied) ?? []
+  const verb = lastAction === 'publish' ? 'Published' : 'Unpublished'
+  const total = feedback?.length ?? 0
+  const summary =
+    failedItems.length === 0
+      ? `${verb} ${appliedCount} ${appliedCount === 1 ? 'document' : 'documents'}.`
+      : `${verb} ${appliedCount} of ${total} ${total === 1 ? 'document' : 'documents'}.`
+
   async function submitBatch(action: 'publish' | 'unpublish') {
     // CORE REGRESSION: exactly one POST /api/documents/batch-status per batch.
     // Group selected ids by target action, submit publish + unpublish in a
@@ -67,18 +86,19 @@ export function BatchActions({
     if (publish.length === 0 && unpublish.length === 0) return
 
     setSubmitting(true)
+    setLastAction(action)
     setFeedback(null)
     setError(null)
     try {
       const result = await batchUpdateStatus({ body: { publish, unpublish } })
       if (result.error || (result.response && !result.response.ok)) {
-        setError('批量操作失败')
+        setError('Batch operation failed')
       } else if (result.data) {
         setFeedback(result.data.results)
         onCompleted()
       }
     } catch {
-      setError('批量操作失败')
+      setError('Batch operation failed')
     } finally {
       setSubmitting(false)
     }
@@ -97,7 +117,7 @@ export function BatchActions({
       )
       onCompleted()
     } catch {
-      setDeleteError('部分删除失败')
+      setDeleteError('Some deletions failed')
     } finally {
       setSubmitting(false)
     }
@@ -120,7 +140,7 @@ export function BatchActions({
           {submitting ? (
             <LoaderCircleIcon className="size-4 animate-spin" />
           ) : null}
-          批量上线
+          Batch Publish
         </Button>
         <Button
           type="button"
@@ -130,7 +150,7 @@ export function BatchActions({
           onClick={() => submitBatch('unpublish')}
           disabled={disabled}
         >
-          批量下线
+          Batch Unpublish
         </Button>
         <Button
           type="button"
@@ -141,10 +161,10 @@ export function BatchActions({
           disabled={disabled}
         >
           <TrashIcon className="size-4" />
-          删除
+          Delete
         </Button>
         <span className="text-xs text-muted-foreground">
-          已选 {selected.length} 项
+          {selected.length} selected
         </span>
       </div>
 
@@ -167,38 +187,37 @@ export function BatchActions({
       ) : null}
 
       {feedback && feedback.length > 0 ? (
-        <ul
+        <div
           data-testid="batch-feedback"
-          className="flex flex-col divide-y divide-border/40 rounded-lg border border-border/60 text-sm"
+          className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card px-3 py-2.5 text-sm animate-fade-in"
         >
-          {feedback.map((item) => {
-            const label = idToName.get(item.documentId) ?? item.documentId
-            const reason = describeReason(item.reason)
-            return (
-              <li
-                key={item.documentId}
-                data-testid="batch-feedback-item"
-                className="flex items-center justify-between gap-3 px-3 py-2"
-              >
-                <span className="truncate font-medium">{label}</span>
-                <span className="flex items-center gap-2 text-xs">
-                  <span
-                    className={
-                      item.applied
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : 'text-muted-foreground'
-                    }
+          <div className="flex items-center gap-2">
+            {failedItems.length === 0 ? (
+              <CircleCheckIcon className="size-4 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <CircleAlertIcon className="size-4 text-amber-600 dark:text-amber-400" />
+            )}
+            <span className="font-medium">{summary}</span>
+          </div>
+          {failedItems.length > 0 ? (
+            <ul className="flex flex-col gap-1 pl-6 text-xs text-muted-foreground">
+              {failedItems.map((item) => {
+                const label = idToName.get(item.documentId) ?? item.documentId
+                const reason = describeReason(item.reason)
+                return (
+                  <li
+                    key={item.documentId}
+                    data-testid="batch-feedback-item"
+                    className="flex flex-wrap items-center gap-1"
                   >
-                    {item.applied ? '已生效' : '未生效'}
-                  </span>
-                  {reason ? (
-                    <span className="text-muted-foreground">{reason}</span>
-                  ) : null}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
+                    <span className="truncate text-foreground/80">{label}</span>
+                    <span>— Not applied{reason ? ` · ${reason}` : ''}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

@@ -62,7 +62,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=backend-builder /app/target/release/app /app/rwiki-app
-COPY --from=frontend-builder /frontend/dist/rwiki-chat.js /app/static/rwiki-chat.js
+# Web SPA (index.html + assets/*) + widget (rwiki-chat.js) 全部进 /app/static/
+COPY --from=frontend-builder /frontend/dist/ /app/static/
 
 RUN chown -R rwiki:rwiki /app && \
     chmod +x /app/rwiki-app

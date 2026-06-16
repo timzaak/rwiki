@@ -48,3 +48,4 @@ sqlite-vec = { workspace = true }
 mockito = "1"
 opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 http-body-util = "0.1"
+tempfile = "3"

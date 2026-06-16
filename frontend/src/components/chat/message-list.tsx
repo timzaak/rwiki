@@ -32,7 +32,7 @@ export function MessageList({ onRetry }: MessageListProps) {
   }
 
   return (
-    <div data-testid="message-list" className="flex-1 overflow-y-auto">
+    <div data-testid="message-list" className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {messages.map((message) => (
         <MessageItem key={message.id} message={message} onRetry={onRetry} />
       ))}

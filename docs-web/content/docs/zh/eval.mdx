@@ -34,6 +34,7 @@ RAG 管线，并返回适配 Ragas、DeepEval、RAGChecker 等开源评估框架
 | `topK` | number | 否 | 返回的检索上下文数量，默认使用 `[retrieval].max_context_chunks`。 |
 | `referenceAnswer` | string | 否 | 用于 correctness 指标的标准答案。 |
 | `sessionId` | string | 否 | 复用已有聊天会话，让查询改写利用对话历史。 |
+| `documentIds` | string[] | 否 | 限定到一组文档评测。检索只命中该集合，并放开发布限制（可评测 `draft` 草稿批次）。缺省或空数组维持线上行为（仅 `published`）。 |
 
 ### 响应
 
@@ -95,6 +96,17 @@ RAG 管线，并返回适配 Ragas、DeepEval、RAGChecker 等开源评估框架
     "generate": 2100
   }
 }
+```
+
+## 评测指定文档集合
+
+传入 `documentIds` 把检索限定到一组文档，并放开发布限制——可以评测还在 `draft` 的草稿批次，在上线前预演质量（见[文档管理后台](/docs/zh/admin)）。不传或传空数组则维持线上行为，只命中已发布文档。
+
+```bash
+curl -X POST http://localhost:8080/api/eval/query \
+  -H "Authorization: Bearer dev-test" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"如何上传文档？","documentIds":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"topK":5}'
 ```
 
 ## 推荐开源方案

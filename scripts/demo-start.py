@@ -323,8 +323,15 @@ def main() -> int:
     # Frontend
     npm = require_executable("npm", windows_fallback="npm.cmd")
 
-    # Build chat widget JS and place into backend/static/ for backend to serve
-    print("Building chat widget...")
+    # Build frontend (web SPA + widget) and place into backend/static/ for backend to serve.
+    # 与 docker/Dockerfile 对称：后端在根路径 serve 完整 SPA（index.html + assets/*），
+    # 走 SPA fallback（支持 /admin、/auth/login 等客户端路由）；/widget/rwiki-chat.js 仍向后兼容。
+    print("Building frontend (web + widget)...")
+    subprocess.run(
+        [npm, "run", "build"],
+        cwd=REPO_ROOT / "frontend",
+        check=True,
+    )
     subprocess.run(
         [npm, "run", "build:widget"],
         cwd=REPO_ROOT / "frontend",
@@ -332,9 +339,11 @@ def main() -> int:
     )
     static_dir = REPO_ROOT / "backend" / "static"
     static_dir.mkdir(exist_ok=True)
-    shutil.copy2(
-        REPO_ROOT / "frontend" / "dist" / "rwiki-chat.js",
-        static_dir / "rwiki-chat.js",
+    # 复制整个 dist/（index.html + assets/* + rwiki-chat.js）—— 与 Docker 镜像 /app/static 布局一致
+    shutil.copytree(
+        REPO_ROOT / "frontend" / "dist",
+        static_dir,
+        dirs_exist_ok=True,
     )
 
     fe_env = os.environ.copy()

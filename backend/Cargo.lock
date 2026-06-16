@@ -163,6 +163,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlite-vec",
+ "tempfile",
  "tokio",
  "tokio-rusqlite",
  "tokio-stream",

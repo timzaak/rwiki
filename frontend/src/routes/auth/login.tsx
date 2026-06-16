@@ -37,10 +37,10 @@ function LoginComponent() {
       // 非 204（含 401 无效 Key、5xx）：verifyToken 默认 throwOnError=false，
       // 非 ok 响应时返回 { error, response } 而非抛异常（client.gen.ts:224-234），
       // 故 401/5xx 在此分支处理，不写入 Key，统一提示 "Key 无效"。
-      setError('Key 无效')
+      setError('Invalid API key')
     } catch {
       // 仅网络异常 / abort（fetch reject，client.gen.ts:90-99）才抛到这里，同样提示无效。
-      setError('Key 无效')
+      setError('Invalid API key')
     } finally {
       setLoading(false)
     }
@@ -62,8 +62,8 @@ function LoginComponent() {
           <div className="mx-auto mb-2 flex size-9 items-center justify-center rounded-lg bg-primary">
             <span className="font-serif text-sm font-bold text-primary-foreground">R</span>
           </div>
-          <h1 className="font-serif text-xl font-semibold tracking-tight">登录 Rwiki</h1>
-          <p className="text-xs text-muted-foreground">输入 API Key 以访问文档管理后台</p>
+          <h1 className="font-serif text-xl font-semibold tracking-tight">Sign in to Rwiki</h1>
+          <p className="text-xs text-muted-foreground">Enter your API key to access the document admin console</p>
         </div>
 
         <div className="space-y-1.5">
@@ -95,7 +95,7 @@ function LoginComponent() {
           className="w-full"
           disabled={loading || !key}
         >
-          {loading ? '校验中…' : '登录'}
+          {loading ? 'Verifying…' : 'Sign in'}
         </Button>
       </form>
     </div>
