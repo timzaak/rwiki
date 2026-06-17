@@ -1,156 +1,169 @@
 # Rwiki Backend Configuration
-# 复制此文件为 config.toml 并修改配置值
+# Copy this file to config.toml and adjust the values.
 #
-# 开发环境：复制为 config/config.toml
-# Demo 环境：复制为 config/demo.toml
+# Development: copy to config/config.toml
+# Demo:        copy to config/demo.toml
 #
-# Embedding API Key 可通过环境变量设置（优先级高于配置文件）：
+# Embedding API Key can be set via environment variables (override the file):
 #   OPENAI_API_KEY     — OpenAI Embedding API Key
 
 [server]
-# 监听地址
+# Bind address
 bind_address = "0.0.0.0:8080"
-# 日志级别：trace, debug, info, warn, error
+# Log level: trace, debug, info, warn, error
 log_level = "info"
-# 运行环境：development, demo, test
+# Runtime environment: development, demo, test
 app_env = "development"
-# 是否启用 OpenAPI/Swagger 文档
+# Enable OpenAPI/Swagger documentation
 enable_openapi = true
-# 静态文件目录（含 rwiki-chat.js 等）
-# Docker 部署时设为 "/app/static"
-# 留空或不配置则不托管静态文件
+# Static file directory (contains rwiki-chat.js, etc.)
+# Set to "/app/static" for Docker deployments.
+# Leave empty or unset to skip serving static files.
 # static_dir = "/app/static"
 
 [sqlite]
-# SQLite 数据库文件路径
+# SQLite database file path
 path = "data/rwiki.db"
 
 [llm]
-# LLM API Key（必填）
+# LLM API Key (required)
 api_key = ""
-# LLM API base URL（支持 OpenAI 兼容的 provider）
+# LLM API base URL (supports OpenAI-compatible providers)
 # OpenAI:       https://api.openai.com/v1
 # OpenRouter:   https://openrouter.ai/api/v1
-# GLM (智谱AI):  https://open.bigmodel.cn/api/paas/v4
-# 百炼 (DashScope): https://dashscope.aliyuncs.com/compatible-mode/v1
+# GLM (Zhipu):  https://open.bigmodel.cn/api/paas/v4
+# Bailian (DashScope): https://dashscope.aliyuncs.com/compatible-mode/v1
 base_url = "https://openrouter.ai/api/v1"
-# 模型名称（填入对应 provider 支持的模型）
+# Model name (use a model supported by the provider)
 # OpenAI:       gpt-4o, gpt-4o-mini
 # OpenRouter:   deepseek/deepseek-chat-v3-0324, anthropic/claude-sonnet-4-20250514
 # GLM:          glm-4-plus, glm-4-flash
-# 百炼:         qwen-plus, qwen-turbo
+# Bailian:      qwen-plus, qwen-turbo
 model = "deepseek/deepseek-chat-v3-0324"
 
 [embedding]
 # api_key = "sk-..."
 # base_url = "https://api.openai.com/v1"
 # model = "text-embedding-3-small"
-# dimensions = 1536   # 可选，不设置时使用模型默认维度
+# dimensions = 1536   # Optional; uses the model default when unset
 
 # --- BigModel Embedding-3 ---
 # api_key = "your-bigmodel-api-key"
 # base_url = "https://open.bigmodel.cn/api/paas/v4"
 # model = "embedding-3"
-# dimensions = 2048   # 可选，支持 256/512/1024/2048，不设置时使用模型默认维度
+# dimensions = 2048   # Optional; supports 256/512/1024/2048, uses the model default when unset
 
-# --- 百炼 (DashScope) Embedding ---
+# --- Bailian (DashScope) Embedding ---
 # api_key = "your-dashscope-api-key"
 # base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # model = "text-embedding-v3"
-# dimensions = 1024   # 可选，支持 512/768/1024
+# dimensions = 1024   # Optional; supports 512/768/1024
 
 [api]
 # API Token for document management endpoints
-# Leave empty to use environment variable API_TOKEN
+# Leave empty to use the API_TOKEN environment variable
 token = ""
 
 [chat]
-# 系统提示词（推荐配置；省略整个 [chat] 段时使用内置默认值）
-# 定义知识库助手的角色描述和行为规则。
-# 上下文（RAG 检索结果）由系统自动拼接在提示词之后，无需手动包含。
+# System prompt (recommended; the built-in default is used when the [chat]
+# section is omitted). Defines the role and behavior rules of the knowledge
+# base assistant. RAG context is appended automatically after the prompt;
+# you do not need to include it manually.
 #
-# 示例（多行文本使用三引号）:
+# Example (use triple quotes for multi-line text):
 # system_prompt = """
-# 你是一个技术文档助手，专注于帮助开发者理解项目文档。
-# 规则：
-# 1. 优先使用代码示例说明问题。
-# 2. 引用时标注来源标题和章节。
+# You are a technical documentation assistant focused on helping developers
+# understand project docs.
+# Rules:
+# 1. Prefer code examples when explaining.
+# 2. Cite the source title and section when quoting.
 # """
 system_prompt = "你是一个知识库助手。请根据以下上下文回答用户问题。\n规则：\n1. 如果上下文中没有相关信息，请明确告知用户。\n2. 引用信息时，请使用 [Source N] 格式标注来源编号，N 对应上下文中的 document index。\n3. 如果来源有链接，请在引用中附上链接，让用户可以直接访问原始页面。\n4. 如果多个来源提供相同信息，合并引用，如 [Source 1][Source 2]。\n5. 如果来源之间信息冲突，说明冲突并分别引用相关来源。\n6. 如果来源标注了语言（Locale），请在引用中提及信息的语言。"
 
-# 滑动窗口大小：保留最近 N 条消息用于上下文（默认 6）
+# Sliding window size: keep the most recent N messages for context (default 6)
 # sliding_window_size = 6
 
-# 压缩阈值：消息数超过此值时触发压缩检查（默认 8）
+# Compaction threshold: trigger a compaction check when the message count
+# exceeds this value (default 8)
 # compact_threshold = 8
 
-# Token 预算：估算 token 数超过此值时触发压缩（默认 8000）
+# Token budget: trigger compaction when the estimated token count exceeds this
+# value (default 8000)
 # token_budget = 8000
 
-# 知识库文档的主要语言（如 "Chinese"、"English"）。设置后查询改写会将用户查询翻译为该语言。
+# Primary language of the knowledge base documents (e.g. "Chinese", "English").
+# When set, query rewriting translates the user query into this language.
 # content_language = "Chinese"
 
-# 推荐问题（按语言分组，display 在聊天空状态）。最多展示 10 条。
+# Suggested questions grouped by language (shown in the chat empty state).
+# At most 10 entries are displayed.
 # [chat.suggested_questions]
 # default = ["如何快速上手", "系统支持哪些文件格式"]
 # zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
 # en = ["How to get started", "What file formats are supported"]
 
-# 回答完成后生成后续推荐问题（SSE `suggestions` 事件，最多 3 条）。
-# 开启后每次主回答完成会追加一次非流式 LLM 调用（max_tokens=200，8s 超时）。
-# 失败/超时/解析失败时静默降级为不发推荐事件，主回答 `done` 照常。
-# 默认关闭。启用时注意额外 LLM 调用成本。
+# Generate follow-up suggested questions after an answer (SSE `suggestions`
+# event, up to 3 entries). When enabled, an extra non-streaming LLM call is
+# appended after each main answer (max_tokens=200, 8s timeout). On failure,
+# timeout, or parse error it degrades silently to emitting no suggestions
+# event, and the main answer `done` event is unaffected. Off by default.
+# Note the additional LLM call cost when enabled.
 # enable_post_answer_suggestions = false
 
 [retrieval]
-# 每个查询变体召回的候选数量（默认 5）
+# Number of candidates recalled per query variant (default 5)
 # search_top_k_per_query = 5
 
-# 最终送入 LLM 上下文的最大 chunk 数（默认 12）
+# Maximum number of chunks fed into the LLM context (default 12)
 # max_context_chunks = 12
 
 [otel]
-# OpenTelemetry OTLP tracing 和 metrics 导出配置
-# endpoint 为空时不启用 OTLP tracing 和 metrics（本地开发零开销）
+# OpenTelemetry OTLP tracing and metrics export config.
+# When endpoint is empty, OTLP tracing and metrics are disabled (zero overhead
+# for local development).
 #
-# OTLP gRPC endpoint（阿里云 ARMS 示例）:
+# OTLP gRPC endpoint (Alibaba Cloud ARMS example):
 # endpoint = "https://tracing-analysis-dc-hz.aliyuncs.com:8090"
-# 鉴权 token，推荐通过环境变量 OTEL_LICENSE_KEY 设置
+# Auth token; recommended to set via the OTEL_LICENSE_KEY environment variable
 # license_key = ""
-# 服务名称，默认 "rwiki-backend"
+# Service name, defaults to "rwiki-backend"
 # service_name = "rwiki-backend"
 
-[rerank]
-# Rerank 精排配置（默认关闭）
-# 启用后，在 RRF 融合 + 窗口扩展后对候选结果进行语义精排，提升检索精度
-# Rerank 失败时自动降级到 RRF 融合结果，用户无感知
+# Rerank (re-scoring) config.
+# Enablement is decided by section presence: including a [rerank] section
+# enables rerank; omitting the section entirely disables it (zero overhead).
+# When enabled, candidates are semantically re-scored after RRF fusion +
+# window expansion to improve retrieval precision. Rerank failures (network,
+# timeout, auth, parse) degrade automatically to the RRF fusion results with
+# no user-visible impact.
 #
-# enable = false
+# Uncomment one of the provider blocks below to enable rerank. The [rerank]
+# header line itself must be uncommented as well.
+#
+# --- OpenRouter Rerank (free, recommended) ---
+# [rerank]
 # provider = "open_router"         # "open_router" | "big_model" | "dash_scope"
-#
-# --- OpenRouter Rerank（免费，推荐）---
-# enable = true
-# provider = "open_router"
 # model = "cohere/rerank-v4-fast"
 # top_n = 20
 # timeout_secs = 3
-# api_key = ""                      # 不配置时复用 [llm].api_key
+# api_key = ""                      # Falls back to [llm].api_key when unset
 #
-# --- 智谱 BigModel Rerank（国内低延迟）---
-# enable = true
+# --- Zhipu BigModel Rerank (low latency in China) ---
+# [rerank]
 # provider = "big_model"
 # model = "rerank-pro"
 # top_n = 20
 # timeout_secs = 3
-# api_key = "your-bigmodel-api-key"  # BigModel 必须配置独立 key
+# api_key = "your-bigmodel-api-key"  # BigModel requires its own key
 #
-# --- 阿里云百炼 (DashScope) Rerank ---
-# enable = true
+# --- Alibaba Cloud Bailian (DashScope) Rerank ---
+# [rerank]
 # provider = "dash_scope"
-# model = "qwen3-rerank"             # 推荐模型；gte-rerank v1 已于 2026-05-30 下线
+# model = "qwen3-rerank"             # Recommended
 # top_n = 20
 # timeout_secs = 3
-# api_key = ""                      # 不配置时复用 [llm].api_key
-# base_url 可选；未设置时使用 provider 默认端点（DashScope 为中国大陆），
-# 需要其他区域/网关时显式设置。
+# api_key = ""                      # Falls back to [llm].api_key when unset
+# base_url is optional; uses the provider default endpoint when unset
+# (DashScope defaults to mainland China). Set it explicitly for other
+# regions/gateways.
 # base_url = ""

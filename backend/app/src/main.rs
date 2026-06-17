@@ -344,10 +344,9 @@ async fn main() -> Result<()> {
             rwiki_core::config::ChatConfig::DEFAULT_SYSTEM_PROMPT.to_string();
     }
 
-    // 初始化 Reranker（默认关闭）
-    let reranker = if config.rerank.enable {
-        let api_key = config
-            .rerank
+    // 初始化 Reranker：仅在配置中存在 [rerank] 段时启用，否则关闭
+    let reranker = if let Some(rerank) = config.rerank.as_ref() {
+        let api_key = rerank
             .api_key
             .as_deref()
             .filter(|k| !k.is_empty())
@@ -362,21 +361,20 @@ async fn main() -> Result<()> {
 
         match api_key {
             Some(key) => {
-                let model = config
-                    .rerank
+                let model = rerank
                     .model
                     .as_deref()
-                    .unwrap_or(match &config.rerank.provider {
+                    .unwrap_or(match &rerank.provider {
                         rwiki_core::config::RerankProviderType::BigModel => "rerank-pro",
                         rwiki_core::config::RerankProviderType::DashScope => "qwen3-rerank",
                         _ => "cohere/rerank-v4-fast",
                     })
                     .to_string();
-                let timeout = std::time::Duration::from_secs(config.rerank.timeout_secs);
+                let timeout = std::time::Duration::from_secs(rerank.timeout_secs);
 
                 // provider 匹配 + base_url 默认全部收口在 core 的
                 // `RerankerProvider::from_rerank_config`，main.rs 收敛为一次调用。
-                let provider_tag = match &config.rerank.provider {
+                let provider_tag = match &rerank.provider {
                     rwiki_core::config::RerankProviderType::BigModel => "BigModel",
                     rwiki_core::config::RerankProviderType::DashScope => "DashScope",
                     _ => "OpenRouter",
@@ -384,8 +382,8 @@ async fn main() -> Result<()> {
                 tracing::info!("Rerank enabled: provider={}, model={}", provider_tag, model);
                 Some(
                     rwiki_core::infrastructure::reranker::RerankerProvider::from_rerank_config(
-                        config.rerank.provider.clone(),
-                        config.rerank.base_url.as_deref(),
+                        rerank.provider.clone(),
+                        rerank.base_url.as_deref(),
                         key.to_string(),
                         model,
                         timeout,
@@ -480,7 +478,7 @@ async fn main() -> Result<()> {
         static_dir: config.server.static_dir.clone(),
         retrieval_config: config.retrieval.clone(),
         reranker,
-        rerank_config: config.rerank,
+        rerank_config: config.rerank.clone().unwrap_or_default(),
         metrics: metrics.clone(),
         session_count: session_count.clone(),
     });

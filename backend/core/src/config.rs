@@ -21,8 +21,10 @@ pub struct AppConfig {
     pub otel: OtelConfig,
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// Rerank 精排配置；省略整个 `[rerank]` 段时为 `None`，即关闭 rerank。
+    /// 存在 `[rerank]` 段（即使为空）即视为启用。
     #[serde(default)]
-    pub rerank: RerankConfig,
+    pub rerank: Option<RerankConfig>,
 }
 
 impl AppConfig {
@@ -40,7 +42,11 @@ impl AppConfig {
             config.otel.license_key = key;
         }
         if let Ok(key) = env::var("RERANK_API_KEY") {
-            config.rerank.api_key = Some(key);
+            // RERANK_API_KEY only applies when [rerank] is present; a missing
+            // section means rerank is disabled, so there is nothing to override.
+            if let Some(rerank) = config.rerank.as_mut() {
+                rerank.api_key = Some(key);
+            }
         }
         Ok(config)
     }
@@ -259,11 +265,12 @@ fn default_timeout_secs() -> u64 {
 }
 
 /// Rerank 精排配置
+///
+/// 是否启用 rerank 不再由字段控制，而是由配置中是否存在 `[rerank]` 段决定：
+/// - 缺失 `[rerank]` 段 → 关闭（`AppConfig.rerank` 为 `None`）
+/// - 存在 `[rerank]` 段 → 启用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerankConfig {
-    /// 是否启用 rerank，默认 false
-    #[serde(default)]
-    pub enable: bool,
     /// Rerank provider 类型
     #[serde(default)]
     pub provider: RerankProviderType,
@@ -287,7 +294,6 @@ pub struct RerankConfig {
 impl Default for RerankConfig {
     fn default() -> Self {
         Self {
-            enable: false,
             provider: RerankProviderType::default(),
             model: None,
             top_n: default_top_n(),
@@ -682,11 +688,10 @@ mod tests {
 
     // --- RerankConfig tests (BE-D01) ---
 
-    // Covers: Design 4.5.1 — RerankConfig default has enable=false, backward compatible.
+    // Covers: RerankConfig defaults — provider/top_n/timeout_secs/model/api_key/base_url.
     #[test]
-    fn rerank_config_default_is_disabled() {
+    fn rerank_config_defaults() {
         let config = RerankConfig::default();
-        assert!(!config.enable, "rerank should be disabled by default");
         assert_eq!(config.provider, RerankProviderType::OpenRouter);
         assert_eq!(config.top_n, 20);
         assert_eq!(config.timeout_secs, 3);
@@ -698,7 +703,6 @@ mod tests {
     #[test]
     fn rerank_config_parses_all_fields() {
         let toml_str = r#"
-            enable = true
             provider = "big_model"
             model = "rerank-pro"
             top_n = 10
@@ -707,7 +711,6 @@ mod tests {
         "#;
         let config: RerankConfig =
             toml::from_str(toml_str).expect("rerank config should deserialize");
-        assert!(config.enable);
         assert_eq!(config.provider, RerankProviderType::BigModel);
         assert_eq!(config.model.as_deref(), Some("rerank-pro"));
         assert_eq!(config.top_n, 10);
@@ -719,7 +722,6 @@ mod tests {
     #[test]
     fn rerank_config_parses_dashscope_provider() {
         let toml_str = r#"
-            enable = true
             provider = "dash_scope"
             model = "qwen3-rerank"
             top_n = 20
@@ -728,7 +730,6 @@ mod tests {
         "#;
         let config: RerankConfig =
             toml::from_str(toml_str).expect("rerank config should deserialize");
-        assert!(config.enable);
         assert_eq!(config.provider, RerankProviderType::DashScope);
         assert_eq!(config.model.as_deref(), Some("qwen3-rerank"));
         assert_eq!(config.top_n, 20);
@@ -736,9 +737,11 @@ mod tests {
         assert_eq!(config.api_key.as_deref(), Some("sk-dashscope-key"));
     }
 
-    // Covers: Design 4.5.1 — Missing [rerank] section is backward compatible.
+    // Covers: Enablement is decided by section presence — a missing `[rerank]`
+    // section deserializes to `None` (disabled). This is the load-bearing
+    // semantic: rerank is OFF unless the section exists.
     #[test]
-    fn rerank_config_missing_section_backward_compatible() {
+    fn rerank_disabled_when_section_absent() {
         let toml_str = r#"
             [server]
             bind_address = "0.0.0.0:8080"
@@ -761,8 +764,41 @@ mod tests {
         let config: AppConfig =
             toml::from_str(toml_str).expect("config without [rerank] should deserialize");
         assert!(
-            !config.rerank.enable,
-            "missing [rerank] should default to disabled"
+            config.rerank.is_none(),
+            "missing [rerank] section should mean rerank is disabled"
+        );
+    }
+
+    // Covers: Enablement is decided by section presence — a present `[rerank]`
+    // section (even with only defaults) deserializes to `Some` (enabled).
+    #[test]
+    fn rerank_enabled_when_section_present() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [rerank]
+
+            [api]
+        "#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config with [rerank] should deserialize");
+        assert!(
+            config.rerank.is_some(),
+            "present [rerank] section should mean rerank is enabled"
         );
     }
 
@@ -770,7 +806,6 @@ mod tests {
     #[test]
     fn rerank_config_invalid_provider_fails() {
         let toml_str = r#"
-            enable = true
             provider = "nonexistent"
         "#;
         let result = toml::from_str::<RerankConfig>(toml_str);
@@ -784,12 +819,10 @@ mod tests {
     #[test]
     fn rerank_config_partial_uses_defaults() {
         let toml_str = r#"
-            enable = true
             model = "custom-model"
         "#;
         let config: RerankConfig =
             toml::from_str(toml_str).expect("partial rerank config should deserialize");
-        assert!(config.enable);
         assert_eq!(
             config.provider,
             RerankProviderType::OpenRouter,
@@ -823,7 +856,6 @@ mod tests {
 
         // 显式配置
         let toml_str = r#"
-            enable = true
             provider = "dash_scope"
             base_url = "https://custom.example.com/reranks"
         "#;

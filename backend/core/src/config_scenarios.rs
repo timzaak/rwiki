@@ -161,7 +161,6 @@ base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 model = "text-embedding-v3"
 
 [rerank]
-enable = true
 provider = "dash_scope"
 model = "qwen3-rerank"
 top_n = 20
@@ -204,18 +203,19 @@ fn app_config_parses_bailian_single_provider_stack() {
     );
 
     // Rerank provider dispatch selection happens at the config layer; this is
-    // the field that selects the DashScopeReranker branch in main.rs.
-    assert!(
-        config.rerank.enable,
-        "DashScope rerank must be enabled by the bailian config"
-    );
+    // the field that selects the DashScopeReranker branch in main.rs. The
+    // presence of the [rerank] section itself signals "enabled".
+    let rerank = config
+        .rerank
+        .as_ref()
+        .expect("bailian config has a [rerank] section, so rerank must be enabled");
     assert_eq!(
-        config.rerank.provider,
+        rerank.provider,
         crate::config::RerankProviderType::DashScope,
         "provider must deserialize to DashScope variant (snake_case: dash_scope)"
     );
     assert_eq!(
-        config.rerank.model.as_deref(),
+        rerank.model.as_deref(),
         Some("qwen3-rerank"),
         "default Bailian rerank model is qwen3-rerank"
     );
@@ -224,7 +224,7 @@ fn app_config_parses_bailian_single_provider_stack() {
     // fallback to llm.api_key happens at the main.rs construction layer and is
     // documented in `rerank_api_key_fallback_documented_as_runtime_concern`.
     assert!(
-        config.rerank.api_key.is_none(),
+        rerank.api_key.is_none(),
         "rerank.api_key not set in this fixture; fallback is a runtime concern"
     );
 
@@ -272,7 +272,6 @@ model = "qwen-plus"
 [embedding]
 
 [rerank]
-enable = true
 provider = "dash_scope"
 model = "qwen3-rerank"
 api_key = "sk-rerank-from-file"
@@ -287,8 +286,12 @@ api_key = "sk-rerank-from-file"
 
     // Env var wins over file value, mirroring OPENAI_API_KEY / API_TOKEN /
     // OTEL_LICENSE_KEY override semantics in AppConfig::load.
+    let rerank = config
+        .rerank
+        .as_ref()
+        .expect("[rerank] section present, so rerank is enabled");
     assert_eq!(
-        config.rerank.api_key.as_deref(),
+        rerank.api_key.as_deref(),
         Some("sk-rerank-from-env"),
         "RERANK_API_KEY must override the file [rerank].api_key value"
     );
@@ -329,7 +332,6 @@ model = "qwen-plus"
 [embedding]
 
 [rerank]
-enable = true
 provider = "dash_scope"
 model = "qwen3-rerank"
 
@@ -341,8 +343,12 @@ model = "qwen3-rerank"
 
     // Precondition for main.rs fallback to llm.api_key: rerank.api_key == None
     // after load. The fallback itself is a runtime concern in app/src/main.rs.
+    let rerank = config
+        .rerank
+        .as_ref()
+        .expect("[rerank] section present, so rerank is enabled");
     assert!(
-        config.rerank.api_key.is_none(),
+        rerank.api_key.is_none(),
         "rerank.api_key must be None when neither file nor env value is set, \
          which is the precondition for main.rs's llm.api_key fallback"
     );

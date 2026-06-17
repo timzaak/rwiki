@@ -39,6 +39,9 @@ export default defineConfig({
     tanstackRouter({
       target: 'react',
       autoCodeSplitting: true,
+      // Vitest 把 *.test.* 文件放在 src/routes/ 下时会被当作路由文件，
+      // 这里用正则排除测试文件，避免 "does not export a Route" 警告。
+      routeFileIgnorePattern: '\\.test\\.',
     }),
     react(),
     shouldAnalyze &&

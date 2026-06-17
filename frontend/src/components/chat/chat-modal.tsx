@@ -65,7 +65,7 @@ export function ChatModal({ title, position = 'right', welcomeMessage, suggested
       const newY = dragStart.current.offsetY + dy
 
       const maxX = window.innerWidth - 420
-      const maxY = window.innerHeight - 500
+      const maxY = window.innerHeight - 640
 
       const clampedX = positionRef.current === 'left'
         ? Math.max(0, Math.min(window.innerWidth - 420, newX))
@@ -110,7 +110,7 @@ export function ChatModal({ title, position = 'right', welcomeMessage, suggested
         data-testid="chat-modal"
         className={cn(
           'fixed z-50 flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-background/95 shadow-2xl backdrop-blur-xl',
-          'bottom-24 h-[500px] w-[420px]',
+          'bottom-24 h-[640px] max-h-[calc(100vh-7.5rem)] w-[420px]',
           position === 'left' ? 'left-6' : 'right-6',
           'max-sm:inset-0 max-sm:bottom-0 max-sm:right-0 max-sm:left-0 max-sm:h-full max-sm:w-full max-sm:rounded-none max-sm:border-0 max-sm:backdrop-blur-none',
           '[animation:slide-up_0.3s_ease-out_both]',

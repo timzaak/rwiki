@@ -8,7 +8,12 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), tanstackRouter()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // src/routes/ 下的 *.test.* 文件不是路由，排除掉避免 "does not export a Route" 警告。
+    tanstackRouter({ routeFileIgnorePattern: '\\.test\\.' }),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

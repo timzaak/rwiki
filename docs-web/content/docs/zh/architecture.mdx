@@ -82,11 +82,12 @@ flowchart LR
    - **向量相似度搜索**：sqlite-vec 中的余弦距离搜索。擅长语义匹配，即使措辞不同也能命中
 4. **RRF 融合**：关键词和向量搜索的结果通过 Reciprocal Rank Fusion 合并（`score = Σ 1/(k + rank)`，`k=60`）。按 `chunk_id` 去重后输出一份统一排序列表
 5. **窗口扩展**：对排名靠前的结果，根据相同 `page_id` 和相邻 `sub_index` 获取上下文 chunk，给 LLM 提供完整上下文
-6. **Rerank 精排**（可选）：在 RRF 融合和窗口扩展之后，通过 cross-encoder API 对 top-N 候选结果重新打分排序。默认关闭，在 `[rerank]` 配置段中设置 `enable = true` 启用
+6. **Rerank 精排**（可选）：在 RRF 融合和窗口扩展之后，通过 cross-encoder API 对 top-N 候选结果重新打分排序。默认关闭；在配置中包含 `[rerank]` 段即启用
    - **OpenRouter**：使用 Cohere rerank 模型（如 `cohere/rerank-v4-fast`），免费
    - **智谱 BigModel**：使用 `rerank-pro` 模型，国内低延迟
+   - **阿里云百炼 (DashScope)**：使用 `qwen3-rerank` 模型
    - **优雅降级**：网络错误、超时、鉴权失败、响应解析失败等任何异常发生时，直接使用 RRF 融合的原始结果，用户无感知，仅记录 warn 级别日志
-   - **跳过条件**：`enable = false`（默认）时不初始化 reranker，整个阶段被跳过，零开销
+   - **跳过条件**：未配置 `[rerank]` 段（默认）时不初始化 reranker，整个阶段被跳过，零开销
    - 候选数量由 `top_n` 控制（默认 20），仅将截断后的 top-N 文档内容发送给 rerank API
 7. **上下文组装**：检索结果格式化为结构化 XML，包裹在 `<documents>` 块中。每个结果生成一个 `<document index="N">` 元素，包含 `<title>`、`<section>`、`<link>`、`<locale>`、`<content>` 标签。这给 LLM 提供了清晰的、机器可解析的上下文，支持按编号引用来源
 8. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`。默认系统提示词指示 LLM 使用 `[Source N]` 格式引用来源，其中 N 对应上下文 XML 中的 document index

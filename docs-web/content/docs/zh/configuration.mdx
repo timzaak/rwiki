@@ -244,11 +244,10 @@ service_name = "rwiki-backend"
 
 ## Rerank
 
-`[rerank]` — Rerank 精排配置。所有字段均有默认值，可省略整个 `[rerank]` 段（默认禁用）。
+`[rerank]` — Rerank 精排配置。**rerank 是否启用由是否存在 `[rerank]` 段决定：包含 `[rerank]` 段即启用，省略整个段落则禁用（零开销）。** 其余字段均有默认值。
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `enable` | bool | 否 | `false` | 启用 rerank 精排 |
 | `provider` | string | 否 | `"open_router"` | Rerank 服务提供商：`"open_router"`、`"big_model"` 或 `"dash_scope"` |
 | `model` | string | 否 | Provider 默认值 | 模型名称。OpenRouter 默认 `cohere/rerank-v4-fast`，BigModel 默认 `rerank-pro`，DashScope 默认 `qwen3-rerank` |
 | `base_url` | string | 否 | Provider 默认值 | API Base URL。不配置时各 provider 使用各自默认端点（DashScope 默认中国大陆 `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`）。需要其他地域（如国际 host `dashscope-us.aliyuncs.com`）或自定义网关时，显式设置 `[rerank].base_url`。rerank 不从 `[llm].base_url` 推导地域。 |
@@ -256,12 +255,11 @@ service_name = "rwiki-backend"
 | `timeout_secs` | number | 否 | `3` | API 调用超时（秒） |
 | `api_key` | string | 否 | — | 独立 API Key。不配置时复用 `[llm].api_key`。BigModel 必须配置独立 key。可通过 `RERANK_API_KEY` 环境变量设置 |
 
-启用后，rerank 失败（网络错误、超时、认证失败、响应解析错误）时自动降级到 RRF 融合结果，用户无感知，系统记录 warn 级别日志。
+启用后（即配置中存在 `[rerank]` 段），rerank 失败（网络错误、超时、认证失败、响应解析错误）时自动降级到 RRF 融合结果，用户无感知，系统记录 warn 级别日志。
 
 ```toml
 # OpenRouter Rerank（免费，推荐）
 [rerank]
-enable = true
 provider = "open_router"
 model = "cohere/rerank-v4-fast"
 top_n = 20
@@ -272,7 +270,6 @@ timeout_secs = 3
 ```toml
 # 智谱 BigModel Rerank（国内低延迟）
 [rerank]
-enable = true
 provider = "big_model"
 model = "rerank-pro"
 top_n = 20
@@ -283,9 +280,8 @@ api_key = "your-bigmodel-api-key"
 ```toml
 # 阿里云百炼 (DashScope) Rerank
 [rerank]
-enable = true
 provider = "dash_scope"
-model = "qwen3-rerank"        # 推荐模型；gte-rerank v1 已于 2026-05-30 下线
+model = "qwen3-rerank"        # 推荐模型
 top_n = 20
 timeout_secs = 3
 # api_key 不配置时复用 [llm].api_key

@@ -205,10 +205,7 @@ async fn rerank_api_error_degrades_to_original() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);
@@ -248,10 +245,7 @@ async fn rerank_api_auth_error_degrades_to_original() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);
@@ -298,10 +292,7 @@ async fn rerank_timeout_degrades_to_original() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);
@@ -340,10 +331,7 @@ async fn rerank_invalid_json_degrades_to_original() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);
@@ -394,10 +382,7 @@ async fn multi_query_rerank_applies_to_fused_results() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);
@@ -445,10 +430,7 @@ async fn multi_query_rerank_failure_degrades_to_fused_results() {
         format!("{}/rerank", server.url()),
     ));
 
-    let config = RerankConfig {
-        enable: true,
-        ..Default::default()
-    };
+    let config = RerankConfig::default();
 
     let state = test_app_state_with_reranker(Some(reranker), config).await;
     let app = create_api_routes(state);

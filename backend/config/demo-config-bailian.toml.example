@@ -57,11 +57,10 @@ default = ["How to get started", "What file formats are supported"]
 zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
 en = ["How to get started", "What file formats are supported"]
 
-# --- 阿里云百炼精排配置（可选，默认关闭）---
+# --- 阿里云百炼精排配置（可选；包含 [rerank] 段即启用，删除本段则关闭）---
 [rerank]
-enable = false              # 设为 true 启用精排
 provider = "dash_scope"
-model = "qwen3-rerank"      # 推荐模型；gte-rerank v1 已下线
+model = "qwen3-rerank"      # 推荐模型
 top_n = 20
 timeout_secs = 3
 # api_key = ""              # 不填则复用 [llm].api_key

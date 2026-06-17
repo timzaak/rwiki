@@ -244,11 +244,10 @@ service_name = "rwiki-backend"
 
 ## Rerank
 
-`[rerank]` — Rerank precision re-ranking config. All fields have defaults, the entire section can be omitted (disabled by default).
+`[rerank]` — Rerank precision re-ranking config. **Rerank is enabled by including a `[rerank]` section; omitting the section entirely disables it (zero overhead).** All remaining fields have defaults.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `enable` | bool | No | `false` | Enable rerank re-scoring |
 | `provider` | string | No | `"open_router"` | Rerank provider: `"open_router"`, `"big_model"`, or `"dash_scope"` |
 | `model` | string | No | Provider default | Model name. OpenRouter defaults to `cohere/rerank-v4-fast`, BigModel defaults to `rerank-pro`, DashScope defaults to `qwen3-rerank` |
 | `base_url` | string | No | Provider default | API Base URL. When unset, each provider uses its own default endpoint (DashScope defaults to the China-mainland `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`). Set `[rerank].base_url` explicitly when you need another region (e.g. the international host `dashscope-us.aliyuncs.com`) or a custom gateway. Rerank does not derive its region from `[llm].base_url`. |
@@ -256,12 +255,11 @@ service_name = "rwiki-backend"
 | `timeout_secs` | number | No | `3` | API call timeout in seconds |
 | `api_key` | string | No | — | Dedicated API Key. Falls back to `[llm].api_key` if not set. BigModel requires a separate key. Set via `RERANK_API_KEY` env var. |
 
-When enabled, rerank failures (network errors, timeouts, auth errors, response parse errors) automatically degrade to the RRF fusion results. The user sees no difference — a warn-level log is recorded.
+When the `[rerank]` section is present, rerank failures (network errors, timeouts, auth errors, response parse errors) automatically degrade to the RRF fusion results. The user sees no difference — a warn-level log is recorded.
 
 ```toml
 # OpenRouter Rerank (free, recommended)
 [rerank]
-enable = true
 provider = "open_router"
 model = "cohere/rerank-v4-fast"
 top_n = 20
@@ -272,7 +270,6 @@ timeout_secs = 3
 ```toml
 # Zhipu BigModel Rerank (low latency in China)
 [rerank]
-enable = true
 provider = "big_model"
 model = "rerank-pro"
 top_n = 20
@@ -283,9 +280,8 @@ api_key = "your-bigmodel-api-key"
 ```toml
 # Alibaba Cloud Bailian (DashScope) Rerank
 [rerank]
-enable = true
 provider = "dash_scope"
-model = "qwen3-rerank"        # recommended; gte-rerank v1 retired on 2026-05-30
+model = "qwen3-rerank"        # recommended
 top_n = 20
 timeout_secs = 3
 # api_key falls back to [llm].api_key when not set
