@@ -350,3 +350,140 @@ model = "qwen3-rerank"
     restore_env("RERANK_API_KEY", prev_rerank);
     restore_env("OPENROUTER_API_KEY", prev_or);
 }
+
+// ---------------------------------------------------------------------------
+// Post-answer suggested-questions switch (BE-T02 / US-CORE-037)
+//
+// The toggle `enable_post_answer_suggestions` lives on `ChatConfig`
+// (`backend/core/src/config.rs` lines 129-133: `#[serde(default)] pub
+// enable_post_answer_suggestions: bool`). It is reachable as
+// `config.chat.enable_post_answer_suggestions`. The feature must be OFF by
+// default in every existing deployment (design §1.4, §5.3) -- this is the core
+// safety property: the SSE `suggestions` event must not appear for anyone who
+// has not explicitly opted in. These four scenarios pin that property at the
+// config-deserialization seam.
+// ---------------------------------------------------------------------------
+
+/// Helper: write a minimal valid TOML config with a custom `[chat]` section body.
+///
+/// `chat_body` is inserted verbatim between the `[chat]` header and the end of
+/// the file. The required-fields skeleton (`[server]`, `[sqlite]`, `[llm]` with
+/// `api_key`, `[embedding]`, `[api]`) is mirrored from `write_test_config` so
+/// `AppConfig::load` accepts the file. To write a config with NO `[chat]`
+/// section at all, pass `chat_body = ""` and the `[chat]` header is omitted.
+fn write_chat_config(chat_body: &str) -> NamedTempFile {
+    let chat_section = if chat_body.is_empty() {
+        String::new()
+    } else {
+        format!("\n[chat]\n{chat_body}")
+    };
+    let content = format!(
+        r#"
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+app_env = "test"
+enable_openapi = false
+
+[sqlite]
+path = "data/test.db"
+
+[llm]
+api_key = "sk-chat-toggle-test"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[embedding]
+
+[api]{chat_section}
+"#
+    );
+    let mut file = NamedTempFile::new().expect("should create temp file");
+    std::io::Write::write_all(&mut file, content.as_bytes()).expect("should write config content");
+    file
+}
+
+// User Story: US-CORE-037 -- As a deployer, I expect the post-answer
+// suggestions feature to be OFF when I have not explicitly opted in, so the
+// SSE `suggestions` event never appears unexpectedly.
+// Covers: The `#[serde(default)]` path on `ChatConfig.enable_post_answer_suggestions`
+//         (`config.rs` line 132). A `[chat]` section that omits the field must
+//         deserialize to `bool::default()` = `false`. This test FAILS if anyone
+//         removes `#[serde(default)]` from the field (load would error) or flips
+//         the default to `true` -- the load-bearing safety property of the feature.
+#[test]
+fn post_answer_suggestions_default_false_when_omitted_from_chat_section() {
+    // `[chat]` block has only `system_prompt`; the toggle line is intentionally
+    // absent, mirroring any pre-existing deployment that has not opted in.
+    let file = write_chat_config(r#"system_prompt = "test prompt""#);
+    let config = AppConfig::load(file.path()).expect("config should load from temp file");
+
+    assert!(
+        !config.chat.enable_post_answer_suggestions,
+        "enable_post_answer_suggestions must default to false when omitted from [chat]"
+    );
+}
+
+// User Story: US-CORE-037 -- As a deployer, I can opt into post-answer
+// suggestions by setting `enable_post_answer_suggestions = true` in `[chat]`.
+// Covers: The explicit-enable parse path. Verifies the field name and that the
+//         type is a plain `bool` so a literal `true` round-trips through TOML.
+//         Fails if the field is renamed or the type stops being a plain bool.
+#[test]
+fn post_answer_suggestions_parses_true_when_explicitly_enabled() {
+    let file = write_chat_config(
+        r#"system_prompt = "test prompt"
+enable_post_answer_suggestions = true"#,
+    );
+    let config = AppConfig::load(file.path()).expect("config should load from temp file");
+
+    assert!(
+        config.chat.enable_post_answer_suggestions,
+        "enable_post_answer_suggestions must parse as true when set explicitly in [chat]"
+    );
+}
+
+// User Story: US-CORE-037 -- As a deployer with an existing config file that
+// has no `[chat]` section at all, my deployment must keep loading and the
+// post-answer suggestions feature must stay OFF (backward-compat, design §1.4).
+// Covers: Verified contract -- `AppConfig.chat: ChatConfig` carries
+//         `#[serde(default)]` (`backend/core/src/config.rs` lines 18-19), so a
+//         missing `[chat]` section deserializes to `ChatConfig::default()`, and
+//         BE-D01's `Default` impl sets `enable_post_answer_suggestions: false`
+//         (`config.rs` line 161). This test FAILS loudly if anyone removes
+//         `#[serde(default)]` from `AppConfig.chat` (load would error) or flips
+//         the toggle default to `true`.
+#[test]
+fn post_answer_suggestions_missing_chat_section_is_backward_compatible_and_false() {
+    // No `[chat]` section at all -- pass empty body so `write_chat_config`
+    // omits the `[chat]` header entirely.
+    let file = write_chat_config("");
+    let config_result = AppConfig::load(file.path());
+
+    assert!(
+        config_result.is_ok(),
+        "AppConfig must load even with no [chat] section (#[serde(default)] on AppConfig.chat)"
+    );
+    let config = config_result.expect("load result asserted Ok above");
+    assert!(
+        !config.chat.enable_post_answer_suggestions,
+        "missing [chat] section must default the toggle to false via ChatConfig::default()"
+    );
+}
+
+// User Story: US-CORE-037 -- As a developer, I rely on `ChatConfig::default()`
+// to keep the feature OFF, so any code path that constructs a config without
+// file input (tests, fresh AppState, fallbacks) cannot accidentally enable the
+// SSE `suggestions` event.
+// Covers: The `Default` impl entry BE-D01 added -- `enable_post_answer_suggestions:
+//         false` (`config.rs` line 161). Fails if someone removes that explicit
+//         initializer from `impl Default for ChatConfig`.
+#[test]
+fn post_answer_suggestions_default_impl_is_false() {
+    let cfg = crate::config::ChatConfig::default();
+
+    assert!(
+        !cfg.enable_post_answer_suggestions,
+        "ChatConfig::default() must produce enable_post_answer_suggestions == false"
+    );
+}

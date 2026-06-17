@@ -96,6 +96,12 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
 # en = ["How to get started", "What file formats are supported"]
 
+# 回答完成后生成后续推荐问题（SSE `suggestions` 事件，最多 3 条）。
+# 开启后每次主回答完成会追加一次非流式 LLM 调用（max_tokens=200，8s 超时）。
+# 失败/超时/解析失败时静默降级为不发推荐事件，主回答 `done` 照常。
+# 默认关闭。启用时注意额外 LLM 调用成本。
+# enable_post_answer_suggestions = false
+
 [retrieval]
 # 每个查询变体召回的候选数量（默认 5）
 # search_top_k_per_query = 5

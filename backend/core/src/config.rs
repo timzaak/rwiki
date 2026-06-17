@@ -126,6 +126,11 @@ pub struct ChatConfig {
     /// 最多展示 10 条。
     #[serde(default)]
     pub suggested_questions: Option<HashMap<String, Vec<String>>>,
+    /// 回答完成后是否生成并下发后续推荐问题（SSE `suggestions` 事件）。
+    /// 开启后，每次主回答完成后会追加一次非流式 LLM 调用（带超时与 token 预算）。
+    /// 默认关闭；省略该字段时按关闭处理（向后兼容）。
+    #[serde(default)]
+    pub enable_post_answer_suggestions: bool,
 }
 
 fn default_system_prompt() -> String {
@@ -153,6 +158,7 @@ impl Default for ChatConfig {
             token_budget: default_token_budget(),
             content_language: None,
             suggested_questions: None,
+            enable_post_answer_suggestions: false,
         }
     }
 }

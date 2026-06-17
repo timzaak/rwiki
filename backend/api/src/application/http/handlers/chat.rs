@@ -30,6 +30,12 @@ const REWRITE_TIMEOUT_MS: u64 = 8000;
 const REWRITE_MAX_QUERIES: usize = 2;
 /// RRF fusion parameter k
 const RRF_K: u64 = 60;
+/// Post-answer suggestion LLM call timeout (ms)
+const POST_ANSWER_TIMEOUT_MS: u64 = 8000;
+/// Post-answer suggestion LLM call max output tokens
+const POST_ANSWER_MAX_TOKENS: usize = 200;
+/// Maximum number of post-answer suggested questions to emit
+const POST_ANSWER_MAX_QUESTIONS: usize = 3;
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -86,6 +92,12 @@ struct DoneEvent {}
 #[serde(rename_all = "camelCase")]
 struct ErrorEvent {
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionsEvent {
+    suggestions: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +365,57 @@ pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
     vec![raw.trim().to_string()]
 }
 
+/// Build the prompt for post-answer suggested questions generation.
+/// Constraints the model to strict JSON `{"questions": [...]}`, ≤3, grounded in
+/// the round's user message, answer, and retrieved context.
+pub(crate) fn build_post_answer_prompt(
+    user_message: &str,
+    assistant_text: &str,
+    context_xml: &str,
+) -> String {
+    format!(
+        "用户问题: {user_message}\n\n\
+         回答: {assistant_text}\n\n\
+         检索到的知识库上下文:\n{context_xml}\n\n\
+         基于以上用户问题、回答与知识库上下文，生成最多 {POST_ANSWER_MAX_QUESTIONS} 条用户可能想继续追问的问题。\n\
+         要求：紧扣上述上下文；不要重复用户本轮已问的问题；不要推荐回答已完整覆盖的问题。\n\
+         输出严格的 JSON 格式：{{\"questions\": [\"问题1\", \"问题2\", \"问题3\"]}}\n\
+         最多 {POST_ANSWER_MAX_QUESTIONS} 条，可为更少。只输出 JSON，不要输出其他内容。"
+    )
+}
+
+/// Parse the post-answer suggestion LLM response into ≤3 questions.
+/// Steps: strip ```json fences -> parse `{"questions":[...]}` -> drop empties ->
+/// dedupe (preserve order) -> truncate to `POST_ANSWER_MAX_QUESTIONS`.
+/// KEY DIFFERENCE from `parse_rewrite_response`: on any parse failure or missing
+/// `questions` key, returns an EMPTY Vec (NO raw-string fallback).
+pub(crate) fn parse_suggested_questions_response(raw: &str) -> Vec<String> {
+    let json_str = strip_markdown_fences(raw);
+
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return Vec::new();
+    };
+    let Some(arr) = val.get("questions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for v in arr {
+        if let Some(s) = v.as_str() {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if seen.insert(trimmed) {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    out.truncate(POST_ANSWER_MAX_QUESTIONS);
+    out
+}
+
 fn preview_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -444,6 +507,47 @@ pub(crate) async fn rewrite_query(
         }
     };
     queries
+}
+
+/// Preamble for the post-answer suggestion generator.
+const PA_PREAMBLE: &str =
+    "You are an assistant that generates follow-up questions. Output only strict JSON.";
+
+/// Non-streaming generation of post-answer suggested questions.
+/// Timeout / LLM error / parse failure -> empty Vec (silent degrade).
+/// Reuses `strip_markdown_fences` via `parse_suggested_questions_response`.
+/// No new metrics field; failure logged via `tracing::warn!` only.
+pub(crate) async fn generate_post_answer_suggestions(
+    llm_client: &rig::providers::openai::CompletionsClient,
+    llm_model: &str,
+    user_message: &str,
+    assistant_text: &str,
+    context_xml: &str,
+) -> Vec<String> {
+    let prompt = build_post_answer_prompt(user_message, assistant_text, context_xml);
+
+    let agent = llm_client
+        .agent(llm_model)
+        .preamble(PA_PREAMBLE)
+        .max_tokens(POST_ANSWER_MAX_TOKENS as u64)
+        .build();
+
+    match tokio::time::timeout(
+        Duration::from_millis(POST_ANSWER_TIMEOUT_MS),
+        agent.prompt(&prompt),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => parse_suggested_questions_response(&raw),
+        Ok(Err(e)) => {
+            tracing::warn!("post-answer suggestions failed: {e}");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("post-answer suggestions timed out after {POST_ANSWER_TIMEOUT_MS}ms");
+            Vec::new()
+        }
+    }
 }
 
 /// Execute hybrid search + optional rerank, returning final search results.
@@ -784,6 +888,7 @@ async fn chat_inner(
         let compact_threshold = state.chat_config.compact_threshold;
         let token_budget = state.chat_config.token_budget;
         let llm_model_for_span = state.llm_model.clone();
+        let enable_post_answer_suggestions = state.chat_config.enable_post_answer_suggestions;
 
         // Spawn a task to stream LLM response
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
@@ -851,6 +956,26 @@ async fn chat_inner(
                                 }
                             }
                             Ok(rig::agent::MultiTurnStreamItem::FinalResponse(_)) => {
+                                // Post-answer suggestions (only when switch is on; silent degrade to empty)
+                                if enable_post_answer_suggestions {
+                                    let suggestions = generate_post_answer_suggestions(
+                                        &state.llm_client,
+                                        &state.llm_model,
+                                        &user_message,
+                                        &assistant_text,
+                                        &context_text,
+                                    )
+                                    .await;
+                                    if !suggestions.is_empty() {
+                                        let event = Event::default().event("suggestions").data(
+                                            serde_json::to_string(&SuggestionsEvent {
+                                                suggestions,
+                                            })
+                                            .unwrap_or_default(),
+                                        );
+                                        let _ = tx.send(Ok(event)).await;
+                                    }
+                                }
                                 // Stream complete, send done event
                                 let done_event = DoneEvent {};
                                 let event = Event::default()
@@ -2141,5 +2266,120 @@ mod tests {
         let config = Some(HashMap::new());
         let result = match_locale(&config, Some("en"));
         assert!(result.is_empty(), "empty HashMap should return empty vec");
+    }
+
+    // --- parse_suggested_questions_response tests (US-CORE-037) ---
+
+    // Covers: valid plain JSON is parsed in order.
+    #[test]
+    fn parse_suggested_questions_valid_plain_json() {
+        let raw = r#"{"questions":["A","B","C"]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    }
+
+    // Covers: ```json fence is stripped via strip_markdown_fences reuse.
+    #[test]
+    fn parse_suggested_questions_json_fenced() {
+        let raw = "```json\n{\"questions\":[\"A\"]}\n```";
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string()]);
+    }
+
+    // Covers: bare ``` fence is stripped.
+    #[test]
+    fn parse_suggested_questions_bare_fenced() {
+        let raw = "```\n{\"questions\":[\"A\"]}\n```";
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string()]);
+    }
+
+    // Covers: missing `questions` key -> empty Vec (NOT raw fallback; key diff from rewrite).
+    #[test]
+    fn parse_suggested_questions_missing_key_returns_empty() {
+        let raw = r#"{"foo":"bar"}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert!(
+            out.is_empty(),
+            "missing questions key must return empty Vec"
+        );
+    }
+
+    // Covers: empty array -> empty Vec.
+    #[test]
+    fn parse_suggested_questions_empty_array_returns_empty() {
+        let raw = r#"{"questions":[]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert!(out.is_empty(), "empty array must return empty Vec");
+    }
+
+    // Covers: empty strings dropped.
+    #[test]
+    fn parse_suggested_questions_drops_empty_strings() {
+        let raw = r#"{"questions":["A","","B"]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    // Covers: dedupe preserving first-seen order (contrast with parse_rewrite_response).
+    #[test]
+    fn parse_suggested_questions_dedupes_preserving_order() {
+        let raw = r#"{"questions":["A","B","A"]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    // Covers: truncates to POST_ANSWER_MAX_QUESTIONS (3).
+    #[test]
+    fn parse_suggested_questions_truncates_to_max() {
+        let raw = r#"{"questions":["A","B","C","D","E"]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert_eq!(out, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    }
+
+    // Covers: non-JSON -> empty Vec (NOT raw fallback; key diff from rewrite).
+    #[test]
+    fn parse_suggested_questions_non_json_returns_empty() {
+        let raw = "not json at all";
+        let out = parse_suggested_questions_response(raw);
+        assert!(
+            out.is_empty(),
+            "non-JSON must return empty Vec, not raw fallback"
+        );
+    }
+
+    // Covers: field is `questions`, not `queries` (guards against rewrite copy-paste).
+    #[test]
+    fn parse_suggested_questions_field_is_questions_not_queries() {
+        let raw = r#"{"queries":["A"]}"#;
+        let out = parse_suggested_questions_response(raw);
+        assert!(out.is_empty(), "queries key must not be accepted");
+    }
+
+    // --- build_post_answer_prompt tests (US-CORE-037) ---
+
+    // Covers: prompt grounds in user_message + answer + context (design §6.1).
+    #[test]
+    fn build_post_answer_prompt_includes_context_segments() {
+        let user_message = "如何重置密码?";
+        let assistant_text = "点击设置中的重置按钮。";
+        let context_xml = "<context>KB-DOC-1</context>";
+        let prompt = build_post_answer_prompt(user_message, assistant_text, context_xml);
+        assert!(
+            prompt.contains(user_message),
+            "prompt must embed the user message"
+        );
+        assert!(
+            prompt.contains(assistant_text),
+            "prompt must embed the assistant answer"
+        );
+        assert!(
+            prompt.contains(context_xml),
+            "prompt must embed the retrieved context"
+        );
+        assert!(
+            prompt.contains("questions"),
+            "prompt must require the questions JSON key"
+        );
     }
 }
