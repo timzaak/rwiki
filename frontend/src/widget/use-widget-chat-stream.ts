@@ -3,11 +3,15 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { ChatStreamValue } from '@/components/chat/chat-stream-context'
 import { useChatStore } from '@/stores/chat-store'
 
-function detectEventType(data: unknown): 'session' | 'chunk' | 'error' | 'done' {
+function detectEventType(
+  data: unknown,
+): 'session' | 'chunk' | 'suggestions' | 'error' | 'done' {
   if (typeof data !== 'object' || data === null) return 'done'
   const record = data as Record<string, unknown>
   if ('sessionId' in record && record.sessionId) return 'session'
   if ('content' in record && record.content !== undefined) return 'chunk'
+  if ('suggestions' in record && Array.isArray(record.suggestions))
+    return 'suggestions'
   if ('message' in record && record.message) return 'error'
   return 'done'
 }
@@ -29,6 +33,9 @@ function processSseLines(
           break
         case 'chunk':
           store.appendToLastAssistant(String(parsed.content))
+          break
+        case 'suggestions':
+          store.setLastAssistantSuggestions(parsed.suggestions as string[])
           break
         case 'error':
           store.setError(String(parsed.message ?? 'Failed to generate response'))

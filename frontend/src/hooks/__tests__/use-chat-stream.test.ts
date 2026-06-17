@@ -237,3 +237,108 @@ describe('useChatStream request body validation', () => {
     })
   })
 })
+
+describe('useChatStream post-answer suggestions', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('parses suggestions event and writes to last assistant suggestedQuestions, then done still finishes streaming', async () => {
+    server.use(
+      http.post('/api/chat', () => {
+        return createSseResponse([
+          { event: 'session', data: { sessionId: 'sess-sugg' } },
+          { event: 'chunk', data: { content: 'Final answer' } },
+          {
+            event: 'suggestions',
+            data: { suggestions: ['What is X?', 'How does Y work?'] },
+          },
+          { event: 'done', data: {} },
+        ])
+      }),
+    )
+
+    const { result } = renderHook(() => useChatStream())
+
+    await result.current.sendMessage('test')
+
+    const state = useChatStore.getState()
+    const assistant = getLastAssistantMessage()
+
+    // suggestions event was parsed and written to the last assistant message
+    expect(assistant).toBeDefined()
+    expect(assistant!.suggestedQuestions).toEqual([
+      'What is X?',
+      'How does Y work?',
+    ])
+
+    // done still triggered finishStreaming
+    expect(state.isLoading).toBe(false)
+    expect(assistant!.isStreaming).toBe(false)
+  })
+
+  it('preserves content + suggestions when session -> chunk -> suggestions -> done arrive in order', async () => {
+    server.use(
+      http.post('/api/chat', () => {
+        return createSseResponse([
+          { event: 'session', data: { sessionId: 'sess-order' } },
+          { event: 'chunk', data: { content: 'Hello' } },
+          { event: 'chunk', data: { content: ' world' } },
+          {
+            event: 'suggestions',
+            data: {
+              suggestions: ['Follow-up A', 'Follow-up B', 'Follow-up C'],
+            },
+          },
+          { event: 'done', data: {} },
+        ])
+      }),
+    )
+
+    const { result } = renderHook(() => useChatStream())
+
+    await result.current.sendMessage('test')
+
+    const state = useChatStore.getState()
+    const assistant = getLastAssistantMessage()
+
+    // Regression: suggestions arrives AFTER chunks but BEFORE done —
+    // the last assistant must carry BOTH accumulated content and suggestions,
+    // and done must still close the stream. If detectEventType matched the
+    // suggestions payload as 'done' (it has no sessionId/content/message),
+    // the stream would short-circuit and suggestions would be lost.
+    expect(assistant).toBeDefined()
+    expect(assistant!.content).toBe('Hello world')
+    expect(assistant!.suggestedQuestions).toEqual([
+      'Follow-up A',
+      'Follow-up B',
+      'Follow-up C',
+    ])
+    expect(assistant!.isStreaming).toBe(false)
+    expect(state.isLoading).toBe(false)
+  })
+
+  it('leaves suggestedQuestions undefined when stream has no suggestions event', async () => {
+    server.use(
+      http.post('/api/chat', () => {
+        return createSseResponse([
+          { event: 'session', data: { sessionId: 'sess-no-sugg' } },
+          { event: 'chunk', data: { content: 'Plain answer' } },
+          { event: 'done', data: {} },
+        ])
+      }),
+    )
+
+    const { result } = renderHook(() => useChatStream())
+
+    await result.current.sendMessage('test')
+
+    const assistant = getLastAssistantMessage()
+
+    expect(assistant).toBeDefined()
+    expect(assistant!.content).toBe('Plain answer')
+    // Default value is preserved (undefined) when no suggestions event fires
+    expect(assistant!.suggestedQuestions).toBeUndefined()
+    expect(assistant!.isStreaming).toBe(false)
+  })
+})

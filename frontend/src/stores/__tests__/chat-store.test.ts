@@ -299,6 +299,138 @@ describe('useChatStore persistence', () => {
   })
 })
 
+describe('useChatStore post-answer suggestions', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useChatStore.setState({
+      messages: [],
+      sessionId: null,
+      updatedAt: null,
+      isLoading: false,
+      error: null,
+    })
+  })
+
+  it.each([
+    ['single assistant message', 1],
+    ['multiple assistant messages', 3],
+  ] as const)(
+    'setLastAssistantSuggestions writes suggestedQuestions on the last assistant message (%s)',
+    (_label, assistantCount) => {
+      const assistants = Array.from({ length: assistantCount }, (_, i) =>
+        makeMessage({
+          id: `asst-${i + 1}`,
+          role: 'assistant',
+          content: `answer ${i + 1}`,
+        }),
+      )
+      useChatStore.setState({
+        messages: [
+          makeMessage({ id: 'user-1', role: 'user', content: 'Hi' }),
+          ...assistants,
+        ],
+      })
+
+      useChatStore.getState().setLastAssistantSuggestions(['q1', 'q2'])
+
+      const messages = useChatStore.getState().messages
+      const lastIndex = messages.length - 1
+      expect(messages[lastIndex].suggestedQuestions).toEqual(['q1', 'q2'])
+      // Earlier assistant messages stay untouched.
+      for (let i = 1; i < assistants.length; i++) {
+        expect(messages[lastIndex - i].suggestedQuestions).toBeUndefined()
+      }
+    },
+  )
+
+  it('setLastAssistantSuggestions only writes the last assistant when multiple exist', () => {
+    useChatStore.setState({
+      messages: [
+        makeMessage({ id: 'asst-1', role: 'assistant', content: 'old answer' }),
+        makeMessage({
+          id: 'user-2',
+          role: 'user',
+          content: 'follow up',
+        }),
+        makeMessage({ id: 'asst-2', role: 'assistant', content: 'new answer' }),
+      ],
+    })
+
+    useChatStore.getState().setLastAssistantSuggestions(['follow-up q'])
+
+    const messages = useChatStore.getState().messages
+    expect(messages[2].suggestedQuestions).toEqual(['follow-up q'])
+    expect(messages[0].suggestedQuestions).toBeUndefined()
+  })
+
+  it('setLastAssistantSuggestions is a no-op when no assistant message exists', () => {
+    useChatStore.setState({
+      messages: [makeMessage({ id: 'user-1', role: 'user', content: 'Hi' })],
+    })
+
+    useChatStore.getState().setLastAssistantSuggestions(['q'])
+
+    const state = useChatStore.getState()
+    expect(state.messages[0].suggestedQuestions).toBeUndefined()
+    expect(state.messages).toHaveLength(1)
+  })
+
+  it('finishStreaming does not clobber an already-written suggestedQuestions', () => {
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: 'Response text',
+          isStreaming: true,
+          suggestedQuestions: ['already-set-q'],
+        }),
+      ],
+    })
+
+    useChatStore.getState().finishStreaming()
+
+    const message = useChatStore.getState().messages[0]
+    expect(message.isStreaming).toBe(false)
+    expect(message.suggestedQuestions).toEqual(['already-set-q'])
+  })
+
+  it('persisted assistant message without suggestedQuestions deserializes without error', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-30T00:30:00Z'))
+    try {
+      const updatedAt = Date.now() - 29 * 60 * 1000
+      localStorage.setItem(
+        CHAT_STORAGE_KEY,
+        JSON.stringify({
+          state: {
+            // Old payload shape: no suggestedQuestions field on the assistant.
+            messages: [
+              makeMessage({
+                id: 'asst-legacy',
+                role: 'assistant',
+                content: 'Legacy answer',
+              }),
+            ],
+            sessionId: 'session-legacy',
+            updatedAt,
+          },
+          version: 0,
+        }),
+      )
+
+      await useChatStore.persist.rehydrate()
+
+      const message = useChatStore.getState().messages[0]
+      expect(message.role).toBe('assistant')
+      expect(message.suggestedQuestions).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('useChatModalStore modal state', () => {
   beforeEach(() => {
     useChatModalStore.setState({ isModalOpen: false })

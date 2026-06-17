@@ -16,6 +16,8 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import { AlertCircleIcon, BotIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 
 import { FeedbackButtons } from './feedback-buttons'
+import { SuggestedQuestions } from './suggested-questions'
+import { useChatStreamContext } from './chat-stream-context'
 import { useWidgetI18n } from './widget-i18n'
 import { useFeedback } from '@/hooks/use-feedback'
 import { useChatStore } from '@/stores/chat-store'
@@ -104,6 +106,8 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
     assistantMessage: message.content,
   })
   const t = useWidgetI18n()
+  const { sendMessage } = useChatStreamContext()
+  const suggestedQuestions = message.suggestedQuestions ?? []
 
   return (
     <div
@@ -180,6 +184,13 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
               <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
                 {message.error}
               </span>
+            )}
+
+            {!message.isStreaming && !isFailed && suggestedQuestions.length > 0 && (
+              <SuggestedQuestions
+                questions={suggestedQuestions}
+                onSelect={sendMessage}
+              />
             )}
           </>
         )}

@@ -7,7 +7,7 @@ export function SuggestedQuestions({ questions, onSelect }: SuggestedQuestionsPr
   if (questions.length === 0) return null
 
   return (
-    <div data-testid="suggested-questions" className="flex flex-wrap gap-1.5 px-4 pt-3">
+    <div data-testid="suggested-questions" className="flex flex-wrap gap-1.5 pt-3">
       {questions.map((question, index) => (
         <button
           key={index}

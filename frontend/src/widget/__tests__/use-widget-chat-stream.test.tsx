@@ -202,3 +202,99 @@ describe('useWidgetChatStream', () => {
     expect(state.isLoading).toBe(false)
   })
 })
+
+describe('useWidgetChatStream post-answer suggestions', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    resetStore()
+    fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('parses suggestions event and writes to last assistant suggestedQuestions', async () => {
+    fetchSpy.mockResolvedValue(
+      createSseResponse([
+        sseData({ sessionId: 'sess-sugg' }),
+        sseData({ content: 'Answer' }),
+        sseData({ suggestions: ['q1', 'q2'] }),
+        sseData({}),
+      ]),
+    )
+
+    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+
+    await result.current.sendMessage('Hi')
+
+    const state = useChatStore.getState()
+    const lastMsg = state.messages[state.messages.length - 1]
+    expect(lastMsg.role).toBe('assistant')
+    expect(lastMsg.suggestedQuestions).toEqual(['q1', 'q2'])
+    expect(lastMsg.isStreaming).toBe(false)
+    expect(state.isLoading).toBe(false)
+  })
+
+  // CRITICAL REGRESSION: if `case 'suggestions'` in processSseLines were
+  // `return true` instead of `break`, the post-suggestions chunk would never
+  // reach the store and `done` would never fire finishStreaming. This test
+  // MUST fail in that case — it is the load-bearing assertion.
+  it('does not terminate the stream on suggestions; chunk after suggestions is still accumulated and done still finishes streaming', async () => {
+    fetchSpy.mockResolvedValue(
+      createSseResponse([
+        sseData({ sessionId: 'sess-order' }),
+        sseData({ content: 'before-' }),
+        sseData({ suggestions: ['follow-up-1', 'follow-up-2'] }),
+        sseData({ content: 'after' }),
+        sseData({}),
+      ]),
+    )
+
+    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+
+    await result.current.sendMessage('Hi')
+
+    const state = useChatStore.getState()
+    const lastMsg = state.messages[state.messages.length - 1]
+    expect(lastMsg.role).toBe('assistant')
+    // post-suggestions chunk content MUST be present (would be missing if
+    // suggestions returned true and broke out of the outer while loop)
+    expect(lastMsg.content).toBe('before-after')
+    expect(lastMsg.suggestedQuestions).toEqual(['follow-up-1', 'follow-up-2'])
+    // done MUST have fired finishStreaming (would stay true if suggestions
+    // returned true and skipped done)
+    expect(lastMsg.isStreaming).toBe(false)
+    expect(state.isLoading).toBe(false)
+  })
+
+  it('preserves content + suggestions when session -> chunk -> suggestions -> chunk -> done arrive in order', async () => {
+    fetchSpy.mockResolvedValue(
+      createSseResponse([
+        sseData({ sessionId: 'sess-preserve' }),
+        sseData({ content: 'Hello ' }),
+        sseData({ content: 'world' }),
+        sseData({ suggestions: ['what-next-a', 'what-next-b'] }),
+        sseData({ content: '!' }),
+        sseData({}),
+      ]),
+    )
+
+    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+
+    await result.current.sendMessage('Hi')
+
+    const state = useChatStore.getState()
+    expect(state.sessionId).toBe('sess-preserve')
+
+    const lastMsg = state.messages[state.messages.length - 1]
+    expect(lastMsg.role).toBe('assistant')
+    expect(lastMsg.content).toBe('Hello world!')
+    expect(lastMsg.suggestedQuestions).toEqual(['what-next-a', 'what-next-b'])
+    expect(lastMsg.isStreaming).toBe(false)
+    expect(state.isLoading).toBe(false)
+  })
+})

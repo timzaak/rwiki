@@ -90,10 +90,12 @@ export function ChatPanel({
       <MessageList onRetry={handleRetry} />
 
       {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
-        <SuggestedQuestions
-          questions={suggestedQuestions}
-          onSelect={sendMessage}
-        />
+        <div className="px-4">
+          <SuggestedQuestions
+            questions={suggestedQuestions}
+            onSelect={sendMessage}
+          />
+        </div>
       )}
 
       <ChatInput />

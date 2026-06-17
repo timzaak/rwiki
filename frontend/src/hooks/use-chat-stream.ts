@@ -6,11 +6,13 @@ import { useChatStore } from '@/stores/chat-store'
 
 function detectEventType(
   data: unknown,
-): 'session' | 'chunk' | 'error' | 'done' {
+): 'session' | 'chunk' | 'suggestions' | 'error' | 'done' {
   if (typeof data !== 'object' || data === null) return 'done'
   const record = data as Record<string, unknown>
   if ('sessionId' in record && record.sessionId) return 'session'
   if ('content' in record && record.content !== undefined) return 'chunk'
+  if ('suggestions' in record && Array.isArray(record.suggestions))
+    return 'suggestions'
   if ('message' in record && record.message) return 'error'
   return 'done'
 }
@@ -24,6 +26,7 @@ export function useChatStream() {
     addAssistantMessage,
     appendToLastAssistant,
     finishStreaming,
+    setLastAssistantSuggestions,
     setSessionId,
     setError,
   } = useChatStore()
@@ -74,6 +77,11 @@ export function useChatStream() {
                 String((event as Record<string, unknown>).content),
               )
               break
+            case 'suggestions':
+              setLastAssistantSuggestions(
+                (event as Record<string, unknown>).suggestions as string[],
+              )
+              break
             case 'error':
               setError(
                 String((event as Record<string, unknown>).message),
@@ -118,6 +126,7 @@ export function useChatStream() {
       addAssistantMessage,
       appendToLastAssistant,
       finishStreaming,
+      setLastAssistantSuggestions,
       setSessionId,
       setError,
     ],
