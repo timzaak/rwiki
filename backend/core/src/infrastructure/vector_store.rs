@@ -1572,11 +1572,8 @@ mod tests {
         });
     }
 
-    /// Create a VectorStoreManager backed by in-memory SQLite with all migrations
-    /// and sqlite-vec extension, but without loading any embedding model.
-    /// Uses a dummy OpenAI client — the embedding model is never called in these tests,
-    /// since get_neighbor_chunks is pure SQL.
-    fn make_sql_only_store() -> VectorStoreManager {
+    /// Create an in-memory SQLite connection with WAL, migrations, and sqlite-vec loaded.
+    fn make_sqlite_conn() -> Arc<tokio_rusqlite::Connection> {
         ensure_sqlite_vec_loaded();
 
         let mut conn =
@@ -1587,20 +1584,45 @@ mod tests {
             .to_latest(&mut conn)
             .expect("migrations should run");
 
-        let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+        Arc::new(tokio_rusqlite::Connection::from(conn))
+    }
 
+    /// Build a VectorStoreManager over a fresh in-memory SQLite store using the given
+    /// embedding model and the shared test model name ("test-dummy").
+    fn make_store(embedding_model: AppEmbeddingModel) -> VectorStoreManager {
+        VectorStoreManager::new(
+            make_sqlite_conn(),
+            embedding_model,
+            "test-dummy".to_string(),
+        )
+    }
+
+    /// Create a VectorStoreManager backed by in-memory SQLite with all migrations
+    /// and sqlite-vec extension, but without a reachable embedding model.
+    /// Uses a dummy OpenAI client — the embedding model is never called by the
+    /// SQL-only tests (get_neighbor_chunks / search_by_keyword are pure SQL).
+    fn make_sql_only_store() -> VectorStoreManager {
         // Dummy OpenAI embedding model — never invoked by get_neighbor_chunks tests.
         let client = rig::providers::openai::Client::builder()
             .api_key("test-key-unused")
             .build()
             .expect("dummy OpenAI client should build without network");
-        let dummy_model = client.embedding_model("text-embedding-3-small");
+        make_store(AppEmbeddingModel::new(
+            client.embedding_model("text-embedding-3-small"),
+        ))
+    }
 
-        VectorStoreManager::new(
-            sqlite,
-            AppEmbeddingModel::new(dummy_model),
-            "test-dummy".to_string(),
-        )
+    /// Like `make_sql_only_store`, but point the OpenAI embedding client at `base_url`,
+    /// so tests exercising the re-embedding path can mock `/embeddings` offline (mockito).
+    fn make_store_with_embedding_base_url(base_url: &str) -> VectorStoreManager {
+        let client = rig::providers::openai::Client::builder()
+            .api_key("test-key-unused")
+            .base_url(base_url)
+            .build()
+            .expect("OpenAI client should build");
+        make_store(AppEmbeddingModel::new(
+            client.embedding_model("text-embedding-3-small"),
+        ))
     }
 
     /// Insert a test document row into the documents table.
@@ -2554,9 +2576,31 @@ mod tests {
     }
 
     // Covers: refresh_embed=true 时强制重新向量化，不复用缓存（但仍写入自包含条目）。
+    // 用 mockito 模拟 OpenAI /embeddings 端点，使强制重算路径可离线执行。
+    // 关键点：若 refresh_embed 未生效（误复用缓存），则不会发起 /embeddings 请求，
+    // mock.assert 会失败——把“是否真的重新向量化”纳入断言，而不只是看计数。
     #[tokio::test]
     async fn refresh_embed_forces_reembedding() {
-        let store = make_sql_only_store();
+        let mut server = mockito::Server::new_async().await;
+
+        // 1536 维零向量，与 text-embedding-3-small / vec_chunks(float[1536]) 维度一致。
+        let embedding: Vec<f64> = vec![0.0; 1536];
+        let mock = server
+            .mock("POST", "/embeddings")
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "object": "list",
+                    "data": [{ "object": "embedding", "index": 0, "embedding": embedding }],
+                    "model": "text-embedding-3-small",
+                    "usage": { "prompt_tokens": 1, "total_tokens": 1 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let store = make_store_with_embedding_base_url(&server.url());
 
         seed_existing_chunk(
             &store,
@@ -2587,5 +2631,8 @@ mod tests {
 
         let count = count_chunks_for_doc(&store, &new_doc.to_string()).await;
         assert_eq!(count, 1, "新文档应写入自包含 chunk 条目");
+
+        // 强制重算必须真的命中 embedding 端点；若误走复用路径则此处失败。
+        mock.assert_async().await;
     }
 }
