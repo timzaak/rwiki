@@ -1,4 +1,4 @@
-> 本项目是集成 RAG + Agent 用来做知识库问答 + 语言调用服务 API。
+> 本项目是 RAG 知识库问答服务：上传知识文档，经解析、分块、向量化、持久化后，通过聊天接口检索相关知识片段并由 LLM 生成回答。
 
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.

@@ -43,7 +43,6 @@
 - OpenAPI 规范完整性校验（不验证是否符合 OpenAPI 规范的每一个字段要求）
 - 跨文件 `$ref` 引用解析（仅处理 `#/components/schemas/` 本地引用）
 - 前端上传页面或 UI 调整
-- API 编排能力（已有独立 PRD `integration/api-orchestrator-agent.md`）
 - 批量导入、增量更新、版本管理
 - OpenAPI 规范中的 `security`、`servers`、`externalDocs` 等非端点内容的索引
 
@@ -141,4 +140,3 @@
 - 技术预研：`.ai/tech-research/support-openapi.md`
 - 文档摄入 PRD：`docs/prd/document/document-ingestion.md`
 - 领域模型：`docs/prd/02-domain-model.md`
-- API 编排 PRD：`docs/prd/integration/api-orchestrator-agent.md`（不同用途的 OpenAPI 能力）

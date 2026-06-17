@@ -36,13 +36,12 @@
 | core | 可配置系统提示词 | [core/configurable-system-prompt.md](core/configurable-system-prompt.md) | Implemented | 系统提示词配置和聊天行为基线 |
 | chat | 多轮对话 Hybrid 记忆管理 | [chat/multi-turn-conversation-hybrid-memory.md](chat/multi-turn-conversation-hybrid-memory.md) | Implemented | 多轮记忆策略和用户可见对话行为 |
 | integration | 可嵌入 Chat Widget (JS) | [integration/chat-widget-embeddable-js.md](integration/chat-widget-embeddable-js.md) | Implemented | Widget 集成契约、加载生命周期和限制 |
-| integration | API 调用编排 Agent | [integration/api-orchestrator-agent.md](integration/api-orchestrator-agent.md) | Draft | OpenAPI 规范管理、调用计划生成、审批执行、结果展示 |
 | chat | 查询改写与扩展 | [chat/query-rewrite.md](chat/query-rewrite.md) | Implemented | 首轮改写、多查询扩展、RRF 融合、降级保障 |
 | document | 关键词搜索支持 | [document/keyword-search-support.md](document/keyword-search-support.md) | Implemented | FTS5 全文搜索、jieba-rs 分词、混合检索、RRF 融合、降级保障 |
 | chat | 查询语言感知改写 | [chat/query-language-aware-rewrite.md](chat/query-language-aware-rewrite.md) | Implemented | 知识库内容语言配置、语言感知查询改写、多轮持续语言改写、向后兼容 |
-| chat | 上下文组装与 Prompt 格式优化 | [chat/chat-context-prompt-assembly.md](chat/chat-context-prompt-assembly.md) | Draft | XML 结构化上下文、来源编号、Preamble 英文化、XML 转义、引用指令增强 |
-| document | OpenAPI 专门分词方案 | [document/openapi-specialized-tokenization.md](document/openapi-specialized-tokenization.md) | Draft | OpenAPI 文档 FTS 格式感知分词、路径层级分词、文档类型传播、向后兼容 |
-| chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Draft | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |
+| chat | 上下文组装与 Prompt 格式优化 | [chat/chat-context-prompt-assembly.md](chat/chat-context-prompt-assembly.md) | Implemented | XML 结构化上下文、来源编号、Preamble 英文化、XML 转义、引用指令增强 |
+| document | OpenAPI 专门分词方案 | [document/openapi-specialized-tokenization.md](document/openapi-specialized-tokenization.md) | Implemented | OpenAPI 文档 FTS 格式感知分词、路径层级分词、文档类型传播、向后兼容 |
+| chat | Pre-Question 推荐问题按钮 | [chat/pre-question-suggested-buttons.md](chat/pre-question-suggested-buttons.md) | Implemented | 空状态推荐问题按钮、后端配置 API、Widget 配置支持 |
 | chat | Post-Answer 后续推荐问题 | [chat/post-answer-suggested-questions.md](chat/post-answer-suggested-questions.md) | Implemented | 回答后动态生成后续推荐、单一后端总开关、随回答 SSE 流交付、主站与 Widget 一致 |
 | chat | 聊天回答反馈记录 | [chat/chat-feedback.md](chat/chat-feedback.md) | Implemented | 赞/踩反馈、状态切换、数据持久化、双入口一致、反馈查询 |
 | core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |
