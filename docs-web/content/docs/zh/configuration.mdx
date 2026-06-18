@@ -21,6 +21,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `APP_CONFIG` | 配置文件路径 | 默认 `config/config.toml` |
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | 文档管理接口的 Bearer Token |
+| `API_ALLOWED_IP_RANGES` | `api.allowed_ip_ranges` | 逗号分隔的 CIDR 列表，限制哪些客户端 IP 能访问受保护接口。覆盖配置文件中的值。为空时不限制来源 IP |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP 鉴权 Token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
@@ -129,6 +130,7 @@ dimensions = 1024   # 可选：512 / 768 / 1024
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `token` | string | 是 | `""` | Bearer Token，用于文档上传/删除等管理接口。可通过 `API_TOKEN` 环境变量设置 |
+| `allowed_ip_ranges` | string[] | 否 | `[]` | 受保护接口的 CIDR 允许列表。为空时不限制来源 IP（仅 Token 鉴权）；非空时，客户端 TCP peer IP 必须命中其中一个网段，否则返回 401。可通过 `API_ALLOWED_IP_RANGES` 环境变量设置（逗号分隔） |
 
 **token 必须非空**，否则服务启动时 panic。建议通过环境变量设置：
 
@@ -156,6 +158,7 @@ Authorization: Bearer your-secret-token
 | `token_budget` | number | 否 | `8000` | 估算 token 数超过此阈值时触发压缩 |
 | `content_language` | string | 否 | — | 知识库文档的主要语言（如 `"English"`、`"中文"`）。设置后，查询改写会将用户查询翻译为该语言，以提升跨语言检索命中率。省略时不做语言转换 |
 | `suggested_questions` | map | 否 | — | 推荐问题，按语言标签分组。详见下方[推荐问题](#推荐问题)小节。 |
+| `enable_post_answer_suggestions` | bool | 否 | `false` | 回答完成后生成后续推荐问题，经 SSE `suggestions` 事件下发。开启后每次回答追加一次非流式 LLM 调用（带超时与 token 预算）。默认关闭 |
 
 ### 滑动窗口与压缩机制
 
@@ -286,6 +289,23 @@ top_n = 20
 timeout_secs = 3
 # api_key 不配置时复用 [llm].api_key
 ```
+
+## Low Recall
+
+`[low_recall]` — 低相关召回记录。和 rerank 一样，是否启用由是否存在 `[low_recall]` 段决定：包含 `[low_recall]` 段即启用，省略整个段落则禁用（零开销）。其余字段均有默认值。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `threshold` | number | 否 | `0.3` | 当一次 published 作用域对话查询的 top-1 相关度分数低于此值，或检索无任何结果时，记录该查询。分数取 rerank 的 `relevance_score`（0..1），建议同时启用 `[rerank]` 让阈值有意义 |
+
+启用后，每次 `POST /api/chat` 请求只要 top-1 相关度低于 `threshold`——或完全没有召回结果——就会被写入记录表，写入是 fire-and-forget 的旁路任务：不影响回答内容和延迟，写入失败只记一条 warn 日志。记录保存原始问题、top-1 相关度、召回来源和时间，不含助手回答。记录永久保留（无 TTL）。运营在后台按分数区间和时间筛选查看（见[文档管理后台 → 低相关召回记录](/docs/zh/admin#低相关召回记录)）。只记录 published 作用域查询，scoped 评测查询不记录。
+
+```toml
+[low_recall]
+threshold = 0.3   # 上线后从首批记录校准
+```
+
+默认 `0.3` 是粗糙的起点——rerank 分数分布要等真实流量才知道。复查首批记录后调整阈值，再决定是否值得扩展（聚类、看板、调优 UI 目前都不在本期范围内）。
 
 ## Widget
 

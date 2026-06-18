@@ -311,7 +311,7 @@ def main() -> int:
         env=env,
     )
 
-    if not wait_for_http_ok(f"http://127.0.0.1:{BACKEND_PORT}/health", 60):
+    if not wait_for_http_ok(f"http://127.0.0.1:{BACKEND_PORT}/health", 180):
         print("ERROR: Demo backend failed to start")
         return 1
 

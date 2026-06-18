@@ -6,6 +6,8 @@ icon: LayoutDashboard
 
 The admin console is where you refresh the wiki: upload new content, batch-publish and unpublish, delete documents. It lives at `/admin` on the frontend and requires an API key.
 
+The console has two pages that share the same sign-in: **Document Management** (`/admin`, the rest of this page) and **Low-Recall Records** (`/admin/low-recall`, see [Low-Recall Records](#low-recall-records)).
+
 The console runs in the frontend app (default `http://localhost:3000/admin`), not docs-web. It reuses the backend's existing document management endpoints and auth — there is no separate account system.
 
 ## Sign in
@@ -80,3 +82,13 @@ So upload is now self-contained: every new document gets its own retrieval entri
 ## Dry-run before publishing: eval a document set
 
 While the new batch is still in `draft`, you can scope eval to just those documents to rehearse quality before going live. Pass `documentIds` to `POST /api/eval/query` and retrieval is limited to that set, bypassing the "published only" restriction. See [Eval](/docs/eval).
+
+## Low-Recall Records
+
+`/admin/low-recall` shows queries the knowledge base answered poorly, so you can find blind spots without waiting for users to leave feedback. It uses the same API key sign-in as Document Management.
+
+The list is populated automatically. Every published-scope chat query whose top result relevance falls below the configured threshold — or that returns zero results — is recorded: the original question, the top relevance score, the recall sources, and the time. Recording runs on a side path, so it never affects the answer's content or latency, and it does not store the assistant's reply. Records are kept permanently.
+
+Filter by score range and time range, and page through results. A period with no low-relevance hits shows an empty state. The recording itself is gated by the `[low_recall]` config section: when it's off, the list stops growing but existing records stay viewable. See [Configuration → Low Recall](/docs/configuration#low-recall).
+
+This is the automatic, full-coverage quality signal. It complements thumbs-up/down feedback (sparse, human-driven) and the eval endpoint (offline, batch) — the three cover different blind spots and don't overlap.

@@ -21,6 +21,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `APP_CONFIG` | Config file path | Defaults to `config/config.toml` |
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | Bearer Token for document management endpoints |
+| `API_ALLOWED_IP_RANGES` | `api.allowed_ip_ranges` | Comma-separated CIDR list restricting which client IPs may call protected endpoints. Overrides the config file value. Empty means no IP restriction. |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP auth token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
@@ -129,6 +130,7 @@ dimensions = 1024   # Optional: 512 / 768 / 1024
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `token` | string | Yes | `""` | Bearer Token for document upload/delete management endpoints. Set via `API_TOKEN` env var. |
+| `allowed_ip_ranges` | string[] | No | `[]` | CIDR allow list for protected endpoints. Empty means no IP restriction (token-only auth). Non-empty means the client's TCP peer IP must match one of the ranges, otherwise the request is rejected with 401. Set via `API_ALLOWED_IP_RANGES` env var (comma-separated). |
 
 **Token must not be empty** — the service panics on startup if it is. Prefer setting it via environment variable:
 
@@ -156,6 +158,7 @@ This token is also the admin console login key — the frontend uses it to sign 
 | `token_budget` | number | No | `8000` | Trigger compaction when estimated token count exceeds this |
 | `content_language` | string | No | — | Primary language of knowledge base documents (e.g. `"English"`, `"Chinese"`). When set, the query rewrite prompt instructs the LLM to translate queries into this language for cross-language retrieval. Omit to disable language-aware rewriting. |
 | `suggested_questions` | map | No | — | Pre-chat suggestions grouped by locale key. See [Suggested questions](#suggested-questions) below. |
+| `enable_post_answer_suggestions` | bool | No | `false` | Generate follow-up suggestion questions after the answer and deliver them as an SSE `suggestions` event. Adds one non-streaming LLM call per answer (with its own timeout and token budget). Off by default. |
 
 ### Sliding window & compaction
 
@@ -286,6 +289,23 @@ top_n = 20
 timeout_secs = 3
 # api_key falls back to [llm].api_key when not set
 ```
+
+## Low Recall
+
+`[low_recall]` — Low-recall query logging. Like rerank, the feature is enabled by including a `[low_recall]` section; omitting the section entirely disables it (zero overhead). All remaining fields have defaults.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `threshold` | number | No | `0.3` | A published-scope chat query is recorded when its top-1 relevance score falls below this value, or when retrieval returns nothing. The score is the rerank `relevance_score` (0..1), so enable `[rerank]` alongside this for the threshold to be meaningful. |
+
+When enabled, every `POST /api/chat` request whose top result relevance is below `threshold` — or that returns zero results — is written to a log table in a fire-and-forget background task. Recording is a side path: it never blocks or changes the answer, and a write failure only logs a warning. Records keep the original question, the top relevance score, the recall sources, and the time — not the assistant's answer. Records are kept permanently (no TTL). Operators view and filter them by score range and time in the admin console (see [Admin Console → Low-Recall Records](/docs/admin#low-recall-records)). Only published-scope queries are recorded; scoped eval queries are not.
+
+```toml
+[low_recall]
+threshold = 0.3   # calibrate from your first batch of records
+```
+
+The default `0.3` is a rough starting point — the rerank score distribution isn't known until you have real traffic. Review the first batch, adjust the threshold, and decide whether the signal is worth expanding on (clustering, a dashboard, and a tuning UI are intentionally out of scope for now).
 
 ## Widget
 

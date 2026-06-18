@@ -144,3 +144,7 @@ Users can submit feedback (like/dislike) on each assistant message after streami
 Submitting feedback is an UPSERT: if the user already gave feedback on a message, the record is updated. Sending `feedback: null` cancels the previous feedback (idempotent delete).
 
 The frontend renders thumbs-up/thumbs-down buttons below each assistant message once streaming finishes. Clicking the same button again removes the feedback. The UI uses optimistic updates — the button state changes immediately, rolling back if the API call fails.
+
+### Low-recall logging
+
+Feedback is sparse — most bad answers get no thumbs-down. To cover the rest, the backend records every published-scope chat query whose top result relevance falls below a configurable threshold (or that returns nothing) into a log table. The record keeps the question, the top relevance score, the recall sources, and the time, written on a side path that doesn't touch the answer. Operators read these records in the [admin console](/docs/admin#low-recall-records) to find knowledge-base blind spots. The feature is off by default and enabled by the `[low_recall]` config section. This is the third quality signal alongside feedback (human, sparse) and the eval endpoint (offline, batch) — the three are complementary, not overlapping.

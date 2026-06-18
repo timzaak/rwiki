@@ -46,6 +46,7 @@
 | chat | 聊天回答反馈记录 | [chat/chat-feedback.md](chat/chat-feedback.md) | Implemented | 赞/踩反馈、状态切换、数据持久化、双入口一致、反馈查询 |
 | core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |
 | core | 知识库文档管理后台（勾选式批量上下线） | [core/batch-refresh.md](core/batch-refresh.md) | Implemented | 文档管理后台、批量上下线、写入去重自包含、API Key 登录、eval 指定文档集合评测 |
+| chat | 低相关召回记录 | [chat/low-recall-logging.md](chat/low-recall-logging.md) | Implemented | 自动旁路记录低相关召回查询、运营页列表与筛选、阈值与功能开关可配置、记录与实时回答解耦 |
 
 ## 内部工程工具（无 PRD）
 
