@@ -9,15 +9,15 @@
 
 ## 1. 相关用户故事
 
-> 详细故事与验收标准请查看 `docs/user-stories/01-user-user-stories.md`。
+> 详细故事与验收标准请查看 `docs/user-stories/03-admin-user-stories.md`。
 
 ### 1.1 相关故事
 
 | ID | 标题 | 优先级 | 角色 | 影响说明 |
 |----|------|--------|------|----------|
-| US-CORE-034 | 管理后台批量上下线文档 | P0 | User | 核心：勾选式批量上线/下线 + 切换原子性 + 未改动内容不丢失 |
-| US-CORE-035 | 用 API Key 登录文档管理后台 | P1 | User | 管理后台的操作前提，复用现有 API Token 鉴权 |
-| US-CORE-036 | 对指定文档集合运行评测 | P1 | User | eval 可指定文档集合，支持上线前预演评测草稿批次 |
+| US-CORE-034 | 管理后台批量上下线文档 | P0 | Admin | 核心：勾选式批量上线/下线 + 切换原子性 + 未改动内容不丢失 |
+| US-CORE-035 | 用 API Key 登录文档管理后台 | P1 | Admin | 管理后台的操作前提，复用现有 API Token 鉴权 |
+| US-CORE-036 | 对指定文档集合运行评测 | P1 | Admin | eval 可指定文档集合，支持上线前预演评测草稿批次 |
 
 ### 1.2 关联现有故事
 
@@ -172,7 +172,7 @@
 
 ## 9. 参考资料
 
-- 用户故事：`docs/user-stories/01-user-user-stories.md`（US-CORE-034 / 035 / 036；关联 US-CORE-009 / 001 / 004 / 014）
+- 用户故事：`docs/user-stories/03-admin-user-stories.md`（US-CORE-034 / 035 / 036）；关联 `docs/user-stories/01-user-user-stories.md`（US-CORE-009 / 001 / 004 / 014）
 - 文档生命周期 PRD：`docs/prd/document/document-lifecycle.md`
 - 文档摄入 PRD：`docs/prd/document/document-ingestion.md`
 - API Token 鉴权 PRD：`docs/prd/infrastructure/api-token-auth.md`

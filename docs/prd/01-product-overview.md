@@ -17,6 +17,7 @@
 |------|------|--------------|
 | User | 直接使用知识库上传、管理和问答能力的用户 | [User 用户故事](/docs/user-stories/01-user-user-stories.md) |
 | Website Integrator | 将聊天 Widget 嵌入外部网站的集成方 | [Website Integrator 用户故事](/docs/user-stories/02-website-integrator-user-stories.md) |
+| Admin | 通过 API Token 鉴权管理知识库文档的运营管理员 | [Admin 用户故事](/docs/user-stories/03-admin-user-stories.md) |
 
 ## 3. 核心能力地图
 
