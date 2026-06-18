@@ -1,5 +1,6 @@
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 import { LoaderCircleIcon } from 'lucide-react'
+import { formatDate } from '@/lib/format'
 
 export type DocumentStatusFilter =
   | 'all'
@@ -28,12 +29,6 @@ const STATUS_FILTER_OPTIONS: ReadonlyArray<{
   { value: 'processing', label: 'Processing' },
   { value: 'failed', label: 'Failed' },
 ]
-
-function formatDate(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString()
-}
 
 export function DocumentTable({
   documents,

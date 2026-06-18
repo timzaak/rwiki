@@ -3,22 +3,55 @@ import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { isRedirect } from '@tanstack/router-core'
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  createMemoryHistory,
+  RouterProvider,
+  Outlet,
+} from '@tanstack/react-router'
 import type { ComponentType } from 'react'
 
 import { server } from '@/test/mocks/server'
 import { client } from '@/lib/api-generated/client.gen'
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
+import { AdminLayout } from '@/components/admin/admin-layout'
 
 /**
- * FE-T05 — admin page assembly + route guard tests
+ * FE-T03 — admin multi-page route guard migration regression.
  *
- * Covers FE-D06's `/admin/` route (`src/routes/admin/index.tsx`):
- *  - `beforeLoad` guard: `!isAuthenticated()` → `throw redirect({ to: '/auth/login' })`.
+ * After FE-D01 the guard moved from `routes/admin/index.tsx` to the layout
+ * route `routes/admin/route.tsx` (`createFileRoute('/admin')`), whose
+ * `component: AdminLayout` renders the page header + nav (`admin-nav` with
+ * `<Link to="/admin">` + `<Link to="/admin/low-recall">`) + `<Outlet/>`.
+ * `routes/admin/index.tsx` (`createFileRoute('/admin/')`) keeps the Document
+ * Management body but NO LONGER owns the guard (it inherits from the parent).
+ *
+ * Because the guard and the page body now live in TWO DIFFERENT files, the old
+ * single-import pattern (`const { Route } = await import('@/routes/admin')`
+ * then reading BOTH `beforeLoad` AND `component`) is stale: depending on
+ * module resolution `@/routes/admin` may resolve to either `route.tsx` or
+ * `index.tsx`, mixing the guard with the wrong component. To stay unambiguous
+ * under `moduleResolution: Bundler`, we split the imports explicitly:
+ *   - `beforeLoad` from `@/routes/admin/route` (the layout route).
+ *   - Document Management `component` from `@/routes/admin/index`.
+ *   - `AdminLayout` (for the nav-visibility case) imported directly from
+ *     `@/components/admin/admin-layout` to preserve its concrete component type
+ *     for `createRoute({ component })` (the cast-to-`unknown` Route option drops
+ *     the `RouteComponent` shape that `createRoute` expects).
+ *
+ * Coverage:
+ *  - `beforeLoad` guard: `!isAuthenticated()` → `throw redirect({ to: '/auth/login' })`;
+ *    authenticated → no throw.
+ *  - layout navigation visibility: `AdminLayout` renders `admin-nav` with links
+ *    to `/admin` and `/admin/low-recall`.
  *  - list load wiring: MSW returns documents → admin renders `document-row`s via
  *    the assembled `DocumentTable` (assembly smoke, not FE-T03's internal coverage).
  *  - `UploadDocument.onUploaded` → admin's `refreshList` (second listDocuments call).
  *  - `BatchActions.onCompleted` → clears `selectedIds` + `refreshList` (select-all
  *    checkbox goes from checked → unchecked, plus a second listDocuments call).
+ *  - status filter change → clears `selectedIds` (data-loss guard).
  *  - list-level failure → admin owns `document-list-error` testid (NOT the table's
  *    `error-message`).
  *
@@ -27,9 +60,13 @@ import type { DocumentListItem } from '@/lib/api-generated/types.gen'
  * `empty-state` testid (so the status filter stays reachable when the filtered set
  * is empty). Empty-list assertions target `empty-state`, not `document-list-empty`.
  *
- * The admin component itself uses no TanStack Router hooks (only `useDocumentList`
- * + `useState`), so no router mock is required to render the component; only
- * `Route.options.beforeLoad` is exercised for the guard, mirroring login.test.tsx.
+ * The Document Management component uses no TanStack Router hooks (only
+ * `useDocumentList` + `useState`), so the page-body cases need no router context;
+ * only the `beforeLoad` reference is exercised for the guard (mirroring
+ * login.test.tsx). The nav-visibility case renders `AdminLayout`, which uses
+ * `<Link>`/`<Outlet/>` and therefore requires a router context — provided by a
+ * minimal in-memory router built inline (the repo has no shared router test
+ * helper; only `render-chat.tsx`'s `renderWithUser` exists).
  */
 
 const BASE_URL = 'http://localhost:3000'
@@ -53,15 +90,18 @@ function makeDoc(
 }
 
 // --- route access via dynamic import (matches login.test.tsx) --------------
-// `Route.options.component` is typed as `unknown`; cast to ComponentType once.
+// Split sources after FE-D01: guard lives in `route.tsx`, the Document
+// Management body in `index.tsx`. Explicit paths avoid the ambiguous
+// `@/routes/admin` directory import (Bundler resolution may pick either file).
 type BeforeLoadFn = (ctx: unknown) => unknown
 let AdminComponent: ComponentType
 let beforeLoad: BeforeLoadFn | undefined
 
-const { Route } = await import('@/routes/admin')
+const { Route: AdminLayoutRoute } = await import('@/routes/admin/route')
+const { Route: AdminIndexRoute } = await import('@/routes/admin/index')
 
-AdminComponent = Route.options.component as ComponentType
-beforeLoad = Route.options.beforeLoad as BeforeLoadFn | undefined
+AdminComponent = AdminIndexRoute.options.component as ComponentType
+beforeLoad = AdminLayoutRoute.options.beforeLoad as BeforeLoadFn | undefined
 
 // --- shared MSW counters ---------------------------------------------------
 let listCallCount: number
@@ -110,6 +150,72 @@ describe('admin route — beforeLoad guard', () => {
     localStorage.setItem(KEY_STORAGE, 'any-stored-key')
 
     expect(() => beforeLoad!(undefined)).not.toThrow()
+  })
+})
+
+describe('admin layout — navigation visibility', () => {
+  // AdminLayout renders `<Link>`/`<Outlet/>` from @tanstack/react-router, both of
+  // which need router context. The repo has no shared router test helper, so we
+  // build a minimal in-memory router inline: AdminLayout sits on a `/admin`
+  // parent route with stub child routes for `/admin/` and `/admin/low-recall` so
+  // the `<Link to=...>` targets resolve (Link throws if no route matches `to`).
+  function renderAdminLayoutInRouter() {
+    // AdminLayout itself is the `/admin` route component, with stub child
+    // routes for `/admin/` and `/admin/low-recall` so the `<Link to=...>`
+    // targets resolve (Link throws if no route matches `to`).
+    const rootRoute = createRootRoute({
+      // Root must render an <Outlet/> for child routes to mount; rendering null
+      // would swallow the matched `/admin` subtree.
+      component: () => <Outlet />,
+    })
+    const adminRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/admin',
+      component: AdminLayout,
+    })
+    const adminIndexRoute = createRoute({
+      getParentRoute: () => adminRoute,
+      path: '/',
+      component: () => <div data-testid="outlet-stub-index" />,
+    })
+    const adminLowRecallRoute = createRoute({
+      getParentRoute: () => adminRoute,
+      path: '/low-recall',
+      component: () => <div data-testid="outlet-stub-low-recall" />,
+    })
+
+    const routeTree = rootRoute.addChildren([
+      adminRoute.addChildren([adminIndexRoute, adminLowRecallRoute]),
+    ])
+
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/admin'] }),
+    })
+
+    return render(<RouterProvider router={router} />)
+  }
+
+  it('renders admin-nav with links to /admin and /admin/low-recall', async () => {
+    renderAdminLayoutInRouter()
+
+    // RouterProvider commits the matched route asynchronously, so wait for the
+    // layout (and its nav) to mount before asserting.
+    const nav = await screen.findByTestId('admin-nav')
+    expect(nav).toBeInTheDocument()
+
+    // Both nav entries are reachable by their visible labels.
+    const docManagementLink = await screen.findByRole('link', {
+      name: /Document Management/i,
+    })
+    const lowRecallLink = await screen.findByRole('link', {
+      name: /Low-Recall Records/i,
+    })
+
+    // The hrefs point at the two admin destinations.
+    // jsdom resolves TanStack <Link> hrefs to absolute URLs at the current origin.
+    expect(docManagementLink.getAttribute('href')).toContain('/admin')
+    expect(lowRecallLink.getAttribute('href')).toContain('/admin/low-recall')
   })
 })
 

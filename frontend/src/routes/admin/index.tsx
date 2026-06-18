@@ -1,6 +1,5 @@
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
-import { isAuthenticated } from '@/lib/auth'
 import { useDocumentList } from '@/hooks/use-document-list'
 import {
   DocumentTable,
@@ -10,13 +9,8 @@ import { UploadDocument } from '@/components/admin/upload-document'
 import { BatchActions } from '@/components/admin/batch-actions'
 
 export const Route = createFileRoute('/admin/')({
-  beforeLoad: () => {
-    // 守卫：无 Key 抛 redirect（typed `to`，/auth/login 已存在）。
-    // 401 由 FE-D01 全局拦截器处理，这里不做 useEffect 兜底鉴权。
-    if (!isAuthenticated()) {
-      throw redirect({ to: '/auth/login' })
-    }
-  },
+  // 守卫集中在父 route `routes/admin/route.tsx` 的 `beforeLoad`，
+  // 本子 route 继承，不重复、不靠组件内 useEffect 兜底。
   component: AdminComponent,
 })
 
