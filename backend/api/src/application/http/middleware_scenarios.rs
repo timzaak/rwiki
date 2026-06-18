@@ -10,8 +10,11 @@ use std::sync::Arc;
 use std::sync::Once;
 
 use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{header, Method, Request, StatusCode};
+use ipnet::IpNet;
 use rig::client::EmbeddingsClient;
+use std::net::SocketAddr;
 use tower::ServiceExt;
 
 use crate::application::http::create_api_routes;
@@ -49,6 +52,10 @@ fn ensure_sqlite_vec_loaded() {
 /// type constraints. For the "valid token" tests the handlers do run, so we
 /// provide a real in-memory SQLite with migrations applied.
 async fn test_app_state() -> Arc<AppState> {
+    test_app_state_with_ip_ranges(Vec::new()).await
+}
+
+async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc<AppState> {
     ensure_sqlite_vec_loaded();
 
     let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
@@ -91,14 +98,20 @@ async fn test_app_state() -> Arc<AppState> {
         llm_client,
         llm_model: "test-model".to_string(),
         api_token: TEST_API_TOKEN.to_string(),
+        api_allowed_ip_ranges,
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config: None,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
+}
+
+fn parse_ip_range(range: &str) -> IpNet {
+    range.parse().expect("test CIDR should parse")
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +187,86 @@ async fn document_list_with_valid_token_returns_200() {
         resp.status(),
         StatusCode::OK,
         "GET /api/documents with correct token must return 200"
+    );
+}
+
+// User Story: As an API operator, I want a configured IP allow list to be an
+// additional condition after token auth, so stolen or brute-forced tokens cannot
+// be used from arbitrary networks.
+// Covers: IP allow list accepts matching direct TCP peer.
+#[tokio::test]
+async fn document_list_with_valid_token_and_allowed_peer_ip_returns_200() {
+    let state = test_app_state_with_ip_ranges(vec![parse_ip_range("203.0.113.0/24")]).await;
+    let app = create_api_routes(state).layer(MockConnectInfo(SocketAddr::from((
+        [203, 0, 113, 10],
+        49152,
+    ))));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/documents")
+        .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
+        .body(Body::empty())
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "matching direct peer IP plus valid token must pass"
+    );
+}
+
+// User Story: As an API operator, I want token-authenticated requests from
+// outside the allow list rejected, so token guessing alone is not enough.
+// Covers: IP allow list rejects non-matching direct TCP peer.
+#[tokio::test]
+async fn document_list_with_valid_token_but_disallowed_peer_ip_returns_401() {
+    let state = test_app_state_with_ip_ranges(vec![parse_ip_range("203.0.113.0/24")]).await;
+    let app = create_api_routes(state).layer(MockConnectInfo(SocketAddr::from((
+        [198, 51, 100, 10],
+        49152,
+    ))));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/documents")
+        .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
+        .body(Body::empty())
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "valid token from a disallowed peer IP must return the same 401 as auth failure"
+    );
+}
+
+// User Story: As an API operator, I do not want arbitrary clients to spoof
+// proxy headers into the allow list.
+// Covers: X-Forwarded-For is ignored and TCP peer is checked.
+#[tokio::test]
+async fn document_list_with_spoofed_forwarded_ip_returns_401() {
+    let state = test_app_state_with_ip_ranges(vec![parse_ip_range("203.0.113.0/24")]).await;
+    let app = create_api_routes(state).layer(MockConnectInfo(SocketAddr::from((
+        [198, 51, 100, 10],
+        49152,
+    ))));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/documents")
+        .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
+        .header("x-forwarded-for", "203.0.113.10")
+        .body(Body::empty())
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "forwarded IP headers must not bypass the TCP peer allow list"
     );
 }
 

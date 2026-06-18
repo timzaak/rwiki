@@ -21,6 +21,7 @@ rusqlite = { workspace = true }
 tokio-rusqlite = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+ipnet = { workspace = true }
 
 # Configuration
 clap = { workspace = true }

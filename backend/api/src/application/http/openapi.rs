@@ -11,6 +11,9 @@ use crate::application::http::handlers::document::{
 use crate::application::http::handlers::feedback::{
     FeedbackItem, FeedbackListResponse, FeedbackQueryParams, FeedbackRequest,
 };
+use crate::application::http::handlers::low_recall::{
+    LowRecallListResponse, LowRecallQueryParams, LowRecallRecord, LowRecallSource,
+};
 
 /// OpenAPI 文档定义
 ///
@@ -44,6 +47,7 @@ use crate::application::http::handlers::feedback::{
         crate::application::http::handlers::feedback::submit_feedback,
         crate::application::http::handlers::feedback::list_feedback,
         crate::application::http::handlers::eval::eval_query,
+        crate::application::http::handlers::low_recall::list_low_recall_records,
     ),
     components(
         schemas(
@@ -63,13 +67,18 @@ use crate::application::http::handlers::feedback::{
             FeedbackItem,
             FeedbackListResponse,
             FeedbackQueryParams,
+            LowRecallRecord,
+            LowRecallSource,
+            LowRecallListResponse,
+            LowRecallQueryParams,
         )
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "documents", description = "Document upload, listing, deletion, and publishing"),
-        (name = "chat", description = "Knowledge base chat with SSE streaming")
+        (name = "chat", description = "Knowledge base chat with SSE streaming"),
+        (name = "low-recall", description = "Low-recall query records for KB blind-spot discovery")
     ),
     modifiers(&SecurityAddon)
 )]

@@ -4,11 +4,15 @@ use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
 use axum::{
     body::Body,
-    extract::State,
+    extract::{
+        connect_info::{ConnectInfo, MockConnectInfo},
+        State,
+    },
     http::{header, Request},
     middleware::Next,
     response::Response,
 };
+use std::net::SocketAddr;
 
 /// Bearer Token authentication middleware.
 ///
@@ -20,6 +24,27 @@ pub async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if !state.api_allowed_ip_ranges.is_empty() {
+        let peer_ip = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip())
+            .or_else(|| {
+                req.extensions()
+                    .get::<MockConnectInfo<SocketAddr>>()
+                    .map(|MockConnectInfo(addr)| addr.ip())
+            })
+            .ok_or_else(|| ApiError::unauthorized("Unauthorized"))?;
+
+        if !state
+            .api_allowed_ip_ranges
+            .iter()
+            .any(|range| range.contains(&peer_ip))
+        {
+            return Err(ApiError::unauthorized("Unauthorized"));
+        }
+    }
+
     let auth_header = req
         .headers()
         .get(header::AUTHORIZATION)

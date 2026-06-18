@@ -18,6 +18,7 @@ use tracing::Instrument;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use super::low_recall::LowRecallSource;
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
 use rwiki_core::domain::chat::{evict_expired_sessions, ChatMessage};
@@ -839,6 +840,63 @@ async fn chat_inner(
                 r.title,
                 r.score,
             );
+        }
+
+        // 旁路：低相关召回记录（不阻塞回答；仅 Published 作用域；仅功能启用时）
+        // 写入为 detached tokio::spawn，chat 不 join/不 await，与 SSE 流式回答并发；
+        // 返回 Err 仅 warn、不传播；任务 panic 由 tokio 隔离——均不影响 chat 回答。
+        if matches!(
+            scope,
+            rwiki_core::infrastructure::vector_store::RetrievalScope::Published
+        ) {
+            if let Some(lr_cfg) = state.low_recall_config.as_ref() {
+                let top_score = search_results.first().map(|r| r.score); // None = 完全未命中
+                let should_log = top_score.is_none_or(|s| s < lr_cfg.threshold); // 无结果必记
+                if should_log {
+                    let query = message.clone();
+                    let session_id = session_id.clone();
+                    let result_count = search_results.len() as i64;
+                    // top-K 来源摘要（取前 5）
+                    let sources: Vec<LowRecallSource> = search_results
+                        .iter()
+                        .take(5)
+                        .map(|r| LowRecallSource {
+                            document_id: r.document_id.clone(),
+                            chunk_id: r.chunk_id.clone(),
+                            title: r.title.clone(),
+                            score: r.score,
+                        })
+                        .collect();
+                    let sqlite = state.sqlite.clone();
+                    tokio::spawn(async move {
+                        let sources_json =
+                            serde_json::to_string(&sources).unwrap_or_else(|_| "[]".to_string());
+                        let res = sqlite
+                            .call(move |conn| {
+                                conn.execute(
+                                    "INSERT INTO low_recall_records \
+                                     (session_id, query, top_score, result_count, sources) \
+                                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                                    rusqlite::params![
+                                        session_id,
+                                        query,
+                                        top_score,
+                                        result_count,
+                                        sources_json,
+                                    ],
+                                )?;
+                                Ok::<(), rusqlite::Error>(())
+                            })
+                            .await;
+                        if let Err(e) = res {
+                            tracing::warn!(
+                                error = %e,
+                                "low-recall record write failed (bypass, chat unaffected)"
+                            );
+                        }
+                    });
+                }
+            }
         }
 
         let context_text = format_context_xml(&search_results);

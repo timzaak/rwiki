@@ -56,6 +56,10 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             "/api/documents/batch-status",
             post(handlers::document::batch_update_status),
         )
+        .route(
+            "/api/low-recall/records",
+            get(handlers::low_recall::list_low_recall_records),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::application::http::middleware::auth_middleware,

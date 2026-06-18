@@ -1,5 +1,7 @@
+use ipnet::IpNet;
 use rig::providers::openai;
 use rwiki_core::config::ChatConfig;
+use rwiki_core::config::LowRecallConfig;
 use rwiki_core::config::RerankConfig;
 use rwiki_core::config::RetrievalConfig;
 use rwiki_core::domain::chat::ChatSession;
@@ -31,6 +33,8 @@ pub struct AppState {
     pub llm_model: String,
     /// API Token for Bearer Token authentication
     pub api_token: String,
+    /// API client IP allow list. Empty means no IP restriction.
+    pub api_allowed_ip_ranges: Vec<IpNet>,
     /// 聊天配置（系统提示词、滑动窗口、压缩阈值等）
     pub chat_config: ChatConfig,
     /// 静态文件目录路径（含 widget JS 等），为 None 时不托管
@@ -41,6 +45,8 @@ pub struct AppState {
     pub reranker: Option<RerankerProvider>,
     /// Rerank 配置
     pub rerank_config: RerankConfig,
+    /// 低相关召回记录配置（None 表示功能关闭）
+    pub low_recall_config: Option<LowRecallConfig>,
     /// RAG OTel Metrics 仪器集合
     pub metrics: Arc<RwikiMetrics>,
     /// 活跃会话计数器（AtomicUsize，供 ObservableGauge 同步回调读取）

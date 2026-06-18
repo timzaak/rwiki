@@ -94,11 +94,13 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
         llm_client,
         llm_model: "test-model".to_string(),
         api_token: TEST_API_TOKEN.to_string(),
+        api_allowed_ip_ranges: Vec::new(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: Some(static_dir),
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config: None,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })

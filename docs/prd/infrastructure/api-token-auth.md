@@ -31,6 +31,7 @@
 ### 2.1 包含功能
 
 - **Bearer Token 认证**：调用方在请求头中携带 API Token 进行身份验证
+- **IP range allow list**：可选配置允许访问受保护接口的来源 IP 网段，降低 Token 被爆破或泄露后的可用性
 - **配置管理**：API Token 通过配置文件或环境变量设置
 - **强制配置**：未配置 API Token 时服务拒绝启动
 - **鉴权范围**：受保护路由组（`doc_router`）覆盖文档管理操作（上传、列表、删除、发布、取消发布）、反馈查询（`GET /api/chat/feedback`）和评估端点（`POST /api/eval/query`，内部评估工具）；`/health`、`POST /api/chat`、`GET /api/chat/suggestions` 和反馈提交（`POST /api/chat/feedback`）保持公开
@@ -75,6 +76,7 @@
 - **公开路由**：聊天接口和健康检查接口保持公开，无需 Token
 - **Token 传递方式**：`Authorization: Bearer <token>` 请求头
 - **强制配置**：API Token 为必填配置，未配置时服务拒绝启动
+- **IP allow list**：`allowed_ip_ranges` 为空时不限制来源 IP；非空时，TCP peer IP 必须命中其中一个 CIDR 网段
 - **错误响应**：Token 缺失或无效时返回统一 401 错误，不区分具体原因
 
 ### 4.2 关键状态与异常
@@ -82,6 +84,7 @@
 - **未配置 Token**：服务启动时校验，为空则 panic 并提示配置方法
 - **Token 无效**：返回 401 未授权错误
 - **Token 缺失**：返回 401 未授权错误（与 Token 无效相同响应，避免信息泄露）
+- **来源 IP 不允许**：返回 401 未授权错误（与 Token 错误相同响应，避免信息泄露）
 
 ---
 
@@ -93,10 +96,12 @@
    - 支持通过配置文件设置 API Token
    - 支持通过环境变量覆盖配置文件中的 Token
    - 启动时校验 Token 非空
+   - 支持通过配置文件或环境变量设置 `allowed_ip_ranges`
 
 2. **请求鉴权**
    - 从请求头提取 Bearer Token
    - 与配置值比对验证
+   - 当配置 IP allow list 时，从 Axum 连接信息读取 TCP peer IP 并判断是否允许
    - 无效或缺失时返回 401
 
 3. **路由保护**
@@ -110,6 +115,8 @@
 - 携带有效 Token 访问文档接口正常处理
 - 聊天接口和健康检查接口无需 Token 即可访问
 - 未配置 API Token 时服务拒绝启动
+- 未配置 `allowed_ip_ranges` 时保持现有 Token 鉴权行为
+- 配置 `allowed_ip_ranges` 后，TCP peer IP 不在允许网段内的请求返回 401
 - OpenAPI 文档正确反映鉴权要求
 
 ---
@@ -120,7 +127,7 @@
 
 - **能力范围**：受保护路由组（文档管理操作、`GET /api/chat/feedback`、`POST /api/eval/query`）需要 Bearer Token 鉴权
 - **鉴权方式**：`Authorization: Bearer <token>` 请求头
-- **访问控制**：无 Token 或 Token 无效时返回 401，不区分具体原因
+- **访问控制**：无 Token、Token 无效或来源 IP 不允许时返回 401，不区分具体原因
 - **公开接口**：聊天接口和健康检查接口无需鉴权
 - **OpenAPI 契约**：文档管理操作的 OpenAPI 文档需标注安全要求
 

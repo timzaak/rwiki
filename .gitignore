@@ -21,6 +21,9 @@ config.toml
 *.log
 /log/
 
+# Generated tooling reports (e.g. jscpd)
+/report/
+
 # Python
 __pycache__/
 *.py[cod]

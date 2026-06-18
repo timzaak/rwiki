@@ -123,11 +123,13 @@ async fn test_app_state_with_reranker(
         llm_client,
         llm_model: "test-model".to_string(),
         api_token: "test-api-token".to_string(),
+        api_allowed_ip_ranges: Vec::new(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker,
         rerank_config,
+        low_recall_config: None,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })

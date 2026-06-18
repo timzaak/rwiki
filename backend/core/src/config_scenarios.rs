@@ -493,3 +493,174 @@ fn post_answer_suggestions_default_impl_is_false() {
         "ChatConfig::default() must produce enable_post_answer_suggestions == false"
     );
 }
+
+// ---------------------------------------------------------------------------
+// LowRecallConfig enablement toggle (BE-T03 / US-CORE-038 + US-CORE-033)
+//
+// The low-recall logging feature's enablement lives on `AppConfig.low_recall:
+// Option<LowRecallConfig>` (`backend/core/src/config.rs` lines 28-31:
+// `#[serde(default)] pub low_recall: Option<LowRecallConfig>`). Per design §4.1
+// the toggle mirrors the `[rerank]` section-presence convention established by
+// commit 4b53c6d: an ABSENT `[low_recall]` section -> `None` (feature OFF); a
+// PRESENT section (even empty) -> `Some(..)` (feature ON). The `threshold`
+// field carries `#[serde(default = "default_low_recall_threshold")]` = 0.3
+// (`config.rs` lines 325-327, 335). These three scenarios pin both properties
+// at the config-deserialization seam.
+// ---------------------------------------------------------------------------
+
+/// Helper: write a minimal valid TOML config with a customizable `[low_recall]`
+/// section, mirroring the `write_chat_config` skeleton (`[server]/[sqlite]/
+/// [llm]/[embedding]/[api]`).
+///
+/// - `Some(threshold)` -> appends `[low_recall]\nthreshold = {threshold}\n`.
+/// - `None`            -> appends `[low_recall]\n` alone (empty section,
+///   triggers `#[serde(default)]` -> threshold = 0.3).
+/// - To produce a config with NO `[low_recall]` section at all (the OFF case),
+///   use `write_low_recall_config(None)` and then strip the empty section is
+///   NOT done here -- callers that need the absent-section case build the file
+///   inline (see `low_recall_disabled_when_section_absent`), keeping this
+///   helper's contract single-purpose: "present section, with or without a
+///   threshold".
+fn write_low_recall_config(threshold: Option<f64>) -> NamedTempFile {
+    let low_recall_section = match threshold {
+        Some(v) => format!("\n[low_recall]\nthreshold = {v}\n"),
+        None => "\n[low_recall]\n".to_string(),
+    };
+    let content = format!(
+        r#"
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+app_env = "test"
+enable_openapi = false
+
+[sqlite]
+path = "data/test.db"
+
+[llm]
+api_key = "sk-low-recall-test"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[embedding]
+
+[api]{low_recall_section}
+"#
+    );
+    let mut file = NamedTempFile::new().expect("should create temp file");
+    std::io::Write::write_all(&mut file, content.as_bytes()).expect("should write config content");
+    file
+}
+
+// User Story: US-CORE-038 -- As an operator, when I do not opt into low-recall
+// logging by adding a `[low_recall]` section, the feature must stay OFF so no
+// records are produced and chat latency/behavior is untouched.
+// Also US-CORE-033 (config seam) -- the deserialization contract for the
+// absent-section case.
+// Covers: Design §4.1 (enablement = section presence, mirroring rerank commit
+//         4b53c6d) + §5.1 (`#[serde(default)]` on `AppConfig.low_recall` ->
+//         absent section deserializes to `None`). This test FAILS if anyone
+//         removes `#[serde(default)]` from `AppConfig.low_recall` (load would
+//         error on configs without the section, breaking every pre-existing
+//         deployment) or flips the absent-section default to `Some(..)`
+//         (silently enabling low-recall logging everywhere).
+#[test]
+fn low_recall_disabled_when_section_absent() {
+    let prev_or = take_env("OPENROUTER_API_KEY");
+
+    // Minimal config with NO `[low_recall]` section at all -- mirrors any
+    // deployment that has not opted in.
+    let mut file = NamedTempFile::new().expect("should create temp file");
+    let content = r#"
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+app_env = "test"
+enable_openapi = false
+
+[sqlite]
+path = "data/test.db"
+
+[llm]
+api_key = "sk-low-recall-absent"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[embedding]
+
+[api]
+"#;
+    std::io::Write::write_all(&mut file, content.as_bytes()).expect("should write config content");
+
+    let config = AppConfig::load(file.path()).expect("config should load from temp file");
+
+    assert!(
+        config.low_recall.is_none(),
+        "low_recall must be None when [low_recall] section is absent (feature OFF by default)"
+    );
+
+    restore_env("OPENROUTER_API_KEY", prev_or);
+}
+
+// User Story: US-CORE-038 -- As an operator, I opt into low-recall logging
+// simply by adding a `[low_recall]` section (even with no fields), and the
+// feature turns ON with the documented default threshold 0.3 so I do not have
+// to guess a value on first enable.
+// Also US-CORE-033 (config seam) -- the section-presence enablement contract.
+// Covers: Design §4.1 (section presence = enablement) + §5.1 (`LowRecallConfig`
+//         `#[serde(default = "default_low_recall_threshold")]` -> 0.3 when the
+//         field is omitted; `default_low_recall_threshold()` returns 0.3 per
+//         `config.rs` lines 325-327). This test FAILS if anyone changes the
+//         enablement model (e.g. adds an `enable` flag) or changes the default
+//         threshold away from 0.3 without revisiting the calibration baseline.
+#[test]
+fn low_recall_enabled_when_section_present() {
+    let prev_or = take_env("OPENROUTER_API_KEY");
+
+    // Empty `[low_recall]` section (no threshold field) -> Some(..) with the
+    // serde default threshold.
+    let file = write_low_recall_config(None);
+    let config = AppConfig::load(file.path()).expect("config should load from temp file");
+
+    let low_recall = config
+        .low_recall
+        .as_ref()
+        .expect("present [low_recall] section (even empty) must deserialize to Some(..)");
+
+    assert_eq!(
+        low_recall.threshold, 0.3,
+        "empty [low_recall] section must fall back to the serde default threshold of 0.3"
+    );
+
+    restore_env("OPENROUTER_API_KEY", prev_or);
+}
+
+// User Story: US-CORE-038 -- As an operator, I can tune the low-recall
+// threshold by setting `threshold` in `[low_recall]`, and the configured value
+// is parsed verbatim (no clamping/surprise coercion) so calibration is
+// predictable.
+// Also US-CORE-033 (config seam) -- the explicit-value parse path.
+// Covers: Design §5.1 (`LowRecallConfig.threshold: f64` round-trips through
+//         TOML). This test FAILS if the field is renamed, the type stops being
+//         a plain `f64`, or anyone adds silent clamping that would mask a
+//         calibration typo.
+#[test]
+fn low_recall_threshold_explicit_value_parsed() {
+    let prev_or = take_env("OPENROUTER_API_KEY");
+
+    // Explicit non-default threshold 0.45 (chosen off the 0.3 default so a
+    // default-leak would be caught).
+    let file = write_low_recall_config(Some(0.45));
+    let config = AppConfig::load(file.path()).expect("config should load from temp file");
+
+    let low_recall = config
+        .low_recall
+        .expect("present [low_recall] section must deserialize to Some(..)");
+
+    assert_eq!(
+        low_recall.threshold, 0.45,
+        "explicitly set [low_recall].threshold must parse verbatim (no clamping/coercion)"
+    );
+
+    restore_env("OPENROUTER_API_KEY", prev_or);
+}

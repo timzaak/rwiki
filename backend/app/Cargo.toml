@@ -20,6 +20,7 @@ rusqlite = { workspace = true }
 rusqlite_migration = { workspace = true }
 sqlite-vec = { workspace = true }
 axum = { workspace = true }
+ipnet = { workspace = true }
 
 # RAG / LLM
 rig = { workspace = true }

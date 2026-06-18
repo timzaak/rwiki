@@ -19,6 +19,33 @@ use super::chat::{
 };
 
 // ---------------------------------------------------------------------------
+// Imports for low-recall bypass-write integration scenarios (US-CORE-038).
+// These tests construct a full AppState (in-memory sqlite + migrations + a
+// seeded chunk_metadata row + a mockito-backed embeddings endpoint) and drive
+// the chat endpoint through the Axum test harness (`create_api_routes` +
+// `oneshot`), mirroring the integration-test idiom established in
+// `rerank_scenarios.rs` / `feedback_scenarios.rs`.
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::sync::Once;
+
+use axum::body::Body;
+use axum::http::{header, Method, Request};
+use rig::client::EmbeddingsClient;
+use tower::ServiceExt;
+
+use rwiki_core::config::LowRecallConfig;
+
+use crate::application::http::create_api_routes;
+use crate::application::http::state::AppState;
+
+/// API token shared between the AppState literal and the Bearer header on
+/// authenticated requests (the scoped chat endpoint lives behind `doc_router`'s
+/// `auth_middleware`).
+const LOW_RECALL_TEST_API_TOKEN: &str = "test-api-token-low-recall";
+
+// ---------------------------------------------------------------------------
 // build_rewrite_prompt scenarios
 // ---------------------------------------------------------------------------
 
@@ -1289,5 +1316,461 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
         sys_pos < summary_pos && summary_pos < ctx_pos,
         "preamble ordering must remain system -> summary -> context after the \
          context_text move (unchanged preamble contract)"
+    );
+}
+
+// ===========================================================================
+// Low-recall bypass-write trigger scenario tests (US-CORE-038)
+// ===========================================================================
+//
+// These scenarios cover the detached `tokio::spawn` bypass-write block that
+// BE-D04 added to `chat_inner` (chat.rs ~845-897):
+//
+//   - gated on `RetrievalScope::Published` (public `/api/chat` only, NOT scoped)
+//   - gated on `state.low_recall_config.is_some()`
+//   - logs when `top_score < threshold` OR when there are zero results
+//     (zero-result path always logs with `top_score = NULL`)
+//   - write failure is swallowed via `tracing::warn!` (design §7 P0:
+//     "writing must never block chat or change its latency / availability")
+//
+// Each triggering scenario strongly asserts `resp.status().is_success()`
+// (design §7 P0) — the chat response MUST NOT be blocked or altered by the
+// bypass write. The detached `tokio::spawn` is async, so before asserting on
+// `low_recall_records` row counts the tests `tokio::time::sleep` briefly to
+// yield and let the spawn complete (BE-T02 spec).
+
+// ---------------------------------------------------------------------------
+// Test helpers (low-recall integration scenarios)
+// ---------------------------------------------------------------------------
+
+/// Ensure the sqlite-vec extension is registered globally so that the
+/// `vec0` virtual table module is available for in-memory connections.
+static LOW_RECALL_SQLITE_VEC_INIT: Once = Once::new();
+fn low_recall_ensure_sqlite_vec_loaded() {
+    LOW_RECALL_SQLITE_VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
+        )));
+    });
+}
+
+/// Build a minimal `AppState` identical to the rerank/feedback test-app-state
+/// construction (in-memory sqlite + migrations + seeded `chunk_metadata` row
+/// so the chat handler proceeds past the "knowledge base empty" guard, plus a
+/// mockito-backed embeddings endpoint so `search_hybrid` can embed the query
+/// without hitting the real OpenAI endpoint), with `low_recall_config` set
+/// from the caller.
+///
+/// All other fields mirror `test_app_state_with_reranker` defaults. This helper
+/// exists (rather than reusing the rerank helper) because the rerank helper
+/// hard-codes `low_recall_config: None`.
+async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) -> Arc<AppState> {
+    low_recall_ensure_sqlite_vec_loaded();
+
+    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    rwiki_core::infrastructure::migration::migrations(1536)
+        .to_latest(&mut conn)
+        .expect("apply migrations");
+    // Seed a dummy chunk so vector_store.is_empty() returns false, allowing the
+    // chat handler to proceed. The seeded chunk will only be retrieved if the
+    // embedding search matches; otherwise the handler sees zero results and
+    // records a "完全未命中" row (top_score NULL).
+    conn.execute(
+        "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params!["test-doc", "test-chunk", "seed content", "Seed Title"],
+    )
+    .expect("seed chunk_metadata");
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    // mockito embeddings mock so search_hybrid can embed the query offline.
+    // Box::leak keeps the server alive for the test's lifetime (idiom shared
+    // with rerank_scenarios.rs).
+    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    // 1536-dim zero embedding matching text-embedding-3-small. A zero vector
+    // will not strongly match the seeded chunk (whose embedding is never
+    // computed here), so most queries return zero results — convenient for the
+    // null-top-score scenario. For the "hit a seeded chunk" scenario we rely
+    // on the row-count assertion rather than exact score control.
+    let dummy_embedding: Vec<f64> = vec![0.0; 1536];
+    let embed_body = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": dummy_embedding, "index": 0}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    })
+    .to_string();
+    let _embed_mock = embed_server
+        .mock("POST", "/embeddings")
+        .with_status(200)
+        .with_body(&embed_body)
+        .expect_at_most(20)
+        .create_async()
+        .await;
+
+    let openai_client = rig::providers::openai::Client::builder()
+        .api_key("sk-test-fake-key-for-low-recall-tests-only")
+        .base_url(embed_server.url());
+    let embedding_model = openai_client
+        .build()
+        .expect("build openai client")
+        .embedding_model("text-embedding-3-small");
+    let app_embedding_model =
+        rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
+
+    let vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            sqlite.clone(),
+            app_embedding_model,
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+
+    let llm_client = rig::providers::openai::CompletionsClient::builder()
+        .api_key("sk-test-fake")
+        .base_url("http://localhost:0")
+        .build()
+        .expect("build LLM client");
+
+    Arc::new(AppState {
+        sqlite,
+        enable_openapi: false,
+        vector_store,
+        chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        llm_client,
+        llm_model: "test-model".to_string(),
+        api_token: LOW_RECALL_TEST_API_TOKEN.to_string(),
+        api_allowed_ip_ranges: Vec::new(),
+        chat_config: rwiki_core::config::ChatConfig::default(),
+        static_dir: None,
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
+        reranker: None,
+        rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config,
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })
+}
+
+/// `AppState` with `low_recall_config = Some(LowRecallConfig { threshold })`
+/// (feature enabled). Used by the "enabled → records" and zero-result /
+/// scoped-skip scenarios.
+async fn test_app_state_with_low_recall(threshold: f64) -> Arc<AppState> {
+    build_low_recall_app_state(Some(LowRecallConfig { threshold })).await
+}
+
+/// Same construction as `test_app_state_with_low_recall` but with
+/// `low_recall_config: None` (feature disabled). Used by the "disabled does
+/// not record" scenario.
+async fn test_app_state_low_recall_disabled() -> Arc<AppState> {
+    build_low_recall_app_state(None).await
+}
+
+/// Count rows in `low_recall_records` for the given AppState's sqlite handle.
+async fn count_low_recall_records(state: &Arc<AppState>) -> i64 {
+    state
+        .sqlite
+        .call(|conn| -> Result<i64, rusqlite::Error> {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM low_recall_records", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(count)
+        })
+        .await
+        .expect("count low_recall_records")
+}
+
+/// Read the `top_score` of the most recently inserted `low_recall_records`
+/// row whose `query` contains `query_substr`.
+///
+/// Returns:
+/// - `None`    — no matching row exists.
+/// - `Some(None)` — a row exists but `top_score IS NULL` (zero-result path).
+/// - `Some(Some(score))` — a row exists with a non-null top_score.
+async fn read_top_score(state: &Arc<AppState>, query_substr: &str) -> Option<Option<f64>> {
+    let needle = format!("%{query_substr}%");
+    state
+        .sqlite
+        .call(
+            move |conn| -> Result<Option<Option<f64>>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT top_score FROM low_recall_records \
+                 WHERE query LIKE ?1 \
+                 ORDER BY id DESC LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![needle])?;
+                match rows.next()? {
+                    Some(row) => {
+                        // top_score is nullable; read as Option<f64>.
+                        let top_score: Option<f64> = row.get(0)?;
+                        Ok(Some(top_score))
+                    }
+                    None => Ok(None),
+                }
+            },
+        )
+        .await
+        .expect("read top_score")
+}
+
+/// Build a public `/api/chat` POST request with JSON body.
+fn low_recall_chat_request(message: &str, session_id: &str) -> Request<Body> {
+    let body = serde_json::json!({
+        "message": message,
+        "sessionId": session_id,
+    });
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request")
+}
+
+/// Build an authenticated `/api/chat/scoped` POST request with JSON body.
+/// The scoped endpoint lives behind `doc_router`'s `auth_middleware`, so a
+/// valid Bearer token is required.
+fn low_recall_scoped_chat_request(
+    message: &str,
+    session_id: &str,
+    document_ids: Option<Vec<String>>,
+) -> Request<Body> {
+    let body = serde_json::json!({
+        "message": message,
+        "sessionId": session_id,
+        "documentIds": document_ids,
+    });
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat/scoped")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {LOW_RECALL_TEST_API_TOKEN}"),
+        )
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request")
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1: low_recall enabled + low score (or zero-result) → records row
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-038 -- As an operator, I want every public `/api/chat`
+// query whose top-1 retrieved relevance is below the configured threshold to
+// be automatically recorded (bypass, fire-and-forget) so I can discover KB
+// blind spots. The recording MUST NOT alter or block the chat response.
+// Covers: Design §5.3 (detached `tokio::spawn` bypass write), §6.1 scenario
+//         "启用 [low_recall] + top score 低于阈值 → 记录落库", §7 P0
+//         (write failure / slowness must not affect chat).
+//
+// Strong controls: (a) chat returns success 200 (NOT blocked), (b) after
+// letting the detached spawn complete, `low_recall_records` row count is
+// >= the pre-trigger count. Weak control: exact score (threshold-vs-score
+// comparison is verified structurally in chat.rs; here we only assert the
+// "enabled path produces a row" invariant because precisely controlling the
+// retrieved `score` through the full embeddings+vector_store stack is brittle).
+
+#[tokio::test]
+async fn low_recall_enabled_logs_low_score_record() {
+    let state = test_app_state_with_low_recall(0.3).await;
+    let app = create_api_routes(state.clone());
+
+    let before = count_low_recall_records(&state).await;
+
+    let req = low_recall_chat_request(
+        "a query that will not strongly match the seeded chunk",
+        "session-low-recall-enabled",
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+
+    // §7 P0: the bypass write MUST NOT block or break chat.
+    assert!(
+        resp.status().is_success(),
+        "chat endpoint must succeed (200) even when low-recall bypass write \
+         fires, got status {}",
+        resp.status()
+    );
+
+    // The bypass write is a detached `tokio::spawn`; let it complete before
+    // counting. A short yield + retry loop keeps the test robust without a
+    // hard timing coupling.
+    let after = {
+        let mut count = before;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            count = count_low_recall_records(&state).await;
+            if count > before {
+                break;
+            }
+        }
+        count
+    };
+
+    assert!(
+        after > before,
+        "with low_recall enabled, a public /api/chat below the threshold (or \
+         zero-result) MUST produce at least one new low_recall_records row; \
+         before={}, after={}",
+        before,
+        after,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 2: low_recall disabled (None) → no records
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-038 (scenario 5) -- As an operator who has NOT
+// configured `[low_recall]`, I expect the feature to be completely inert:
+// no rows are ever written, and chat behavior is byte-identical to before
+// the feature existed.
+// Covers: Design §5.3 (the bypass block is gated on
+//         `state.low_recall_config.is_some()`; `None` short-circuits before
+//         the spawn), §6.1 scenario "功能关闭 (low_recall_config = None) → 不
+//         产生记录", §4.1 ("功能关闭时不产生任何记录").
+
+#[tokio::test]
+async fn low_recall_disabled_does_not_record() {
+    let state = test_app_state_low_recall_disabled().await;
+    let app = create_api_routes(state.clone());
+
+    let req = low_recall_chat_request(
+        "any query while low_recall is disabled",
+        "session-low-recall-disabled",
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "chat endpoint must succeed when low_recall is disabled, got status {}",
+        resp.status()
+    );
+
+    // Give any hypothetical spawn time to flush (there should be none, but the
+    // sleep makes the "no records" assertion resilient to ordering).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let count = count_low_recall_records(&state).await;
+    assert_eq!(
+        count, 0,
+        "with low_recall_config = None, no low_recall_records row must be \
+         written for a public /api/chat call",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 3: zero-result query → row with top_score IS NULL
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-038 -- As an operator, the most important blind-spot
+// signal is a query that retrieves NOTHING ("完全未命中"). These must always
+// be recorded with `top_score = NULL` (and `result_count = 0`) regardless of
+// the threshold, because a zero-result query is an unconditional KB blind
+// spot. Chat must still succeed.
+// Covers: Design §5.3 (`let top_score = search_results.first().map(|r| r.score)`
+//         → None when empty; `should_log = top_score.map_or(true, |s| s <
+//         threshold)` → true for None), §6.1 scenario "result_count == 0
+//         (完全未命中) → 记录落库、topScore = null", §4.1.4 assumption.
+
+#[tokio::test]
+async fn low_recall_logs_zero_result_with_null_top_score() {
+    let state = test_app_state_with_low_recall(0.3).await;
+    let app = create_api_routes(state.clone());
+
+    // A unique, KB-uncovered query. With the mock embeddings returning a zero
+    // vector for every query and no real indexed chunk embedding, search_hybrid
+    // returns zero results, which is exactly the path under test.
+    let zero_result_query = "zzzzz-zero-result-marker-no-kb-coverage-zzzzz-low-recall-test";
+    let req = low_recall_chat_request(zero_result_query, "session-zero-result");
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "chat endpoint must succeed (200) even when retrieval returns zero \
+         results, got status {}",
+        resp.status()
+    );
+
+    // Wait for the detached spawn to land the row (retry loop, same as
+    // scenario 1).
+    let top_score = {
+        let mut maybe = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            maybe = read_top_score(&state, "zzzzz-zero-result-marker").await;
+            if maybe.is_some() {
+                break;
+            }
+        }
+        maybe
+    };
+
+    assert_eq!(
+        top_score,
+        Some(None),
+        "a zero-result public /api/chat with low_recall enabled MUST produce a \
+         low_recall_records row whose top_score IS NULL (outer Some = row \
+         exists, inner None = NULL top_score); got {:?}",
+        top_score,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 4: scoped chat (Collection scope) → no records
+// ---------------------------------------------------------------------------
+
+// User Story: US-CORE-038 (operator-data-hygiene boundary) -- Scoped chat
+// (`/api/chat/scoped`) is an evaluation tool for draft batches; its "low
+// relevance" is NOT a production KB blind spot, so mixing it into the
+// operator's low-recall view would pollute the signal. The bypass write must
+// be gated on `RetrievalScope::Published` only.
+// Covers: Design §4.1 ("仅对公共 /api/chat (RetrievalScope::Published) 记录,
+//         不对 /api/chat/scoped 记录"), §5.3 (`if matches!(scope, Published)`
+//         guard wraps the entire bypass block), §6.1 scenario "scoped chat
+//         (Collection 作用域) → 不产生记录", §6.3 regression risk row on
+//         scope gating.
+
+#[tokio::test]
+async fn low_recall_skips_scoped_chat() {
+    let state = test_app_state_with_low_recall(0.3).await;
+    let app = create_api_routes(state.clone());
+
+    // /api/chat/scoped builds RetrievalScope::Collection from documentIds.
+    // Even though low_recall is enabled, the bypass block's
+    // `matches!(scope, Published)` guard must skip recording.
+    let req = low_recall_scoped_chat_request(
+        "scoped query that must not be recorded",
+        "session-scoped-skip",
+        Some(vec!["test-doc".to_string()]),
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "scoped chat endpoint must succeed (200), got status {}",
+        resp.status()
+    );
+
+    // Yield in case any spawn were scheduled (none should be).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let count = count_low_recall_records(&state).await;
+    assert_eq!(
+        count, 0,
+        "scoped /api/chat/scoped (Collection scope) must NOT produce any \
+         low_recall_records row even when low_recall is enabled; the bypass \
+         block is gated on RetrievalScope::Published only",
     );
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use ipnet::IpNet;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
@@ -8,6 +9,7 @@ use opentelemetry_sdk::Resource;
 use rig::client::EmbeddingsClient;
 use rig::embeddings::EmbeddingModel;
 use std::env;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Once;
@@ -30,6 +32,17 @@ fn ensure_sqlite_vec_loaded() {
             sqlite_vec::sqlite3_vec_init as *const ()
         )));
     });
+}
+
+fn parse_ip_ranges(name: &str, ranges: &[String]) -> Result<Vec<IpNet>> {
+    ranges
+        .iter()
+        .map(|range| {
+            range
+                .parse::<IpNet>()
+                .map_err(|e| anyhow::anyhow!("invalid {name} CIDR '{range}': {e}"))
+        })
+        .collect()
 }
 
 /// Rwiki Backend Application
@@ -298,6 +311,8 @@ async fn main() -> Result<()> {
              Set it in config file [api] token or via API_TOKEN environment variable."
         );
     }
+    let api_allowed_ip_ranges =
+        parse_ip_ranges("api.allowed_ip_ranges", &config.api.allowed_ip_ranges)?;
 
     // 包装为 tokio-rusqlite 异步连接
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
@@ -474,11 +489,13 @@ async fn main() -> Result<()> {
         llm_client,
         llm_model: config.llm.model.clone(),
         api_token: config.api.token.clone(),
+        api_allowed_ip_ranges,
         chat_config,
         static_dir: config.server.static_dir.clone(),
         retrieval_config: config.retrieval.clone(),
         reranker,
         rerank_config: config.rerank.clone().unwrap_or_default(),
+        low_recall_config: config.low_recall.clone(),
         metrics: metrics.clone(),
         session_count: session_count.clone(),
     });
@@ -496,9 +513,12 @@ async fn main() -> Result<()> {
         tracing::info!("Received shutdown signal, draining...");
     };
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
 
     // TracerGuard::Drop flushes pending OTLP spans when otel_output goes out of scope
     drop(otel_output);
@@ -512,6 +532,32 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_ip_ranges_accepts_valid_cidrs() {
+        let ranges = parse_ip_ranges(
+            "api.allowed_ip_ranges",
+            &["203.0.113.0/24".to_string(), "2001:db8::/32".to_string()],
+        )
+        .expect("valid CIDRs should parse");
+
+        assert_eq!(
+            ranges.len(),
+            2,
+            "startup parsing should keep every configured CIDR range"
+        );
+    }
+
+    #[test]
+    fn parse_ip_ranges_rejects_invalid_cidr() {
+        let err = parse_ip_ranges("api.allowed_ip_ranges", &["not-a-cidr".to_string()])
+            .expect_err("invalid CIDR should fail startup parsing");
+
+        assert!(
+            err.to_string().contains("api.allowed_ip_ranges"),
+            "error should name the invalid config field"
+        );
+    }
 
     // Covers: Design 5.3 TracerGuard Drop — shutdown completes without panic.
     // User Story: Graceful shutdown flushes pending spans; TracerGuard::Drop must not panic.

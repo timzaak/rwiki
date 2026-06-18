@@ -25,6 +25,10 @@ pub struct AppConfig {
     /// 存在 `[rerank]` 段（即使为空）即视为启用。
     #[serde(default)]
     pub rerank: Option<RerankConfig>,
+    /// 低相关召回记录配置；省略 `[low_recall]` 段 → None（关闭）。
+    /// 存在段即启用，参照 rerank 惯例。
+    #[serde(default)]
+    pub low_recall: Option<LowRecallConfig>,
 }
 
 impl AppConfig {
@@ -38,6 +42,9 @@ impl AppConfig {
         if let Ok(t) = env::var("API_TOKEN") {
             config.api.token = t;
         }
+        if let Ok(ranges) = env::var("API_ALLOWED_IP_RANGES") {
+            config.api.allowed_ip_ranges = parse_env_list(&ranges);
+        }
         if let Ok(key) = env::var("OTEL_LICENSE_KEY") {
             config.otel.license_key = key;
         }
@@ -50,6 +57,15 @@ impl AppConfig {
         }
         Ok(config)
     }
+}
+
+fn parse_env_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// 服务器配置
@@ -215,6 +231,8 @@ impl Default for RetrievalConfig {
 pub struct ApiTokenConfig {
     #[serde(default)]
     pub token: String,
+    #[serde(default)]
+    pub allowed_ip_ranges: Vec<String>,
 }
 
 /// OpenTelemetry OTLP 导出配置
@@ -304,6 +322,28 @@ impl Default for RerankConfig {
     }
 }
 
+fn default_low_recall_threshold() -> f64 {
+    0.3 // 待首批记录校准（rerank 分数分布未知）
+}
+
+/// 低相关召回记录配置；省略整个 `[low_recall]` 段时为 `None`（关闭）。
+/// 存在段（即使为空）即视为启用（参照 rerank `[rerank]` section presence 惯例）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LowRecallConfig {
+    /// top-1 相关度分数低于此值时记录（0..1，rerank relevance_score 语义）。
+    /// 默认 0.3，待首批记录校准。
+    #[serde(default = "default_low_recall_threshold")]
+    pub threshold: f64,
+}
+
+impl Default for LowRecallConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_low_recall_threshold(),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "config_scenarios.rs"]
 mod config_scenarios;
@@ -311,6 +351,55 @@ mod config_scenarios;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn take_env(var: &str) -> Option<String> {
+        match env::var(var) {
+            Ok(val) => {
+                env::remove_var(var);
+                Some(val)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn restore_env(var: &str, prev: Option<String>) {
+        match prev {
+            Some(val) => env::set_var(var, val),
+            None => env::remove_var(var),
+        }
+    }
+
+    fn write_api_config(api_body: &str) -> NamedTempFile {
+        let content = format!(
+            r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [api]
+            {api_body}
+        "#
+        );
+        let mut file = NamedTempFile::new().expect("should create temp file");
+        file.write_all(content.as_bytes())
+            .expect("should write config content");
+        file
+    }
 
     #[test]
     fn embedding_config_dimensions_backward_compatible() {
@@ -341,6 +430,46 @@ mod tests {
             Some(2048),
             "dimensions should parse as Some(2048)"
         );
+    }
+
+    #[test]
+    fn api_token_config_parses_ip_ranges() {
+        let toml_str = r#"
+            token = "test-token"
+            allowed_ip_ranges = ["203.0.113.0/24", "2001:db8::/32"]
+        "#;
+        let config: ApiTokenConfig =
+            toml::from_str(toml_str).expect("api config should deserialize");
+        assert_eq!(
+            config.allowed_ip_ranges,
+            vec!["203.0.113.0/24".to_string(), "2001:db8::/32".to_string()],
+            "allowed_ip_ranges should preserve configured CIDR strings for startup parsing"
+        );
+    }
+
+    #[test]
+    fn api_ip_ranges_env_vars_override_file_values() {
+        let prev_token = take_env("API_TOKEN");
+        let prev_allowed = take_env("API_ALLOWED_IP_RANGES");
+
+        env::set_var("API_ALLOWED_IP_RANGES", "203.0.113.0/24, 2001:db8::/32");
+
+        let file = write_api_config(
+            r#"
+            token = "file-token"
+            allowed_ip_ranges = ["198.51.100.0/24"]
+            "#,
+        );
+        let config = AppConfig::load(file.path()).expect("config should load");
+
+        assert_eq!(
+            config.api.allowed_ip_ranges,
+            vec!["203.0.113.0/24".to_string(), "2001:db8::/32".to_string()],
+            "API_ALLOWED_IP_RANGES must replace the file allow list"
+        );
+
+        restore_env("API_TOKEN", prev_token);
+        restore_env("API_ALLOWED_IP_RANGES", prev_allowed);
     }
 
     #[test]

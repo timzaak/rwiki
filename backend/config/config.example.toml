@@ -63,6 +63,13 @@ model = "deepseek/deepseek-chat-v3-0324"
 # API Token for document management endpoints
 # Leave empty to use the API_TOKEN environment variable
 token = ""
+# Optional API IP allow list for token-protected endpoints.
+# Empty means token-only authentication remains unchanged.
+# The checked address is the TCP peer IP seen by this service. If the service
+# runs behind a reverse proxy, allow the proxy's source IP/range.
+# Single IPs must be written as CIDR: IPv4 /32, IPv6 /128.
+# Can also be set via API_ALLOWED_IP_RANGES as a comma-separated list.
+# allowed_ip_ranges = ["203.0.113.10/32", "2001:db8::/32"]
 
 [chat]
 # System prompt (recommended; the built-in default is used when the [chat]
@@ -167,3 +174,11 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # (DashScope defaults to mainland China). Set it explicitly for other
 # regions/gateways.
 # base_url = ""
+
+# [low_recall] — 低相关召回记录（自动旁路记录相关性低于阈值的查询，供运营发现 KB 盲区）。
+# Enablement 与 rerank 一致：包含 [low_recall] 段即启用；省略整段则关闭（零开销）。
+# 启用后，每次 /api/chat 检索若 top-1 相关度分数低于 threshold，旁路写入一条记录
+# （不改实时回答行为；写入失败不阻塞 chat）。建议与 [rerank] 一同启用——
+# threshold 校准基于 rerank 的 0..1 relevance_score。
+# [low_recall]
+# threshold = 0.3   # 待首批记录校准

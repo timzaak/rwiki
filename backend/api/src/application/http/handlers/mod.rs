@@ -3,6 +3,7 @@ pub mod chat;
 pub mod document;
 pub mod eval;
 pub mod feedback;
+pub mod low_recall;
 
 #[cfg(test)]
 mod chat_scenarios;
@@ -24,6 +25,9 @@ mod faq_upload_scenarios;
 
 #[cfg(test)]
 mod feedback_scenarios;
+
+#[cfg(test)]
+mod low_recall_scenarios;
 
 #[cfg(test)]
 mod metrics_scenarios;

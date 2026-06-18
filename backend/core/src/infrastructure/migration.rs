@@ -64,5 +64,18 @@ pub fn migrations(ndims: usize) -> Migrations<'static> {
             CREATE INDEX IF NOT EXISTS idx_chat_feedback_created_at ON chat_feedback(created_at DESC);\
             CREATE INDEX IF NOT EXISTS idx_chat_feedback_feedback ON chat_feedback(feedback);",
         ),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS low_recall_records (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                session_id TEXT,\
+                query TEXT NOT NULL,\
+                top_score REAL,\
+                result_count INTEGER NOT NULL DEFAULT 0,\
+                sources TEXT NOT NULL DEFAULT '[]',\
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\
+            );\
+            CREATE INDEX IF NOT EXISTS idx_low_recall_created_at ON low_recall_records(created_at DESC);\
+            CREATE INDEX IF NOT EXISTS idx_low_recall_top_score ON low_recall_records(top_score);",
+        ),
     ])
 }
