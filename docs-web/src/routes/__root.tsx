@@ -67,7 +67,7 @@ function RootComponent() {
           <Outlet />
         </RootProvider>
         <Scripts />
-        <RWikiChatWidget />
+        <RWikiChatWidget locale={locale} />
       </body>
     </html>
   );

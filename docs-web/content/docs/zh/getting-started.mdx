@@ -298,12 +298,12 @@ import { useEffect } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget() {
+export default function RWikiChatWidget({ locale }: { locale: string }) {
   useEffect(() => {
     const w = window as any;
 
     const initWidget = () => {
-      w.RWikiChat?.init?.({ apiUrl });
+      w.RWikiChat?.init?.({ apiUrl, locale });
     };
 
     if (w.RWikiChat?.init) {
@@ -324,10 +324,10 @@ export default function RWikiChatWidget() {
 }
 ```
 
-3. 在根布局中放置这个组件（provider 之后、`</body>` 之前）：
+3. 在根布局中放置这个组件（provider 之后、`</body>` 之前），并传入应用当前的 locale：
 
 ```tsx
-<RWikiChatWidget />
+<RWikiChatWidget locale={locale} />
 ```
 
 4. 构建时设置后端地址：

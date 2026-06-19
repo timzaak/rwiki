@@ -37,6 +37,7 @@ function getGlobalAPI() {
   return (window as any).RWikiChat as {
     init: (config: any) => void
     destroy: () => void
+    setLocale: (locale: string) => void
   }
 }
 
@@ -126,5 +127,61 @@ describe('Widget lifecycle (init/destroy)', () => {
     // Call destroy without any prior init
     expect(() => api.destroy()).not.toThrow()
     expect(mockUnmount).not.toHaveBeenCalled()
+  })
+})
+
+describe('Widget setLocale', () => {
+  beforeEach(() => {
+    // Reset module-level state (container/reactRoot/currentConfig) that the DOM
+    // cleanup below cannot reach, so the "setLocale before init" test starts
+    // from a truly clean state even if a prior test left the widget mounted.
+    getGlobalAPI()?.destroy?.()
+    resetStores()
+    document.querySelectorAll('#rwiki-chat-widget').forEach((el) => el.remove())
+    mockCreateRoot.mockClear()
+    mockRender.mockClear()
+    mockUnmount.mockClear()
+  })
+
+  afterEach(() => {
+    const api = getGlobalAPI()
+    if (api?.destroy) api.destroy()
+  })
+
+  it('setLocale() after init re-renders with the new locale without unmounting', () => {
+    const api = getGlobalAPI()
+    api.init({ apiUrl: 'http://localhost:3000', locale: 'en' })
+    expect(mockRender).toHaveBeenCalledTimes(1)
+
+    api.setLocale('zh-CN')
+
+    // Re-rendered with the new locale, but the root was not unmounted
+    expect(mockRender).toHaveBeenCalledTimes(2)
+    expect(mockUnmount).not.toHaveBeenCalled()
+    expect(mockCreateRoot).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('#rwiki-chat-widget')).not.toBeNull()
+
+    // setLocale actually switched the rendered locale — assert the transition
+    // (en -> zh-CN), not just that render() was called again.
+    const firstElement = mockRender.mock.calls[0]![0] as {
+      props: { config: { locale: string } }
+    }
+    const lastElement = mockRender.mock.calls.at(-1)![0] as {
+      props: { config: { locale: string } }
+    }
+    expect(firstElement.props.config.locale).toBe('en')
+    expect(lastElement.props.config.locale).toBe('zh-CN')
+  })
+
+  it('setLocale() before init logs error and does not render', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const api = getGlobalAPI()
+    api.setLocale('zh-CN')
+
+    expect(mockRender).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith('[RWikiChat] setLocale called before init')
+
+    errorSpy.mockRestore()
   })
 })

@@ -349,22 +349,37 @@ Destroy the instance:
 RWikiChat.destroy();
 ```
 
+Switch language live without re-initializing — the widget re-renders in place and the current conversation is preserved:
+
+```js
+RWikiChat.setLocale('zh-CN');
+```
+
+`setLocale` accepts the same BCP-47 tags as the `locale` config and resolves them the same way. It must be called after `init`; calling it before `init` logs an error and does nothing.
+
 The widget uses Shadow DOM for style isolation and won't affect host page CSS.
 
 ### React integration (docs-web pattern)
 
-For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`).
+For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`). Pass the app's current locale in so the widget follows it: seed it at `init`, then call `setLocale` when it changes.
 
 ```tsx
 // src/components/rwiki-chat-widget.tsx
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget() {
+export default function RWikiChatWidget({ locale }: { locale: string }) {
+  const firstRun = useRef(true);
+  // Keep the latest locale in a ref so the async script's onload init always
+  // uses the current locale, not the one captured at mount.
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+
+  // Load + init once, seeding the initial locale.
   useEffect(() => {
     const w = window as any;
-    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl }); };
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, locale: localeRef.current }); };
     if (w.RWikiChat?.init) {
       initWidget();
     } else {
@@ -374,15 +389,24 @@ export default function RWikiChatWidget() {
       document.body.appendChild(script);
     }
     return () => { w.RWikiChat?.destroy?.(); };
+    // Locale changes are handled by the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switch language live when the app locale changes.
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; } // initial locale already set via init
+    (window as any).RWikiChat?.setLocale?.(locale);
+  }, [locale]);
+
   return null;
 }
 ```
 
-Place the component in your root layout:
+Place the component in your root layout and pass the current locale (docs-web derives it from the URL path):
 
 ```tsx
-<RWikiChatWidget />
+<RWikiChatWidget locale={locale} />
 ```
 
 Build and copy the widget before starting docs-web:

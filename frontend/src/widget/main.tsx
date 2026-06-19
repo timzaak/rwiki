@@ -3,13 +3,15 @@ import { createRoot } from 'react-dom/client';
 import widgetStyles from './styles.css?inline';
 import highlightStyles from 'highlight.js/styles/github.css?inline';
 import { WidgetApp } from './widget-app';
-import { validateWidgetConfig, type WidgetConfig } from './config';
+import { validateWidgetConfig, type ValidatedWidgetConfig, type WidgetConfig } from './config';
 import { injectStyles } from './inject-styles';
+import { resolveLocale } from '@/components/chat/messages';
 import { useChatModalStore, useChatStore } from '@/stores/chat-store';
 
 let container: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
 let reactRoot: ReturnType<typeof createRoot> | null = null;
+let currentConfig: ValidatedWidgetConfig | null = null;
 
 function init(config: WidgetConfig) {
   const validated = validateWidgetConfig(config);
@@ -43,6 +45,7 @@ function init(config: WidgetConfig) {
 
   // Mount React
   reactRoot = createRoot(shadowRoot);
+  currentConfig = validated;
   reactRoot.render(<WidgetApp config={validated} />);
 }
 
@@ -61,7 +64,20 @@ function destroy() {
   container.remove();
   container = null;
   shadowRoot = null;
+  currentConfig = null;
+}
+
+// Switch the widget's language live without unmounting.
+// Re-renders <WidgetApp> with an updated locale; conversation state (kept in
+// the zustand chat-store, outside the React tree) is preserved.
+function setLocale(locale: string) {
+  if (!container || !reactRoot || !currentConfig) {
+    console.error('[RWikiChat] setLocale called before init');
+    return;
+  }
+  currentConfig = { ...currentConfig, locale: resolveLocale(locale) };
+  reactRoot.render(<WidgetApp config={currentConfig} />);
 }
 
 // Expose global API
-(window as any).RWikiChat = { init, destroy };
+(window as any).RWikiChat = { init, destroy, setLocale };

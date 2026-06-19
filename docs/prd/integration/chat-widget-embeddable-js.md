@@ -39,9 +39,11 @@
 - Widget 通过 Shadow DOM 渲染，与宿主页面样式完全隔离
 - 提供 `RWikiChat.init(config)` 全局初始化接口
 - 支持外观定制：主题色、标题、按钮位置（左下/右下）、欢迎语
+- 界面语言可配置（默认跟随浏览器），并支持运行时通过 `setLocale` 实时切换
 - 复用现有聊天交互能力：SSE 流式响应、多轮对话、Markdown 渲染
 - 响应式适配：PC 端浮动窗口，移动端全屏覆盖
 - 提供 `RWikiChat.destroy()` 销毁接口
+- 提供 `RWikiChat.setLocale(locale)` 实时切换语言接口
 
 ### 2.2 不包含功能 (Out of Scope)
 
@@ -110,6 +112,7 @@
    - 暴露全局对象 `RWikiChat`
    - `init(config)` 方法创建 Shadow DOM 容器、注入样式、挂载 React 应用
    - `destroy()` 方法移除 Widget DOM 并清理资源
+   - `setLocale(locale)` 方法在不卸载 Widget 的前提下实时切换界面语言（重新渲染，保留当前对话）
 
 3. **配置接口**
    - `apiUrl`（必填）：后端 API 地址
@@ -117,6 +120,7 @@
    - `title`（可选）：对话框标题，默认"Chat Assistant"
    - `position`（可选）：浮动按钮位置，`right`（默认）或 `left`
    - `welcomeMessage`（可选）：首次打开时的欢迎语
+   - `locale`（可选）：界面语言，接受 BCP-47 标签，解析为受支持语言（`en`、`zh-CN`，任意中文变体归为 `zh-CN`，其余回退 `en`），默认取 `navigator.language`；运行时可用 `setLocale` 切换
 
 4. **聊天交互**
    - 复用现有浮动按钮 + 弹窗对话框的交互模式

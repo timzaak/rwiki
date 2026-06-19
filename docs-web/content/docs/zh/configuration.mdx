@@ -349,22 +349,37 @@ threshold = 0.3   # 上线后从首批记录校准
 RWikiChat.destroy();
 ```
 
+实时切换语言，无需重新初始化——Widget 原地重新渲染，当前对话保留：
+
+```js
+RWikiChat.setLocale('zh-CN');
+```
+
+`setLocale` 接受与 `locale` 配置相同的 BCP-47 标签，解析规则一致。必须在 `init` 之后调用；在 `init` 之前调用会打印错误且不生效。
+
 Widget 通过 Shadow DOM 隔离样式，不会影响宿主页面 CSS。
 
 ### React 集成（docs-web 的方式）
 
-React 应用中可以动态加载 widget 脚本。后端地址通过 `VITE_RWIKI_API_URL` 环境变量传入（构建时确定，定义在 `docs-web/vite.config.ts`）。
+React 应用中可以动态加载 widget 脚本。后端地址通过 `VITE_RWIKI_API_URL` 环境变量传入（构建时确定，定义在 `docs-web/vite.config.ts`）。把应用当前的 locale 传给组件，让 widget 跟随它：`init` 时传入初始值，locale 变化时调用 `setLocale`。
 
 ```tsx
 // src/components/rwiki-chat-widget.tsx
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget() {
+export default function RWikiChatWidget({ locale }: { locale: string }) {
+  const firstRun = useRef(true);
+  // 始终保存最新 locale：脚本异步加载时，onload 里的 init 读取此 ref，
+  // 避免用到挂载时闭包捕获的过期 locale（修复 locale 在脚本加载期间变化的竞态）。
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+
+  // 加载并初始化一次，传入初始 locale。
   useEffect(() => {
     const w = window as any;
-    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl }); };
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, locale: localeRef.current }); };
     if (w.RWikiChat?.init) {
       initWidget();
     } else {
@@ -374,15 +389,24 @@ export default function RWikiChatWidget() {
       document.body.appendChild(script);
     }
     return () => { w.RWikiChat?.destroy?.(); };
+    // locale 变化由下方 effect 处理。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 应用 locale 变化时实时切换语言。
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; } // 初始 locale 已在 init 中传入
+    (window as any).RWikiChat?.setLocale?.(locale);
+  }, [locale]);
+
   return null;
 }
 ```
 
-在根布局中放置组件：
+在根布局中放置组件，并传入当前 locale（docs-web 从 URL 路径推导 locale）：
 
 ```tsx
-<RWikiChatWidget />
+<RWikiChatWidget locale={locale} />
 ```
 
 启动 docs-web 前先构建并复制 widget：

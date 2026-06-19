@@ -298,12 +298,12 @@ import { useEffect } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget() {
+export default function RWikiChatWidget({ locale }: { locale: string }) {
   useEffect(() => {
     const w = window as any;
 
     const initWidget = () => {
-      w.RWikiChat?.init?.({ apiUrl });
+      w.RWikiChat?.init?.({ apiUrl, locale });
     };
 
     if (w.RWikiChat?.init) {
@@ -324,10 +324,10 @@ export default function RWikiChatWidget() {
 }
 ```
 
-3. Place the component in your root layout (after the provider, before `</body>`):
+3. Place the component in your root layout (after the provider, before `</body>`) and pass your app's current locale:
 
 ```tsx
-<RWikiChatWidget />
+<RWikiChatWidget locale={locale} />
 ```
 
 4. Set the backend URL at build time:
