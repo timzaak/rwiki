@@ -275,6 +275,15 @@ Full config options: [Configuration → Widget](/docs/configuration#widget).
 
 The widget uses Shadow DOM for style isolation — it won't affect the host page's CSS.
 
+The widget calls `/api/chat` on your backend. Embedding it on a domain different from the backend is a cross-origin request. The backend allows all origins by default, so it works out of the box. But that means any website can call your API and spend your LLM budget. For production, restrict it to your own domains:
+
+```toml
+[server]
+allowed_origins = ["https://your-site.com"]
+```
+
+Or set the `CORS_ALLOWED_ORIGINS` env var. See [Configuration → Server](/docs/configuration#server).
+
 Destroy the instance:
 
 ```js

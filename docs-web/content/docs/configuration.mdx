@@ -22,6 +22,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | Bearer Token for document management endpoints |
 | `API_ALLOWED_IP_RANGES` | `api.allowed_ip_ranges` | Comma-separated CIDR list restricting which client IPs may call protected endpoints. Overrides the config file value. Empty means no IP restriction. |
+| `CORS_ALLOWED_ORIGINS` | `server.allowed_origins` | Comma-separated origin allowlist for the chat widget (embedded on third-party sites). Empty means allow all origins (`*`), the default. Set specific origins to restrict which sites may call `/api/chat`. |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP auth token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
@@ -35,6 +36,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `log_level` | string | Yes | — | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 | `app_env` | string | Yes | — | Environment: `development`, `demo`, `test` |
 | `static_dir` | string | No | — | Frontend static files directory (production mode), e.g. `"../frontend/dist"`. Omit to skip static file serving. |
+| `allowed_origins` | string[] | No | `[]` (`*`) | CORS origin allowlist for the chat widget. The widget is embedded on third-party sites and calls `/api/chat` cross-origin. Empty means allow all origins (`*`) — works out of the box but lets any site consume your API. Set specific origins to restrict access. See [Widget](#widget). |
 | `enable_openapi` | bool | Yes | — | Enable Swagger docs at `/swagger` |
 
 ## SQLite

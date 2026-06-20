@@ -1,6 +1,6 @@
 use crate::application::http::{handlers, openapi::ApiDoc, state::AppState};
-use axum::http::Method;
 use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method};
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use std::path::Path;
@@ -23,11 +23,36 @@ use utoipa::OpenApi;
 /// - /api/chat/scoped — SSE 流式聊天（需鉴权，可按 documentIds 限定集合检索）
 /// - /swagger — Swagger UI（仅 enable_openapi = true 时可用）
 /// - 其他路径 — 代理到前端静态文件
+/// 构建 CORS 层：允许的方法与请求头固定；允许的 origin 由配置决定。
+///
+/// `allowed_origins` 为空 → 允许任意来源（`Any`，向后兼容，widget 可嵌入任意站点）；
+/// 非空 → 仅允许列表中的精确 origin（回显匹配的 origin，用于生产环境收紧）。
+///
+/// widget 不携带 credentials（默认 same-origin），故不启用 `allow_credentials`，
+/// 避免 `Any` origin + credentials 的不安全组合。
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    let methods = [Method::GET, Method::POST, Method::PATCH, Method::DELETE];
+    let layer = CorsLayer::new().allow_methods(methods).allow_headers(Any);
+
+    if allowed_origins.is_empty() {
+        layer.allow_origin(Any)
+    } else {
+        let origins: Vec<HeaderValue> = allowed_origins
+            .iter()
+            .map(|o| {
+                HeaderValue::from_str(o).unwrap_or_else(|_| {
+                    panic!(
+                        "invalid CORS origin in config (expected an absolute URL like https://example.com): {o:?}"
+                    )
+                })
+            })
+            .collect();
+        layer.allow_origin(origins)
+    }
+}
+
 pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
-        .allow_headers(Any);
+    let cors = build_cors_layer(&state.allowed_origins);
 
     // Document routes behind auth middleware
     let doc_router = Router::new()

@@ -101,6 +101,7 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
         api_allowed_ip_ranges,
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        allowed_origins: vec![],
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),

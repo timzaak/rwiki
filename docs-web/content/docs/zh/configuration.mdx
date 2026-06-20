@@ -22,6 +22,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | 文档管理接口的 Bearer Token |
 | `API_ALLOWED_IP_RANGES` | `api.allowed_ip_ranges` | 逗号分隔的 CIDR 列表，限制哪些客户端 IP 能访问受保护接口。覆盖配置文件中的值。为空时不限制来源 IP |
+| `CORS_ALLOWED_ORIGINS` | `server.allowed_origins` | 聊天 widget（嵌入第三方网站）的来源允许列表，逗号分隔。为空时允许所有来源（`*`，默认）。设置具体来源以限制哪些站点能调用 `/api/chat` |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP 鉴权 Token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
@@ -35,6 +36,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `log_level` | string | 是 | — | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
 | `app_env` | string | 是 | — | 运行环境：`development`、`demo`、`test` |
 | `static_dir` | string | 否 | — | 前端静态文件目录（生产模式使用），如 `"../frontend/dist"`。省略则不托管静态文件 |
+| `allowed_origins` | string[] | 否 | `[]`（`*`） | 聊天 widget 的 CORS 来源白名单。widget 嵌入第三方网站时会跨域调用 `/api/chat`。为空=允许所有来源（`*`），开箱即用但任何站点都能调用你的接口；设置具体来源以收紧访问。详见 [Widget](#widget) |
 | `enable_openapi` | bool | 是 | — | 是否启用 Swagger 文档（`/swagger`） |
 
 ## SQLite

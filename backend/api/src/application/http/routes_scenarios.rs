@@ -97,6 +97,7 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
         api_allowed_ip_ranges: Vec::new(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: Some(static_dir),
+        allowed_origins: vec![],
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),

@@ -36,6 +36,7 @@ docker run -d -p 8080:8080 \
 | `OPENAI_API_KEY` | Embedding API Key | 是 |
 | `API_TOKEN` | 文档管理接口鉴权 Token | 建议设置 |
 | `APP_CONFIG` | 配置文件路径，默认 `/app/config.toml` | 否 |
+| `CORS_ALLOWED_ORIGINS` | Widget CORS 来源白名单（逗号分隔）。在第三方网站嵌入 widget 时设置 | 否 |
 
 环境变量优先级高于配置文件。也可以挂载配置文件代替环境变量：
 
@@ -173,6 +174,7 @@ your-domain.com {
 - docs-web 的 SPA 入口是 `_shell.html`（不是 `index.html`），`try_files` 必须回退到 `/_shell.html`
 - `root * /srv/rwiki` 指向 Caddy 容器内挂载的 docs-web 静态文件目录
 - 将 `your-domain.com` 替换为实际域名，Caddy 通过 Let's Encrypt 自动申请 TLS 证书
+- 因为 widget 和后端通过 Caddy 共用同一域名，widget 请求是同源的，不触发 CORS。如果你把 widget 嵌入**其他**网站，需要配置 `allowed_origins`（或 `CORS_ALLOWED_ORIGINS`）允许那个站点的来源
 
 ### 启动全部服务
 

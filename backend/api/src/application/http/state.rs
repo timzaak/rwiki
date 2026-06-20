@@ -39,6 +39,8 @@ pub struct AppState {
     pub chat_config: ChatConfig,
     /// 静态文件目录路径（含 widget JS 等），为 None 时不托管
     pub static_dir: Option<String>,
+    /// CORS 允许的来源（空 = 全放开 `*`，非空 = 精确白名单）
+    pub allowed_origins: Vec<String>,
     /// RAG 检索配置
     pub retrieval_config: RetrievalConfig,
     /// Reranker（None 表示未启用）

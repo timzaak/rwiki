@@ -492,6 +492,7 @@ async fn main() -> Result<()> {
         api_allowed_ip_ranges,
         chat_config,
         static_dir: config.server.static_dir.clone(),
+        allowed_origins: config.server.allowed_origins.clone(),
         retrieval_config: config.retrieval.clone(),
         reranker,
         rerank_config: config.rerank.clone().unwrap_or_default(),

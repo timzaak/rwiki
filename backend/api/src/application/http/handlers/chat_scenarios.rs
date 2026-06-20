@@ -1449,6 +1449,7 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
         api_allowed_ip_ranges: Vec::new(),
         chat_config: rwiki_core::config::ChatConfig::default(),
         static_dir: None,
+        allowed_origins: vec![],
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),

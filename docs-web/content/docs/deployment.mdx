@@ -36,6 +36,7 @@ The container listens on port `8080`, data stored at `/app/data`.
 | `OPENAI_API_KEY` | Embedding API Key | Yes |
 | `API_TOKEN` | Document management endpoint auth token | Recommended |
 | `APP_CONFIG` | Config file path, default `/app/config.toml` | No |
+| `CORS_ALLOWED_ORIGINS` | Widget CORS origin allowlist (comma-separated). Set when embedding the widget on third-party sites | No |
 
 Environment variables take priority over the config file. You can also mount a config file instead:
 
@@ -173,6 +174,7 @@ Key points:
 - docs-web's SPA entry is `_shell.html` (not `index.html`), so `try_files` must fallback to `/_shell.html`
 - `root * /srv/rwiki` points to the docs-web static files directory mounted into the Caddy container
 - Replace `your-domain.com` with your actual domain — Caddy provisions TLS certificates automatically via Let's Encrypt
+- Because the widget and backend share one domain through Caddy, widget requests are same-origin and CORS doesn't apply. If you embed the widget on a *different* site, configure `allowed_origins` (or `CORS_ALLOWED_ORIGINS`) to allow that site's origin
 
 ### Start All Services
 

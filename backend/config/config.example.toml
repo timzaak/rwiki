@@ -20,6 +20,12 @@ enable_openapi = true
 # Set to "/app/static" for Docker deployments.
 # Leave empty or unset to skip serving static files.
 # static_dir = "/app/static"
+# CORS allowed origins for the chat widget (embedded on third-party sites).
+# Empty/unset = allow all origins (*), the default and backward-compatible
+# behavior (the widget works on any site). List specific origins to lock down
+# which sites may call /api/chat, preventing unauthorized use of your API.
+# Can also be set via the CORS_ALLOWED_ORIGINS env var (comma-separated).
+# allowed_origins = ["https://your-domain.com", "https://docs.example.com"]
 
 [sqlite]
 # SQLite database file path

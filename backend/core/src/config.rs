@@ -45,6 +45,9 @@ impl AppConfig {
         if let Ok(ranges) = env::var("API_ALLOWED_IP_RANGES") {
             config.api.allowed_ip_ranges = parse_env_list(&ranges);
         }
+        if let Ok(origins) = env::var("CORS_ALLOWED_ORIGINS") {
+            config.server.allowed_origins = parse_env_list(&origins);
+        }
         if let Ok(key) = env::var("OTEL_LICENSE_KEY") {
             config.otel.license_key = key;
         }
@@ -84,6 +87,12 @@ pub struct ServerConfig {
     /// 为空或未配置时不托管静态文件
     #[serde(default)]
     pub static_dir: Option<String>,
+    /// CORS 允许的来源（供第三方网站嵌入聊天 widget 调用 /api/chat 等）。
+    /// 空 = 允许所有来源（默认，向后兼容，等同 `Access-Control-Allow-Origin: *`）；
+    /// 非空 = 仅允许列表中的精确 origin，用于生产环境收紧、防止接口被未授权站点滥用。
+    /// 也可经环境变量 `CORS_ALLOWED_ORIGINS`（逗号分隔）覆盖。
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 /// SQLite 配置
