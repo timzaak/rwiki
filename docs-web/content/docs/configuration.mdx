@@ -146,7 +146,7 @@ Include in requests:
 Authorization: Bearer your-secret-token
 ```
 
-This token is also the admin console login key — the frontend uses it to sign in at `/admin` (see [Admin Console](/docs/admin)).
+This token is also the admin console login key — the frontend uses it to sign in at `/admin` (see [Admin Console](/en/docs/admin)).
 
 ## Chat
 
@@ -300,7 +300,7 @@ timeout_secs = 3
 |-------|------|----------|---------|-------------|
 | `threshold` | number | No | `0.3` | A published-scope chat query is recorded when its top-1 relevance score falls below this value, or when retrieval returns nothing. The score is the rerank `relevance_score` (0..1), so enable `[rerank]` alongside this for the threshold to be meaningful. |
 
-When enabled, every `POST /api/chat` request whose top result relevance is below `threshold` — or that returns zero results — is written to a log table in a fire-and-forget background task. Recording is a side path: it never blocks or changes the answer, and a write failure only logs a warning. Records keep the original question, the top relevance score, the recall sources, and the time — not the assistant's answer. Records are kept permanently (no TTL). Operators view and filter them by score range and time in the admin console (see [Admin Console → Low-Recall Records](/docs/admin#low-recall-records)). Only published-scope queries are recorded; scoped eval queries are not.
+When enabled, every `POST /api/chat` request whose top result relevance is below `threshold` — or that returns zero results — is written to a log table in a fire-and-forget background task. Recording is a side path: it never blocks or changes the answer, and a write failure only logs a warning. Records keep the original question, the top relevance score, the recall sources, and the time — not the assistant's answer. Records are kept permanently (no TTL). Operators view and filter them by score range and time in the admin console (see [Admin Console → Low-Recall Records](/en/docs/admin#low-recall-records)). Only published-scope queries are recorded; scoped eval queries are not.
 
 ```toml
 [low_recall]

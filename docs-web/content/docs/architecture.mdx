@@ -57,7 +57,7 @@ Overlong chunks are further split at Markdown semantic boundaries.
 
 ### Vectorization & Storage
 
-Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication is self-contained: every new document always gets its own retrieval entries. Identical content (same `content_hash` and embedding model) reuses the cached vectors instead of calling the embedding API again. This way, batch publishing and unpublishing can retire an old document without losing its unchanged content under the new one (see [Admin Console](/docs/admin)).
+Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication is self-contained: every new document always gets its own retrieval entries. Identical content (same `content_hash` and embedding model) reuses the cached vectors instead of calling the embedding API again. This way, batch publishing and unpublishing can retire an old document without losing its unchanged content under the new one (see [Admin Console](/en/docs/admin)).
 
 In parallel, each chunk's text is tokenized with [jieba](https://github.com/messense/jieba-rs) (Chinese word segmentation) and indexed into an FTS5 virtual table (`fts_chunks`). This enables BM25 keyword search alongside vector similarity search — the two are fused via Reciprocal Rank Fusion (RRF) at retrieval time.
 
@@ -119,7 +119,7 @@ RWiki exposes OpenTelemetry metrics for the entire RAG pipeline. All metrics sha
 | `rag.knowledge_base.chunks` | ObservableGauge | Total chunk count |
 | `rag.sessions.active` | ObservableGauge | Active chat session count |
 
-No extra configuration is needed — metrics reuse the same `[otel]` endpoint and credentials as tracing. See [Configuration > OpenTelemetry](/docs/configuration#opentelemetry).
+No extra configuration is needed — metrics reuse the same `[otel]` endpoint and credentials as tracing. See [Configuration > OpenTelemetry](/en/docs/configuration#opentelemetry).
 
 ### GenAI spans (`gen_ai.*`)
 
@@ -147,4 +147,4 @@ The frontend renders thumbs-up/thumbs-down buttons below each assistant message 
 
 ### Low-recall logging
 
-Feedback is sparse — most bad answers get no thumbs-down. To cover the rest, the backend records every published-scope chat query whose top result relevance falls below a configurable threshold (or that returns nothing) into a log table. The record keeps the question, the top relevance score, the recall sources, and the time, written on a side path that doesn't touch the answer. Operators read these records in the [admin console](/docs/admin#low-recall-records) to find knowledge-base blind spots. The feature is off by default and enabled by the `[low_recall]` config section. This is the third quality signal alongside feedback (human, sparse) and the eval endpoint (offline, batch) — the three are complementary, not overlapping.
+Feedback is sparse — most bad answers get no thumbs-down. To cover the rest, the backend records every published-scope chat query whose top result relevance falls below a configurable threshold (or that returns nothing) into a log table. The record keeps the question, the top relevance score, the recall sources, and the time, written on a side path that doesn't touch the answer. Operators read these records in the [admin console](/en/docs/admin#low-recall-records) to find knowledge-base blind spots. The feature is off by default and enabled by the `[low_recall]` config section. This is the third quality signal alongside feedback (human, sparse) and the eval endpoint (offline, batch) — the three are complementary, not overlapping.

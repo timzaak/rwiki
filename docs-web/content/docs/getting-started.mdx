@@ -65,7 +65,7 @@ base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-chat-v3-0324"
 ```
 
-Other providers like OpenAI, BigModel (Zhipu AI) are also supported. See [Configuration](/docs/configuration) for details.
+Other providers like OpenAI, BigModel (Zhipu AI) are also supported. See [Configuration](/en/docs/configuration) for details.
 
 ### Zero-cost setup (OpenRouter free models)
 
@@ -152,7 +152,7 @@ With the server running, let's walk through the full flow: upload a document, pu
 
 ### Prepare a document
 
-RWiki supports four formats: Markdown (`.md` / `.mdx`), Excel (`.xlsx`), OpenAPI JSON (`.json`), and FAQ JSONL (`.jsonl`). File size limit is 50 MB; encoding must be UTF-8. For field definitions, frontmatter, JSON shapes, and error messages per format, see [Document Formats](/docs/document-formats).
+RWiki supports four formats: Markdown (`.md` / `.mdx`), Excel (`.xlsx`), OpenAPI JSON (`.json`), and FAQ JSONL (`.jsonl`). File size limit is 50 MB; encoding must be UTF-8. For field definitions, frontmatter, JSON shapes, and error messages per format, see [Document Formats](/en/docs/document-formats).
 
 To walk through the flow, create a minimal Markdown file:
 
@@ -189,7 +189,7 @@ You'll get a response like:
 
 Note the `id` in the response. The status is `draft` — the document has been parsed and vectorized, but not yet published.
 
-You can also upload via the frontend: open `http://localhost:3000/admin`, sign in with the API key (the `[api] token`), and upload from the admin console. The console also supports batch publish/unpublish — see [Admin Console](/docs/admin).
+You can also upload via the frontend: open `http://localhost:3000/admin`, sign in with the API key (the `[api] token`), and upload from the admin console. The console also supports batch publish/unpublish — see [Admin Console](/en/docs/admin).
 
 ### Publish the document
 
@@ -271,7 +271,7 @@ Include the script and initialize on any page:
 </script>
 ```
 
-Full config options: [Configuration → Widget](/docs/configuration#widget).
+Full config options: [Configuration → Widget](/en/docs/configuration#widget).
 
 The widget uses Shadow DOM for style isolation — it won't affect the host page's CSS.
 
@@ -282,7 +282,7 @@ The widget calls `/api/chat` on your backend. Embedding it on a domain different
 allowed_origins = ["https://your-site.com"]
 ```
 
-Or set the `CORS_ALLOWED_ORIGINS` env var. See [Configuration → Server](/docs/configuration#server).
+Or set the `CORS_ALLOWED_ORIGINS` env var. See [Configuration → Server](/en/docs/configuration#server).
 
 Destroy the instance:
 

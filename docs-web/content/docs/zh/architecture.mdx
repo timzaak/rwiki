@@ -57,7 +57,7 @@ flowchart LR
 
 ### 向量化与存储
 
-每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重是自包含的：上传时始终为每个新文档建立独立的检索条目；相同内容（相同 content_hash 和 embedding 模型）只复用已缓存的向量，不重复调用 embedding API。这样批量上下线时，下线老文档不影响新文档下的未改动内容（见[文档管理后台](/docs/zh/admin)）。
+每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重是自包含的：上传时始终为每个新文档建立独立的检索条目；相同内容（相同 content_hash 和 embedding 模型）只复用已缓存的向量，不重复调用 embedding API。这样批量上下线时，下线老文档不影响新文档下的未改动内容（见[文档管理后台](/zh/docs/admin)）。
 
 同时，每个 chunk 的文本会用 [jieba](https://github.com/messense/jieba-rs)（中文分词）进行分词，写入 FTS5 虚拟表（`fts_chunks`）。这样检索时可以同时做 BM25 关键词搜索和向量相似度搜索，两种结果通过 Reciprocal Rank Fusion（RRF）融合排序。
 
@@ -125,7 +125,7 @@ RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用
 | `rag.knowledge_base.chunks` | ObservableGauge | Chunk 总数 |
 | `rag.sessions.active` | ObservableGauge | 活跃会话数 |
 
-不需要额外配置——指标复用 `[otel]` 的端点和凭据，与 tracing 共享。参见[配置 > OpenTelemetry](/docs/zh/configuration#opentelemetry)。
+不需要额外配置——指标复用 `[otel]` 的端点和凭据，与 tracing 共享。参见[配置 > OpenTelemetry](/zh/docs/configuration#opentelemetry)。
 
 ### GenAI 链路（`gen_ai.*`）
 
@@ -153,4 +153,4 @@ RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用
 
 ### 低相关召回记录
 
-反馈是稀疏的——大多数答得不好的回答没人点踩。为了补上这部分，后端会把每次 published 作用域对话查询中 top-1 相关度低于阈值（或没有任何召回结果）的查询写入记录表。记录保存问题、top-1 相关度、召回来源和时间，写入走旁路、不碰回答本身。运营在[后台](/docs/zh/admin#低相关召回记录)读这些记录来定位知识库盲区。功能默认关闭，由 `[low_recall]` 配置段启用。这是继反馈（人工、稀疏）和 eval 端点（离线、批量）之后的第三类质量信号，三者互补、互不重叠。
+反馈是稀疏的——大多数答得不好的回答没人点踩。为了补上这部分，后端会把每次 published 作用域对话查询中 top-1 相关度低于阈值（或没有任何召回结果）的查询写入记录表。记录保存问题、top-1 相关度、召回来源和时间，写入走旁路、不碰回答本身。运营在[后台](/zh/docs/admin#低相关召回记录)读这些记录来定位知识库盲区。功能默认关闭，由 `[low_recall]` 配置段启用。这是继反馈（人工、稀疏）和 eval 端点（离线、批量）之后的第三类质量信号，三者互补、互不重叠。

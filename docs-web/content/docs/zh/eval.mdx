@@ -100,7 +100,7 @@ RAG 管线，并返回适配 Ragas、DeepEval、RAGChecker 等开源评估框架
 
 ## 评测指定文档集合
 
-传入 `documentIds` 把检索限定到一组文档，并放开发布限制——可以评测还在 `draft` 的草稿批次，在上线前预演质量（见[文档管理后台](/docs/zh/admin)）。不传或传空数组则维持线上行为，只命中已发布文档。
+传入 `documentIds` 把检索限定到一组文档，并放开发布限制——可以评测还在 `draft` 的草稿批次，在上线前预演质量（见[文档管理后台](/zh/docs/admin)）。不传或传空数组则维持线上行为，只命中已发布文档。
 
 ```bash
 curl -X POST http://localhost:8080/api/eval/query \

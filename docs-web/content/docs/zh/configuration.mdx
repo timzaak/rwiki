@@ -146,7 +146,7 @@ export API_TOKEN="your-secret-token"
 Authorization: Bearer your-secret-token
 ```
 
-这个 token 也是文档管理后台的登录密钥：前端用它在 `/admin` 登录（见[文档管理后台](/docs/zh/admin)）。
+这个 token 也是文档管理后台的登录密钥：前端用它在 `/admin` 登录（见[文档管理后台](/zh/docs/admin)）。
 
 ## Chat
 
@@ -300,7 +300,7 @@ timeout_secs = 3
 |---|---|---|---|---|
 | `threshold` | number | 否 | `0.3` | 当一次 published 作用域对话查询的 top-1 相关度分数低于此值，或检索无任何结果时，记录该查询。分数取 rerank 的 `relevance_score`（0..1），建议同时启用 `[rerank]` 让阈值有意义 |
 
-启用后，每次 `POST /api/chat` 请求只要 top-1 相关度低于 `threshold`——或完全没有召回结果——就会被写入记录表，写入是 fire-and-forget 的旁路任务：不影响回答内容和延迟，写入失败只记一条 warn 日志。记录保存原始问题、top-1 相关度、召回来源和时间，不含助手回答。记录永久保留（无 TTL）。运营在后台按分数区间和时间筛选查看（见[文档管理后台 → 低相关召回记录](/docs/zh/admin#低相关召回记录)）。只记录 published 作用域查询，scoped 评测查询不记录。
+启用后，每次 `POST /api/chat` 请求只要 top-1 相关度低于 `threshold`——或完全没有召回结果——就会被写入记录表，写入是 fire-and-forget 的旁路任务：不影响回答内容和延迟，写入失败只记一条 warn 日志。记录保存原始问题、top-1 相关度、召回来源和时间，不含助手回答。记录永久保留（无 TTL）。运营在后台按分数区间和时间筛选查看（见[文档管理后台 → 低相关召回记录](/zh/docs/admin#低相关召回记录)）。只记录 published 作用域查询，scoped 评测查询不记录。
 
 ```toml
 [low_recall]

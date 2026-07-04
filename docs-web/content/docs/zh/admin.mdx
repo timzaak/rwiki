@@ -12,7 +12,7 @@ icon: LayoutDashboard
 
 ## 登录
 
-访问 `/admin`，未登录会跳到 `/auth/login`。输入 API Key——就是配置文件里的 `[api] token`，见[配置 → API Token](/docs/zh/configuration#api-token)。
+访问 `/admin`，未登录会跳到 `/auth/login`。输入 API Key——就是配置文件里的 `[api] token`，见[配置 → API Token](/zh/docs/configuration#api-token)。
 
 登录时前端用这个 Key 调 `POST /api/auth/verify` 探活：返回 204 表示 Key 有效，前端把 Key 存进浏览器，之后所有管理请求都带上它。Key 无效（401）或网络失败都提示 "Invalid API key"。
 
@@ -22,13 +22,13 @@ Key 失效后（比如后端换了 token），下一次请求会被 401 拦截�
 
 列表展示每个文档的文件名、状态、行数、上传时间、错误信息。
 
-状态含义见[架构 → 文档状态](/docs/zh/architecture#文档状态)：`processing`（解析中）、`draft`（待发布）、`published`（已上线）、`failed`（失败）。只有 `published` 的文档参与检索。
+状态含义见[架构 → 文档状态](/zh/docs/architecture#文档状态)：`processing`（解析中）、`draft`（待发布）、`published`（已上线）、`failed`（失败）。只有 `published` 的文档参与检索。
 
 顶部下拉框按状态筛选（全部 / Draft / Published / Processing / Failed）。切筛选会清空当前勾选，避免对被筛掉的隐藏文档误操作。
 
 ## 上传与删除
 
-上传走拖拽或选择文件，行为和 `POST /api/documents/upload` 一致；上传后状态是 `draft`，不会自动上线。支持的格式和限制见[文档格式](/docs/zh/document-formats)。
+上传走拖拽或选择文件，行为和 `POST /api/documents/upload` 一致；上传后状态是 `draft`，不会自动上线。支持的格式和限制见[文档格式](/zh/docs/document-formats)。
 
 删除支持单条和批量：勾选后点 Delete。没有批量删除接口，前端对每个选中文档并发调 `DELETE /api/documents/{documentId}`，任一失败提示 "Some deletions failed"。
 
@@ -77,11 +77,11 @@ curl -X POST http://localhost:8080/api/documents/batch-status \
 
 新批次里经常有和老批次完全一样的内容。如果上传时跳过这些重复内容，下线老文档后这些内容就没了。
 
-所以上传改成自包含：每个新文档都建立自己的检索条目，相同内容只复用已缓存的向量、不重复向量化。下线老文档不影响新文档下的同名内容。细节见[架构 → 向量化与存储](/docs/zh/architecture#向量化与存储)。
+所以上传改成自包含：每个新文档都建立自己的检索条目，相同内容只复用已缓存的向量、不重复向量化。下线老文档不影响新文档下的同名内容。细节见[架构 → 向量化与存储](/zh/docs/architecture#向量化与存储)。
 
 ## 上线前预演：评测指定文档集合
 
-新批次还是 `draft` 时，可以用 eval 限定到这批文档做预演评测，确认质量再上线。给 `POST /api/eval/query` 传 `documentIds`，检索就限定在这个集合，并且不受"仅 published 可见"的限制。用法见[评估（Eval）](/docs/zh/eval)。
+新批次还是 `draft` 时，可以用 eval 限定到这批文档做预演评测，确认质量再上线。给 `POST /api/eval/query` 传 `documentIds`，检索就限定在这个集合，并且不受"仅 published 可见"的限制。用法见[评估（Eval）](/zh/docs/eval)。
 
 ## 低相关召回记录
 
@@ -89,6 +89,6 @@ curl -X POST http://localhost:8080/api/documents/batch-status \
 
 列表是自动产生的：每次 published 作用域对话查询，只要 top-1 相关度低于配置阈值——或完全没有召回结果——就被记录，包含原始问题、top-1 相关度、召回来源和时间。记录走旁路，不影响回答内容和延迟，也不存助手回答。记录永久保留。
 
-按分数区间和时间筛选，分页查看。一段时间内没有低相关命中时显示空态。记录本身受 `[low_recall]` 配置段控制——关闭后列表不再增长，但已有记录仍可查看。见[配置 → Low Recall](/docs/zh/configuration#low-recall)。
+按分数区间和时间筛选，分页查看。一段时间内没有低相关命中时显示空态。记录本身受 `[low_recall]` 配置段控制——关闭后列表不再增长，但已有记录仍可查看。见[配置 → Low Recall](/zh/docs/configuration#low-recall)。
 
 这是自动、全覆盖的质量信号，和赞/踩反馈（人工、稀疏）、eval 端点（离线、批量）互补——三者覆盖不同盲区，互不重叠。

@@ -65,7 +65,7 @@ base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-chat-v3-0324"
 ```
 
-也支持 OpenAI、智谱 AI 等 provider，详见[配置](/docs/zh/configuration)。
+也支持 OpenAI、智谱 AI 等 provider，详见[配置](/zh/docs/configuration)。
 
 ### 零成本启动（OpenRouter 免费模型）
 
@@ -152,7 +152,7 @@ curl http://localhost:8080/health
 
 ### 准备一份文档
 
-RWiki 支持 4 种格式：Markdown（`.md` / `.mdx`）、Excel（`.xlsx`）、OpenAPI JSON（`.json`）、FAQ JSONL（`.jsonl`）。文件不超过 50 MB，编码必须是 UTF-8。每种格式的字段定义、frontmatter 写法、JSON 结构和错误提示见[文档格式](/docs/zh/document-formats)。
+RWiki 支持 4 种格式：Markdown（`.md` / `.mdx`）、Excel（`.xlsx`）、OpenAPI JSON（`.json`）、FAQ JSONL（`.jsonl`）。文件不超过 50 MB，编码必须是 UTF-8。每种格式的字段定义、frontmatter 写法、JSON 结构和错误提示见[文档格式](/zh/docs/document-formats)。
 
 为了把流程走通，先用任意编辑器建一个最简单的 Markdown 文件：
 
@@ -189,7 +189,7 @@ curl -X POST http://localhost:8080/api/documents/upload \
 
 记下返回的 `id`。状态是 `draft`，说明文档已经解析和向量化完成，但还没发布。
 
-也可以在前端界面上传：打开 `http://localhost:3000/admin`，用 API Key（就是 `[api] token`）登录后在文档管理后台上传文件。后台还支持批量上下线，见[文档管理后台](/docs/zh/admin)。
+也可以在前端界面上传：打开 `http://localhost:3000/admin`，用 API Key（就是 `[api] token`）登录后在文档管理后台上传文件。后台还支持批量上下线，见[文档管理后台](/zh/docs/admin)。
 
 ### 发布文档
 
@@ -271,7 +271,7 @@ npm run build:widget
 </script>
 ```
 
-完整的配置项说明见[配置 → Widget](/docs/zh/configuration#widget)。
+完整的配置项说明见[配置 → Widget](/zh/docs/configuration#widget)。
 
 Widget 通过 Shadow DOM 隔离样式，不会影响宿主页面的 CSS。
 
@@ -282,7 +282,7 @@ Widget 会调用后端的 `/api/chat`。把它嵌入与后端不同域名的网�
 allowed_origins = ["https://your-site.com"]
 ```
 
-或设置 `CORS_ALLOWED_ORIGINS` 环境变量。详见[配置 → 服务器](/docs/zh/configuration#服务器)。
+或设置 `CORS_ALLOWED_ORIGINS` 环境变量。详见[配置 → 服务器](/zh/docs/configuration#服务器)。
 
 销毁实例：
 
