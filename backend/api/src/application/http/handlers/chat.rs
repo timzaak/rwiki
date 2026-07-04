@@ -1169,9 +1169,9 @@ async fn chat_inner(
 // Handlers (thin wrappers over chat_inner)
 // ---------------------------------------------------------------------------
 
-/// 公共 SSE 聊天端点（无需鉴权）。
+/// Public SSE chat endpoint (no authentication required).
 ///
-/// 始终仅检索已发布内容（RetrievalScope::Published）。
+/// Always retrieves published content only (RetrievalScope::Published).
 #[utoipa::path(
     post,
     path = "/api/chat",
@@ -1196,10 +1196,10 @@ pub async fn chat(
     .await
 }
 
-/// 认证 SSE 聊天端点 `/api/chat/scoped`（需 API Key）。
+/// Authenticated SSE chat endpoint `/api/chat/scoped` (requires API key).
 ///
-/// 允许通过 documentIds 指定文档集合，构建 RetrievalScope::Collection，
-/// 放开发布限制检索。
+/// Allows specifying a document collection via documentIds, building a
+/// RetrievalScope::Collection that bypasses the published-only restriction.
 #[utoipa::path(
     post,
     path = "/api/chat/scoped",
