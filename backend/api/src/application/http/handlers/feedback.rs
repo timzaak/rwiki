@@ -9,6 +9,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
+use rwiki_core::config::SiteValidationError;
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -17,6 +18,9 @@ use crate::application::http::state::AppState;
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRequest {
+    /// 站点标识；必填（在 handler 中二次校验以返回 400）
+    #[serde(default)]
+    pub site_id: Option<String>,
     pub session_id: String,
     pub message_id: String,
     pub feedback: Option<String>,
@@ -28,6 +32,8 @@ pub struct FeedbackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackItem {
     pub id: i64,
+    /// 反馈所属站点
+    pub site_id: String,
     pub session_id: String,
     pub message_id: String,
     pub feedback: String,
@@ -43,7 +49,10 @@ pub struct FeedbackListResponse {
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct FeedbackQueryParams {
+    /// 站点标识；必填
+    pub site_id: String,
     pub feedback: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -72,6 +81,17 @@ pub async fn submit_feedback(
     State(state): State<Arc<AppState>>,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<StatusCode, ApiError> {
+    let site_id = state
+        .sites_config
+        .require_configured(req.site_id.as_deref().unwrap_or(""))
+        .map_err(|e| match e {
+            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
+            SiteValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("站点 {id} 未配置"))
+            }
+        })?
+        .to_string();
+
     // Validate required fields
     if req.session_id.trim().is_empty() || req.message_id.trim().is_empty() {
         return Err(ApiError::bad_request(
@@ -93,17 +113,17 @@ pub async fn submit_feedback(
         .call(move |conn| {
             match req.feedback {
                 None => {
-                    // Cancel feedback: DELETE (idempotent — no error if row doesn't exist)
+                    // Idempotent: no error if the row doesn't exist.
                     conn.execute(
-                        "DELETE FROM chat_feedback WHERE session_id = ?1 AND message_id = ?2",
-                        rusqlite::params![req.session_id, req.message_id],
+                        "DELETE FROM chat_feedback WHERE site_id = ?1 AND session_id = ?2 AND message_id = ?3",
+                        rusqlite::params![site_id, req.session_id, req.message_id],
                     )?;
                 }
                 Some(ref feedback) => {
-                    // Submit feedback: UPSERT
                     conn.execute(
-                        "INSERT OR REPLACE INTO chat_feedback (session_id, message_id, feedback, user_message, assistant_message) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        "INSERT OR REPLACE INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         rusqlite::params![
+                            site_id,
                             req.session_id,
                             req.message_id,
                             feedback,
@@ -121,9 +141,10 @@ pub async fn submit_feedback(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Query feedback list with pagination and optional filtering.
+/// Query site-scoped feedback list with pagination and optional filtering.
 ///
 /// Requires Bearer Token authentication (registered in doc_router).
+/// Only returns feedback records belonging to the requested `siteId`.
 #[utoipa::path(
     get,
     path = "/api/chat/feedback",
@@ -132,6 +153,7 @@ pub async fn submit_feedback(
     params(FeedbackQueryParams),
     responses(
         (status = 200, description = "Feedback list", body = FeedbackListResponse),
+        (status = 400, description = "Missing or invalid siteId", body = crate::application::http::errors::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::application::http::errors::ErrorResponse),
         (status = 500, description = "Database error", body = crate::application::http::errors::ErrorResponse)
     )
@@ -140,6 +162,17 @@ pub async fn list_feedback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FeedbackQueryParams>,
 ) -> Result<Json<FeedbackListResponse>, ApiError> {
+    let site_id = state
+        .sites_config
+        .require_configured(&params.site_id)
+        .map_err(|e| match e {
+            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
+            SiteValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("站点 {id} 未配置"))
+            }
+        })?
+        .to_string();
+
     let limit = params.limit.unwrap_or(20).min(100);
     let offset = params.offset.unwrap_or(0);
 
@@ -147,48 +180,64 @@ pub async fn list_feedback(
         .sqlite
         .call(move |conn| {
             let filter_feedback = params.feedback.as_deref();
+            let base_where = "WHERE site_id = ?1";
 
             let (count_sql, data_sql) = if filter_feedback.is_some() {
                 (
-                    "SELECT COUNT(*) FROM chat_feedback WHERE feedback = ?1",
-                    "SELECT id, session_id, message_id, feedback, user_message, assistant_message, created_at \
-                     FROM chat_feedback WHERE feedback = ?1 \
-                     ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                    format!(
+                        "SELECT COUNT(*) FROM chat_feedback {base_where} AND feedback = ?2"
+                    ),
+                    format!(
+                        "SELECT id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
+                         FROM chat_feedback {base_where} AND feedback = ?2 \
+                         ORDER BY created_at DESC LIMIT ?3 OFFSET ?4"
+                    ),
                 )
             } else {
                 (
-                    "SELECT COUNT(*) FROM chat_feedback",
-                    "SELECT id, session_id, message_id, feedback, user_message, assistant_message, created_at \
-                     FROM chat_feedback \
-                     ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                    format!("SELECT COUNT(*) FROM chat_feedback {base_where}"),
+                    format!(
+                        "SELECT id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
+                         FROM chat_feedback {base_where} \
+                         ORDER BY created_at DESC LIMIT ?2 OFFSET ?3"
+                    ),
                 )
             };
 
-            let total = if filter_feedback.is_some() {
-                conn.query_row(count_sql, rusqlite::params![filter_feedback], |row| row.get::<_, i64>(0))?
+            let total = if let Some(feedback) = filter_feedback {
+                conn.query_row(
+                    &count_sql,
+                    rusqlite::params![site_id, feedback],
+                    |row| row.get::<_, i64>(0),
+                )?
             } else {
-                conn.query_row(count_sql, [], |row| row.get::<_, i64>(0))?
+                conn.query_row(&count_sql, rusqlite::params![site_id], |row| {
+                    row.get::<_, i64>(0)
+                })?
             };
 
             let row_to_item = |row: &rusqlite::Row| -> Result<FeedbackItem, rusqlite::Error> {
                 Ok(FeedbackItem {
                     id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    message_id: row.get(2)?,
-                    feedback: row.get(3)?,
-                    user_message: row.get(4)?,
-                    assistant_message: row.get(5)?,
-                    created_at: row.get(6)?,
+                    site_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    message_id: row.get(3)?,
+                    feedback: row.get(4)?,
+                    user_message: row.get(5)?,
+                    assistant_message: row.get(6)?,
+                    created_at: row.get(7)?,
                 })
             };
 
-            let items = if filter_feedback.is_some() {
-                conn.prepare(data_sql)?
-                    .query_map(rusqlite::params![filter_feedback, limit, offset], row_to_item)?
-                    .collect::<Result<Vec<_>, _>>()?
+            let items = if let Some(feedback) = filter_feedback {
+                conn.prepare(&data_sql)?.query_map(
+                    rusqlite::params![site_id, feedback, limit, offset],
+                    row_to_item,
+                )?
+                .collect::<Result<Vec<_>, _>>()?
             } else {
-                conn.prepare(data_sql)?
-                    .query_map(rusqlite::params![limit, offset], row_to_item)?
+                conn.prepare(&data_sql)?
+                    .query_map(rusqlite::params![site_id, limit, offset], row_to_item)?
                     .collect::<Result<Vec<_>, _>>()?
             };
 

@@ -4,6 +4,7 @@ use rwiki_core::config::ChatConfig;
 use rwiki_core::config::LowRecallConfig;
 use rwiki_core::config::RerankConfig;
 use rwiki_core::config::RetrievalConfig;
+use rwiki_core::config::SitesConfig;
 use rwiki_core::domain::chat::ChatSession;
 use rwiki_core::infrastructure::metrics::RwikiMetrics;
 use rwiki_core::infrastructure::reranker::RerankerProvider;
@@ -49,6 +50,8 @@ pub struct AppState {
     pub rerank_config: RerankConfig,
     /// 低相关召回记录配置（None 表示功能关闭）
     pub low_recall_config: Option<LowRecallConfig>,
+    /// 多站点配置注册表
+    pub sites_config: SitesConfig,
     /// RAG OTel Metrics 仪器集合
     pub metrics: Arc<RwikiMetrics>,
     /// 活跃会话计数器（AtomicUsize，供 ObservableGauge 同步回调读取）

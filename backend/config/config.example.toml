@@ -108,13 +108,6 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # When set, query rewriting translates the user query into this language.
 # content_language = "Chinese"
 
-# Suggested questions grouped by language (shown in the chat empty state).
-# At most 10 entries are displayed.
-# [chat.suggested_questions]
-# default = ["如何快速上手", "系统支持哪些文件格式"]
-# zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何提升回答准确性"]
-# en = ["How to get started", "What file formats are supported"]
-
 # Generate follow-up suggested questions after an answer (SSE `suggestions`
 # event, up to 3 entries). When enabled, an extra non-streaming LLM call is
 # appended after each main answer (max_tokens=200, 8s timeout). On failure,
@@ -180,6 +173,19 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # (DashScope defaults to mainland China). Set it explicitly for other
 # regions/gateways.
 # base_url = ""
+
+# 多站点配置（support-multiple-website）。
+# 至少配置一个 [sites.<siteId>] 段，否则服务启动失败。
+# 站点 ID 作为文档、聊天、反馈、低相关召回记录的作用域隔离键。
+[sites.help_center]
+name = "Help Center"
+# system_prompt = """
+# 你是 Help Center 的知识库助手。优先回答产品使用相关问题，语气简洁专业。
+# """
+# [sites.help_center.suggested_questions]
+# default = ["如何快速上手", "系统支持哪些文件格式"]
+# zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何联系客服"]
+# en = ["How to get started", "What file formats are supported"]
 
 # [low_recall] — 低相关召回记录（自动旁路记录相关性低于阈值的查询，供运营发现 KB 盲区）。
 # Enablement 与 rerank 一致：包含 [low_recall] 段即启用；省略整段则关闭（零开销）。

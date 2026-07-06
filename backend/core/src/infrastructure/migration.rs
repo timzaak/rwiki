@@ -77,5 +77,153 @@ pub fn migrations(ndims: usize) -> Migrations<'static> {
             CREATE INDEX IF NOT EXISTS idx_low_recall_created_at ON low_recall_records(created_at DESC);\
             CREATE INDEX IF NOT EXISTS idx_low_recall_top_score ON low_recall_records(top_score);",
         ),
+        M::up(
+            "ALTER TABLE documents ADD COLUMN site_id TEXT;\
+            CREATE INDEX IF NOT EXISTS idx_documents_site_id ON documents(site_id);\
+            ALTER TABLE chat_feedback ADD COLUMN site_id TEXT;\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_site_id ON chat_feedback(site_id);\
+            ALTER TABLE low_recall_records ADD COLUMN site_id TEXT;\
+            CREATE INDEX IF NOT EXISTS idx_low_recall_site_id ON low_recall_records(site_id);",
+        ),
+        // Recreate chat_feedback so its natural key includes site_id, preventing
+        // identical session/message ids from different sites from overwriting each
+        // other. site_id remains nullable here so the migration can complete when
+        // historical rows have not yet been backfilled; application code enforces
+        // non-empty values and startup validation rejects NULL site_id.
+        M::up(
+            "CREATE TABLE chat_feedback_new (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                site_id TEXT,\
+                session_id TEXT NOT NULL,\
+                message_id TEXT NOT NULL,\
+                feedback TEXT NOT NULL CHECK(feedback IN ('like', 'dislike')),\
+                user_message TEXT NOT NULL,\
+                assistant_message TEXT NOT NULL,\
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+                UNIQUE(site_id, session_id, message_id)\
+            );\
+            INSERT INTO chat_feedback_new (id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at)\
+                SELECT id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at FROM chat_feedback;\
+            DROP TABLE chat_feedback;\
+            ALTER TABLE chat_feedback_new RENAME TO chat_feedback;\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_created_at ON chat_feedback(created_at DESC);\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_feedback ON chat_feedback(feedback);\
+            CREATE INDEX IF NOT EXISTS idx_chat_feedback_site_id ON chat_feedback(site_id);",
+        ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    static SQLITE_VEC_INIT: Once = Once::new();
+
+    fn ensure_sqlite_vec_loaded() {
+        SQLITE_VEC_INIT.call_once(|| unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *mut std::os::raw::c_char,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> i32,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        });
+    }
+
+    fn make_conn() -> rusqlite::Connection {
+        ensure_sqlite_vec_loaded();
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .expect("set wal mode");
+        conn
+    }
+
+    // Covers: BE-D04 chat_feedback migration — the natural key must include site_id
+    // so identical session/message ids from different sites cannot overwrite each other.
+    // Historical rows with NULL site_id must migrate without failure (startup validation
+    // enforces backfill before the service actually runs).
+    #[test]
+    fn chat_feedback_migration_includes_site_id_in_unique_key() {
+        let mut conn = make_conn();
+
+        // Apply migrations up to and including the one that adds site_id (version 6).
+        migrations(1536)
+            .to_version(&mut conn, 6)
+            .expect("apply migrations through site_id column addition");
+
+        // Seed a pre-BE-D04 feedback row with NULL site_id.
+        conn.execute(
+            "INSERT INTO chat_feedback (session_id, message_id, feedback, user_message, assistant_message)
+             VALUES ('s1', 'm1', 'like', 'hello', 'hi')",
+            [],
+        )
+        .expect("insert historical feedback row");
+
+        // Apply the recreation migration.
+        migrations(1536)
+            .to_latest(&mut conn)
+            .expect("apply chat_feedback recreation migration");
+
+        // site_id column must exist.
+        let site_id_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chat_feedback') WHERE name = 'site_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query table info");
+        assert_eq!(site_id_count, 1, "chat_feedback must have site_id column");
+
+        // A unique index originating from the table schema must include site_id.
+        let unique_with_site_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_info(
+                    (SELECT name FROM pragma_index_list('chat_feedback') WHERE origin = 'u' LIMIT 1)
+                ) WHERE name = 'site_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query unique index info");
+        assert_eq!(
+            unique_with_site_count, 1,
+            "chat_feedback unique key must include site_id"
+        );
+
+        // Historical row is preserved.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 's1' AND message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count historical row");
+        assert_eq!(count, 1, "historical feedback row should be preserved");
+
+        // New rows with the same session/message but different site_id do not conflict.
+        conn.execute(
+            "INSERT INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message)
+             VALUES ('site_a', 's1', 'm1', 'dislike', 'hello', 'hi')",
+            [],
+        )
+        .expect("insert site-scoped feedback row");
+        conn.execute(
+            "INSERT INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message)
+             VALUES ('site_b', 's1', 'm1', 'like', 'hello', 'hi')",
+            [],
+        )
+        .expect("insert second site-scoped feedback row");
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 's1' AND message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count all rows");
+        assert_eq!(total, 3, "site_id must scope the natural key");
+    }
 }

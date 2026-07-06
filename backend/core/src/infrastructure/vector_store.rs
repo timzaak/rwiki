@@ -132,7 +132,8 @@ fn content_hash(text: &str) -> String {
     format!("{:x}", digest)
 }
 
-/// 检索作用域：默认只命中已发布；集合模式限定到指定文档并放开发布限制。
+/// 检索作用域：默认只命中已发布；集合模式限定到指定文档并放开发布限制；
+/// Site 模式限定到指定站点的已发布文档。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum RetrievalScope {
     /// 现有行为：d.status='published'
@@ -140,6 +141,8 @@ pub enum RetrievalScope {
     Published,
     /// eval 用：cm.document_id IN (...)，无发布限制
     Collection(Vec<String>),
+    /// 站点作用域：仅命中指定站点且 status='published' 的文档
+    Site(String),
 }
 
 impl RetrievalScope {
@@ -153,13 +156,18 @@ impl RetrievalScope {
     }
 
     /// 返回 `(WHERE 片段, 绑定参数列表)`，供检索 SQL 拼接：
-    /// - Published / 空 Collection → `AND d.status = 'published'`（无绑定参数）
+    /// - Site → `AND d.site_id = ? AND d.status = 'published'` + site_id
     /// - 非空 Collection → `AND cm.document_id IN (?, ...)` + 文档 id 列表
+    /// - Published / 空 Collection → `AND d.status = 'published'`（无绑定参数）
     ///
     /// 注意：返回的绑定参数必须在 SQL 中**按片段出现顺序**填入。
     /// search_by_keyword 的 `LIMIT ?` 位于该片段**之后**，故 top_k 必须最后压入 params。
     pub fn filter_sql(&self) -> (String, Vec<String>) {
         match self {
+            RetrievalScope::Site(site_id) => (
+                "AND d.site_id = ? AND d.status = 'published'".to_string(),
+                vec![site_id.clone()],
+            ),
             RetrievalScope::Collection(ids) if !ids.is_empty() => {
                 let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
                 (
@@ -505,7 +513,7 @@ impl VectorStoreManager {
 
         loop {
             let last = last_rowid;
-            let batch_size = Self::FTS_BACKFILL_BATCH_SIZE;
+            let batch_size = Self::FTS_BACKFILL_BATCH_SIZE as i64;
 
             let result = self
                 .conn
@@ -1077,6 +1085,22 @@ impl VectorStoreManager {
             .unwrap_or(true)
     }
 
+    /// Check if the vector store has any published documents for a given site.
+    pub async fn has_published_documents_for_site(&self, site_id: &str) -> bool {
+        let site_id = site_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM documents WHERE site_id = ? AND status = 'published'",
+                    rusqlite::params![site_id],
+                    |row| row.get(0),
+                )?;
+                Ok::<bool, rusqlite::Error>(count > 0)
+            })
+            .await
+            .unwrap_or(false)
+    }
+
     /// Remove all chunks for a document from both vec_chunks and chunk_metadata.
     pub async fn remove_document(&self, document_id: &Uuid) -> Result<(), CoreError> {
         let doc_id_str = document_id.to_string();
@@ -1627,19 +1651,30 @@ mod tests {
 
     /// Insert a test document row into the documents table.
     async fn insert_test_document(store: &VectorStoreManager, document_id: &str, status: &str) {
+        insert_test_document_for_site(store, document_id, status, None).await;
+    }
+
+    /// Insert a test document row with an optional site_id.
+    async fn insert_test_document_for_site(
+        store: &VectorStoreManager,
+        document_id: &str,
+        status: &str,
+        site_id: Option<&str>,
+    ) {
         let doc_id = document_id.to_string();
         let status_val = status.to_string();
+        let site_id_val = site_id.map(|s| s.to_string());
         store
             .conn
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO documents (id, file_name, status, row_count) VALUES (?, 'test.xlsx', ?, 1)",
-                    rusqlite::params![doc_id, status_val],
+                    "INSERT INTO documents (id, file_name, status, row_count, site_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
+                    rusqlite::params![doc_id, status_val, 1, site_id_val],
                 )?;
                 Ok::<(), rusqlite::Error>(())
             })
             .await
-            .expect("insert_test_document should succeed");
+            .expect("insert_test_document_for_site should succeed");
     }
 
     /// Insert a test chunk directly into chunk_metadata + vec_chunks (zero vector matching migration dimensions).
@@ -1884,6 +1919,56 @@ mod tests {
         );
         assert_eq!(results[0].chunk_id, "r0_chunk_0");
         assert_eq!(results[1].chunk_id, "r0_chunk_1");
+    }
+
+    // Covers: RetrievalScope::Site generates the correct SQL predicate and binds site_id.
+    #[test]
+    fn retrieval_scope_site_filter_sql_includes_site_and_published() {
+        let scope = RetrievalScope::Site("help_center".to_string());
+        let (sql, params) = scope.filter_sql();
+        assert_eq!(sql, "AND d.site_id = ? AND d.status = 'published'");
+        assert_eq!(params, vec!["help_center".to_string()]);
+    }
+
+    // Covers: RetrievalScope::Published keeps the original published-only predicate.
+    #[test]
+    fn retrieval_scope_published_filter_sql_unchanged() {
+        let (sql, params) = RetrievalScope::Published.filter_sql();
+        assert_eq!(sql, "AND d.status = 'published'");
+        assert!(params.is_empty());
+    }
+
+    // Covers: RetrievalScope::Collection binds document ids and skips status filter.
+    #[test]
+    fn retrieval_scope_collection_filter_sql_uses_document_ids() {
+        let ids = vec!["doc_a".to_string(), "doc_b".to_string()];
+        let (sql, params) = RetrievalScope::Collection(ids).filter_sql();
+        assert_eq!(sql, "AND cm.document_id IN (?,?)");
+        assert_eq!(params, vec!["doc_a".to_string(), "doc_b".to_string()]);
+    }
+
+    // Covers: has_published_documents_for_site returns true only when the site has published docs.
+    #[tokio::test]
+    async fn has_published_documents_for_site_reflects_site_scope() {
+        let store = make_sql_only_store();
+
+        insert_test_document_for_site(&store, "doc_help_pub", "published", Some("help_center"))
+            .await;
+        insert_test_document_for_site(&store, "doc_help_draft", "draft", Some("help_center")).await;
+        insert_test_document_for_site(&store, "doc_dev_pub", "published", Some("dev_docs")).await;
+
+        assert!(
+            store.has_published_documents_for_site("help_center").await,
+            "help_center should have published documents"
+        );
+        assert!(
+            store.has_published_documents_for_site("dev_docs").await,
+            "dev_docs should have published documents"
+        );
+        assert!(
+            !store.has_published_documents_for_site("unknown").await,
+            "unknown site should have no published documents"
+        );
     }
 
     // --- Pipeline unit tests (merge_and_dedup, trim_to_budget) ---

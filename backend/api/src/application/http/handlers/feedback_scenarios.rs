@@ -3,10 +3,11 @@
 //! Verifies the two feedback endpoints:
 //!
 //! - POST `/api/chat/feedback` (unprotected): submit like/dislike, switch,
-//!   cancel, and input validation
+//!   cancel, input validation, and site isolation
 //! - GET `/api/chat/feedback` (Bearer Token): query with auth, type filter,
-//!   pagination
+//!   pagination, and site isolation
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
 
@@ -17,12 +18,16 @@ use tower::ServiceExt;
 
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
+use rwiki_core::config::{SiteConfig, SitesConfig};
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Test constants / helpers
 // ---------------------------------------------------------------------------
 
 const TEST_API_TOKEN: &str = "test-api-token-12345";
+const SITE_A: &str = "help_center";
+const SITE_B: &str = "dev_docs";
+const UNKNOWN_SITE: &str = "unknown_site";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -40,6 +45,28 @@ fn ensure_sqlite_vec_loaded() {
             sqlite_vec::sqlite3_vec_init as *const ()
         )));
     });
+}
+
+/// Build a `SitesConfig` with two configured sites for isolation scenarios.
+fn test_sites_config() -> SitesConfig {
+    let mut sites = HashMap::new();
+    sites.insert(
+        SITE_A.to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    sites.insert(
+        SITE_B.to_string(),
+        SiteConfig {
+            name: "Developer Docs".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    SitesConfig { sites }
 }
 
 /// Build a minimal `AppState` suitable for feedback tests.
@@ -91,6 +118,7 @@ async fn test_app_state() -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
+        sites_config: test_sites_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -116,8 +144,10 @@ fn auth_request(method: Method, uri: String) -> Request<Body> {
 
 /// Insert a feedback row directly into the database for pre-seeding query tests.
 /// `created_at` overrides the default timestamp when provided.
+#[allow(clippy::too_many_arguments)]
 async fn insert_test_feedback(
     state: &Arc<AppState>,
+    site_id: &str,
     session_id: &str,
     message_id: &str,
     feedback: &str,
@@ -125,7 +155,8 @@ async fn insert_test_feedback(
     assistant_message: &str,
     created_at: Option<&str>,
 ) {
-    let sid = session_id.to_string();
+    let sid = site_id.to_string();
+    let sess = session_id.to_string();
     let mid = message_id.to_string();
     let fb = feedback.to_string();
     let um = user_message.to_string();
@@ -137,15 +168,15 @@ async fn insert_test_feedback(
         .call(move |conn| -> Result<(), rusqlite::Error> {
             if let Some(ref ts) = ca {
                 conn.execute(
-                    "INSERT INTO chat_feedback (session_id, message_id, feedback, user_message, assistant_message, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![sid, mid, fb, um, am, ts],
+                    "INSERT INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![sid, sess, mid, fb, um, am, ts],
                 )?;
             } else {
                 conn.execute(
-                    "INSERT INTO chat_feedback (session_id, message_id, feedback, user_message, assistant_message) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![sid, mid, fb, um, am],
+                    "INSERT INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![sid, sess, mid, fb, um, am],
                 )?;
             }
             Ok(())
@@ -169,7 +200,7 @@ fn feedback_post_request(body: serde_json::Value) -> Request<Body> {
 }
 
 // ---------------------------------------------------------------------------
-// POST submit/cancel feedback scenarios (6 tests)
+// POST submit/cancel feedback scenarios
 // ---------------------------------------------------------------------------
 
 // User Story: US-CORE-029 -- As a user, I want to submit a like feedback for an
@@ -183,6 +214,7 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-1",
         "messageId": "msg-1",
         "feedback": "like",
@@ -198,13 +230,13 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
     );
 
     // Verify DB row
-    let row: (String, String, String, String, String) = state
+    let row: (String, String, String, String, String, String) = state
         .sqlite
         .call(|conn| -> Result<_, rusqlite::Error> {
             conn.query_row(
-                "SELECT session_id, message_id, feedback, user_message, assistant_message \
-                 FROM chat_feedback WHERE session_id = 'sess-1' AND message_id = 'msg-1'",
-                [],
+                "SELECT site_id, session_id, message_id, feedback, user_message, assistant_message \
+                 FROM chat_feedback WHERE site_id = ?1 AND session_id = 'sess-1' AND message_id = 'msg-1'",
+                rusqlite::params![SITE_A],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -212,6 +244,7 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
@@ -219,12 +252,13 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
         .await
         .expect("query feedback row");
 
-    assert_eq!(row.0, "sess-1", "session_id must match");
-    assert_eq!(row.1, "msg-1", "message_id must match");
-    assert_eq!(row.2, "like", "feedback must be 'like'");
-    assert_eq!(row.3, "What is Rust?", "user_message must match");
+    assert_eq!(row.0, SITE_A, "site_id must match");
+    assert_eq!(row.1, "sess-1", "session_id must match");
+    assert_eq!(row.2, "msg-1", "message_id must match");
+    assert_eq!(row.3, "like", "feedback must be 'like'");
+    assert_eq!(row.4, "What is Rust?", "user_message must match");
     assert_eq!(
-        row.4, "Rust is a systems programming language.",
+        row.5, "Rust is a systems programming language.",
         "assistant_message must match"
     );
 }
@@ -239,6 +273,7 @@ async fn submit_dislike_feedback_returns_204() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-2",
         "messageId": "msg-2",
         "feedback": "dislike",
@@ -258,8 +293,8 @@ async fn submit_dislike_feedback_returns_204() {
         .sqlite
         .call(|conn| -> Result<_, rusqlite::Error> {
             conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE session_id = 'sess-2' AND message_id = 'msg-2'",
-                [],
+                "SELECT feedback FROM chat_feedback WHERE site_id = ?1 AND session_id = 'sess-2' AND message_id = 'msg-2'",
+                rusqlite::params![SITE_A],
                 |row| row.get::<_, String>(0),
             )
         })
@@ -267,6 +302,250 @@ async fn submit_dislike_feedback_returns_204() {
         .expect("query feedback row");
 
     assert_eq!(feedback, "dislike", "feedback must be 'dislike'");
+}
+
+// User Story: support-multiple-website -- Feedback must be recorded under the
+// requested site so that operational data is isolated by site.
+// Covers: BE-D04; submit_feedback with a valid siteId persists chat_feedback.site_id.
+
+#[tokio::test]
+async fn submit_feedback_with_site_id_persists_site_id() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state.clone());
+
+    let body = serde_json::json!({
+        "siteId": SITE_B,
+        "sessionId": "sess-site",
+        "messageId": "msg-site",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let req = feedback_post_request(body);
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "submit with siteId must return 204"
+    );
+
+    let site_id: String = state
+        .sqlite
+        .call(|conn| -> Result<_, rusqlite::Error> {
+            conn.query_row(
+                "SELECT site_id FROM chat_feedback WHERE session_id = 'sess-site' AND message_id = 'msg-site'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .await
+        .expect("query site_id");
+
+    assert_eq!(
+        site_id, SITE_B,
+        "chat_feedback.site_id must match requested siteId"
+    );
+}
+
+// User Story: support-multiple-website -- The system must reject feedback that
+// does not identify a configured site, so records cannot be written without a
+// valid isolation scope.
+// Covers: BE-D04; missing/empty/whitespace siteId returns 400.
+
+#[tokio::test]
+async fn missing_or_empty_site_id_returns_400() {
+    let state = test_app_state().await;
+
+    // Missing siteId
+    let app = create_api_routes(state.clone());
+    let body = serde_json::json!({
+        "sessionId": "sess-missing",
+        "messageId": "msg-missing",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let req = feedback_post_request(body);
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "missing siteId must return 400"
+    );
+
+    // Empty siteId
+    let app = create_api_routes(state.clone());
+    let body = serde_json::json!({
+        "siteId": "",
+        "sessionId": "sess-empty",
+        "messageId": "msg-empty",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let req = feedback_post_request(body);
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "empty siteId must return 400"
+    );
+
+    // Whitespace-only siteId
+    let app = create_api_routes(state);
+    let body = serde_json::json!({
+        "siteId": "   ",
+        "sessionId": "sess-ws",
+        "messageId": "msg-ws",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let req = feedback_post_request(body);
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "whitespace-only siteId must return 400"
+    );
+}
+
+// User Story: support-multiple-website -- Only configured sites are accepted;
+// an unknown siteId must be rejected before any DB write.
+// Covers: BE-D04; unconfigured siteId returns 400.
+
+#[tokio::test]
+async fn unconfigured_site_id_returns_400() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state.clone());
+
+    let body = serde_json::json!({
+        "siteId": UNKNOWN_SITE,
+        "sessionId": "sess-unknown",
+        "messageId": "msg-unknown",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let req = feedback_post_request(body);
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unconfigured siteId must return 400"
+    );
+
+    // Ensure no row was written
+    let count: i64 = state
+        .sqlite
+        .call(|conn| -> Result<_, rusqlite::Error> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'sess-unknown' AND message_id = 'msg-unknown'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .await
+        .expect("count rows");
+    assert_eq!(
+        count, 0,
+        "no feedback row must be written for unconfigured site"
+    );
+}
+
+// User Story: support-multiple-website -- Identical session/message identifiers
+// in different sites must not collide or overwrite each other.
+// Covers: BE-D04; UNIQUE(site_id, session_id, message_id) plus UPSERT by site
+// keeps records isolated.
+
+#[tokio::test]
+async fn identical_session_message_in_two_sites_does_not_overwrite() {
+    let state = test_app_state().await;
+
+    // Submit like for SITE_A
+    let app = create_api_routes(state.clone());
+    let body = serde_json::json!({
+        "siteId": SITE_A,
+        "sessionId": "shared-sess",
+        "messageId": "shared-msg",
+        "feedback": "like",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let resp = app
+        .oneshot(feedback_post_request(body))
+        .await
+        .expect("send request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Submit dislike for SITE_B with the same external ids
+    let app = create_api_routes(state.clone());
+    let body = serde_json::json!({
+        "siteId": SITE_B,
+        "sessionId": "shared-sess",
+        "messageId": "shared-msg",
+        "feedback": "dislike",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let resp = app
+        .oneshot(feedback_post_request(body))
+        .await
+        .expect("send request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Update SITE_A to dislike
+    let app = create_api_routes(state.clone());
+    let body = serde_json::json!({
+        "siteId": SITE_A,
+        "sessionId": "shared-sess",
+        "messageId": "shared-msg",
+        "feedback": "dislike",
+        "userMessage": "Q",
+        "assistantMessage": "A"
+    });
+    let resp = app
+        .oneshot(feedback_post_request(body))
+        .await
+        .expect("send request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Verify both rows are isolated
+    let (site_a_fb, site_b_fb, total): (String, String, i64) = state
+        .sqlite
+        .call(|conn| -> Result<_, rusqlite::Error> {
+            let site_a_fb = conn.query_row(
+                "SELECT feedback FROM chat_feedback WHERE site_id = ?1 AND session_id = 'shared-sess' AND message_id = 'shared-msg'",
+                rusqlite::params![SITE_A],
+                |row| row.get::<_, String>(0),
+            )?;
+            let site_b_fb = conn.query_row(
+                "SELECT feedback FROM chat_feedback WHERE site_id = ?1 AND session_id = 'shared-sess' AND message_id = 'shared-msg'",
+                rusqlite::params![SITE_B],
+                |row| row.get::<_, String>(0),
+            )?;
+            let total = conn.query_row(
+                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'shared-sess' AND message_id = 'shared-msg'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((site_a_fb, site_b_fb, total))
+        })
+        .await
+        .expect("query feedback");
+
+    assert_eq!(
+        site_a_fb, "dislike",
+        "SITE_A record must be updated independently"
+    );
+    assert_eq!(
+        site_b_fb, "dislike",
+        "SITE_B record must keep its own value"
+    );
+    assert_eq!(
+        total, 2,
+        "two isolated records must exist, not one overwritten row"
+    );
 }
 
 // User Story: US-CORE-029 -- As a user, I want to switch my feedback from like
@@ -280,6 +559,7 @@ async fn switch_feedback_like_to_dislike_updates_db() {
     // First submit like
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-3",
         "messageId": "msg-3",
         "feedback": "like",
@@ -297,6 +577,7 @@ async fn switch_feedback_like_to_dislike_updates_db() {
     // Then submit dislike with same session/message
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-3",
         "messageId": "msg-3",
         "feedback": "dislike",
@@ -316,13 +597,13 @@ async fn switch_feedback_like_to_dislike_updates_db() {
         .sqlite
         .call(|conn| -> Result<_, rusqlite::Error> {
             let feedback = conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE session_id = 'sess-3' AND message_id = 'msg-3'",
-                [],
+                "SELECT feedback FROM chat_feedback WHERE site_id = ?1 AND session_id = 'sess-3' AND message_id = 'msg-3'",
+                rusqlite::params![SITE_A],
                 |row| row.get::<_, String>(0),
             )?;
             let count = conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'sess-3' AND message_id = 'msg-3'",
-                [],
+                "SELECT COUNT(*) FROM chat_feedback WHERE site_id = ?1 AND session_id = 'sess-3' AND message_id = 'msg-3'",
+                rusqlite::params![SITE_A],
                 |row| row.get::<_, i64>(0),
             )?;
             Ok((feedback, count))
@@ -352,6 +633,7 @@ async fn cancel_feedback_deletes_db_record() {
     // First submit like
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": "like",
@@ -369,6 +651,7 @@ async fn cancel_feedback_deletes_db_record() {
     // Cancel with feedback=null
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": null,
@@ -383,13 +666,13 @@ async fn cancel_feedback_deletes_db_record() {
         "cancel must return 204"
     );
 
-    // Verify DB has 0 rows
+    // Verify DB has 0 rows for SITE_A
     let count: i64 = state
         .sqlite
         .call(|conn| -> Result<_, rusqlite::Error> {
             conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'sess-4' AND message_id = 'msg-4'",
-                [],
+                "SELECT COUNT(*) FROM chat_feedback WHERE site_id = ?1 AND session_id = 'sess-4' AND message_id = 'msg-4'",
+                rusqlite::params![SITE_A],
                 |row| row.get::<_, i64>(0),
             )
         })
@@ -400,6 +683,7 @@ async fn cancel_feedback_deletes_db_record() {
     // Idempotent: cancel again on non-existent record still returns 204
     let app = create_api_routes(state);
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": null,
@@ -426,6 +710,7 @@ async fn missing_required_fields_returns_400() {
     // Empty sessionId
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "",
         "messageId": "msg-5",
         "feedback": "like",
@@ -443,6 +728,7 @@ async fn missing_required_fields_returns_400() {
     // Empty messageId
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-5",
         "messageId": "",
         "feedback": "like",
@@ -460,6 +746,7 @@ async fn missing_required_fields_returns_400() {
     // Empty sessionId and messageId (whitespace-only also counts)
     let app = create_api_routes(state);
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "   ",
         "messageId": "   ",
         "feedback": "like",
@@ -486,6 +773,7 @@ async fn invalid_feedback_value_returns_400() {
     // feedback: "meh"
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-6",
         "messageId": "msg-6",
         "feedback": "meh",
@@ -503,6 +791,7 @@ async fn invalid_feedback_value_returns_400() {
     // feedback: "unknown"
     let app = create_api_routes(state);
     let body = serde_json::json!({
+        "siteId": SITE_A,
         "sessionId": "sess-6",
         "messageId": "msg-6",
         "feedback": "unknown",
@@ -519,7 +808,7 @@ async fn invalid_feedback_value_returns_400() {
 }
 
 // ---------------------------------------------------------------------------
-// GET query feedback scenarios (4 tests)
+// GET query feedback scenarios
 // ---------------------------------------------------------------------------
 
 // User Story: US-CORE-029 -- As an operator, I want to query feedback records
@@ -530,9 +819,10 @@ async fn invalid_feedback_value_returns_400() {
 async fn query_feedback_list_with_auth_returns_200() {
     let state = test_app_state().await;
 
-    // Pre-seed 2 feedback records
+    // Pre-seed 2 feedback records for SITE_A
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-q1",
         "msg-q1",
         "like",
@@ -543,6 +833,7 @@ async fn query_feedback_list_with_auth_returns_200() {
     .await;
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-q2",
         "msg-q2",
         "dislike",
@@ -553,7 +844,7 @@ async fn query_feedback_list_with_auth_returns_200() {
     .await;
 
     let app = create_api_routes(state);
-    let req = auth_request(Method::GET, "/api/chat/feedback".to_string());
+    let req = auth_request(Method::GET, format!("/api/chat/feedback?siteId={SITE_A}"));
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
@@ -569,6 +860,7 @@ async fn query_feedback_list_with_auth_returns_200() {
     // Verify each item has expected fields
     for item in items {
         assert!(item.get("id").is_some(), "item must have 'id'");
+        assert!(item.get("siteId").is_some(), "item must have 'siteId'");
         assert!(
             item.get("sessionId").is_some(),
             "item must have 'sessionId'"
@@ -605,7 +897,7 @@ async fn query_feedback_list_without_token_returns_401() {
     // GET without Authorization header
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/chat/feedback")
+        .uri(format!("/api/chat/feedback?siteId={SITE_A}"))
         .body(Body::empty())
         .expect("build request");
 
@@ -617,6 +909,200 @@ async fn query_feedback_list_without_token_returns_401() {
     );
 }
 
+// User Story: support-multiple-website -- Feedback queries must require a siteId
+// and reject requests that do not specify one.
+// Covers: BE-D04; GET /api/chat/feedback without siteId returns 400.
+
+#[tokio::test]
+async fn query_feedback_missing_site_id_returns_400() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = auth_request(Method::GET, "/api/chat/feedback".to_string());
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "GET without siteId must return 400"
+    );
+}
+
+// User Story: support-multiple-website -- Only configured sites may be queried.
+// Covers: BE-D04; GET /api/chat/feedback with unconfigured siteId returns 400.
+
+#[tokio::test]
+async fn query_feedback_unconfigured_site_id_returns_400() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = auth_request(
+        Method::GET,
+        format!("/api/chat/feedback?siteId={UNKNOWN_SITE}"),
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "GET with unconfigured siteId must return 400"
+    );
+}
+
+// User Story: support-multiple-website -- Querying feedback for one site must
+// not return records belonging to another site.
+// Covers: BE-D04; GET with siteId returns only that site's records.
+
+#[tokio::test]
+async fn query_feedback_returns_only_requested_site_records() {
+    let state = test_app_state().await;
+
+    insert_test_feedback(
+        &state,
+        SITE_A,
+        "sess-iso-a1",
+        "msg-iso-a1",
+        "like",
+        "A1",
+        "A",
+        None,
+    )
+    .await;
+    insert_test_feedback(
+        &state,
+        SITE_A,
+        "sess-iso-a2",
+        "msg-iso-a2",
+        "dislike",
+        "A2",
+        "A",
+        None,
+    )
+    .await;
+    insert_test_feedback(
+        &state,
+        SITE_B,
+        "sess-iso-b1",
+        "msg-iso-b1",
+        "like",
+        "B1",
+        "B",
+        None,
+    )
+    .await;
+
+    let app = create_api_routes(state);
+
+    // Query SITE_A
+    let req = auth_request(Method::GET, format!("/api/chat/feedback?siteId={SITE_A}"));
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = parse_json_body(resp.into_body()).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(
+        items.len(),
+        2,
+        "SITE_A query must return only SITE_A records"
+    );
+    assert_eq!(body["total"], 2, "total must count only SITE_A records");
+    for item in items {
+        assert_eq!(
+            item["siteId"], SITE_A,
+            "returned record must belong to SITE_A"
+        );
+    }
+
+    // Query SITE_B
+    let req = auth_request(Method::GET, format!("/api/chat/feedback?siteId={SITE_B}"));
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = parse_json_body(resp.into_body()).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(
+        items.len(),
+        1,
+        "SITE_B query must return only SITE_B records"
+    );
+    assert_eq!(body["total"], 1, "total must count only SITE_B records");
+    assert_eq!(
+        items[0]["siteId"], SITE_B,
+        "returned record must belong to SITE_B"
+    );
+}
+
+// User Story: support-multiple-website -- The existing feedback-type filter must
+// continue to work and must not leak records from other sites.
+// Covers: BE-D04; ?feedback=like scoped by siteId returns only matching records
+// for the requested site.
+
+#[tokio::test]
+async fn query_feedback_type_filter_honors_site_isolation() {
+    let state = test_app_state().await;
+
+    // SITE_A: one like, one dislike
+    insert_test_feedback(
+        &state,
+        SITE_A,
+        "sess-ft-a-like",
+        "msg-ft-a-like",
+        "like",
+        "Q",
+        "A",
+        None,
+    )
+    .await;
+    insert_test_feedback(
+        &state,
+        SITE_A,
+        "sess-ft-a-dislike",
+        "msg-ft-a-dislike",
+        "dislike",
+        "Q",
+        "A",
+        None,
+    )
+    .await;
+    // SITE_B: one like
+    insert_test_feedback(
+        &state,
+        SITE_B,
+        "sess-ft-b-like",
+        "msg-ft-b-like",
+        "like",
+        "Q",
+        "A",
+        None,
+    )
+    .await;
+
+    let app = create_api_routes(state);
+
+    // SITE_A filtered by like -> only its own like
+    let req = auth_request(
+        Method::GET,
+        format!("/api/chat/feedback?siteId={SITE_A}&feedback=like"),
+    );
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = parse_json_body(resp.into_body()).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "SITE_A like filter must return 1 record");
+    assert_eq!(body["total"], 1, "total must be 1");
+    assert_eq!(items[0]["siteId"], SITE_A);
+    assert_eq!(items[0]["feedback"], "like");
+
+    // SITE_B filtered by like -> its own like
+    let req = auth_request(
+        Method::GET,
+        format!("/api/chat/feedback?siteId={SITE_B}&feedback=like"),
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = parse_json_body(resp.into_body()).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "SITE_B like filter must return 1 record");
+    assert_eq!(body["total"], 1, "total must be 1");
+    assert_eq!(items[0]["siteId"], SITE_B);
+}
+
 // User Story: US-CORE-029 -- As an operator, I want to filter feedback by type
 // to focus on positive or negative signals.
 // Covers: Design 5.1 scenario 9; GET with ?feedback=like returns only like records.
@@ -625,9 +1111,10 @@ async fn query_feedback_list_without_token_returns_401() {
 async fn query_feedback_with_type_filter_returns_matching() {
     let state = test_app_state().await;
 
-    // Pre-seed 1 like + 1 dislike
+    // Pre-seed 1 like + 1 dislike for SITE_A
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-f1",
         "msg-f1",
         "like",
@@ -638,6 +1125,7 @@ async fn query_feedback_with_type_filter_returns_matching() {
     .await;
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-f2",
         "msg-f2",
         "dislike",
@@ -648,7 +1136,10 @@ async fn query_feedback_with_type_filter_returns_matching() {
     .await;
 
     let app = create_api_routes(state);
-    let req = auth_request(Method::GET, "/api/chat/feedback?feedback=like".to_string());
+    let req = auth_request(
+        Method::GET,
+        format!("/api/chat/feedback?siteId={SITE_A}&feedback=like"),
+    );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
@@ -677,6 +1168,7 @@ async fn query_feedback_with_pagination_works() {
     // Pre-seed 3 feedback records with explicit created_at for deterministic sort order
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-p1",
         "msg-p1",
         "like",
@@ -687,6 +1179,7 @@ async fn query_feedback_with_pagination_works() {
     .await;
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-p2",
         "msg-p2",
         "dislike",
@@ -697,6 +1190,7 @@ async fn query_feedback_with_pagination_works() {
     .await;
     insert_test_feedback(
         &state,
+        SITE_A,
         "sess-p3",
         "msg-p3",
         "like",
@@ -709,7 +1203,7 @@ async fn query_feedback_with_pagination_works() {
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        "/api/chat/feedback?limit=2&offset=0".to_string(),
+        format!("/api/chat/feedback?siteId={SITE_A}&limit=2&offset=0"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(

@@ -387,3 +387,263 @@ fn prefix_match_is_case_insensitive() {
         "prefix match must be case-insensitive: 'zh-tw' matches key 'ZH'"
     );
 }
+
+// ===========================================================================
+// GET /api/chat/suggestions HTTP handler scenario tests (BE-T03)
+// ===========================================================================
+//
+// These tests exercise the public suggestions endpoint after `siteId` became
+// required. They verify configured-site validation, site-level suggested
+// question lookup, and the empty-array behavior for sites without configured
+// questions.
+
+use std::sync::Arc;
+use std::sync::Once;
+
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
+use rig::client::EmbeddingsClient;
+use tower::ServiceExt;
+
+/// Ensure the sqlite-vec extension is registered globally so that the
+/// `vec0` virtual table module is available for in-memory connections.
+static SQLITE_VEC_INIT: Once = Once::new();
+fn ensure_sqlite_vec_loaded() {
+    SQLITE_VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
+        )));
+    });
+}
+
+use rwiki_core::config::{ChatConfig, RerankConfig, SiteConfig, SitesConfig};
+
+use crate::application::http::create_api_routes;
+use crate::application::http::state::AppState;
+
+const SUGGESTIONS_SITE_A: &str = "help_center";
+const SUGGESTIONS_SITE_B: &str = "dev_docs";
+
+/// Parse an Axum response body into a JSON value.
+async fn parse_json_body(body: Body) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(body, 1024 * 64)
+        .await
+        .expect("read body");
+    serde_json::from_slice(&bytes).expect("parse json")
+}
+
+/// Build a `SitesConfig` with one site that has localized suggested questions
+/// and one site that has none.
+fn suggestions_sites_config() -> SitesConfig {
+    let mut site_a_questions = HashMap::new();
+    site_a_questions.insert(
+        "default".to_string(),
+        vec!["How do I get started?".to_string()],
+    );
+    site_a_questions.insert(
+        "zh-CN".to_string(),
+        vec!["如何开始？".to_string(), "如何联系客服？".to_string()],
+    );
+
+    let mut sites = HashMap::new();
+    sites.insert(
+        SUGGESTIONS_SITE_A.to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: Some(site_a_questions),
+        },
+    );
+    sites.insert(
+        SUGGESTIONS_SITE_B.to_string(),
+        SiteConfig {
+            name: "Developer Docs".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+
+    SitesConfig { sites }
+}
+
+/// Build a minimal `AppState` suitable for suggestions endpoint tests.
+/// The endpoint does not exercise the vector store or LLM, but AppState still
+/// requires all fields to be populated.
+async fn test_app_state_for_suggestions() -> Arc<AppState> {
+    ensure_sqlite_vec_loaded();
+
+    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    rwiki_core::infrastructure::migration::migrations(1536)
+        .to_latest(&mut conn)
+        .expect("apply migrations");
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    let openai_client = rig::providers::openai::Client::builder()
+        .api_key("sk-test-fake-key-for-suggestions-tests-only");
+    let embedding_model = openai_client
+        .build()
+        .expect("build openai client")
+        .embedding_model("text-embedding-3-small");
+    let app_embedding_model =
+        rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
+
+    let vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            sqlite.clone(),
+            app_embedding_model,
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+
+    let llm_client = rig::providers::openai::CompletionsClient::builder()
+        .api_key("sk-test-fake")
+        .base_url("http://localhost:0")
+        .build()
+        .expect("build LLM client");
+
+    Arc::new(AppState {
+        sqlite,
+        enable_openapi: false,
+        vector_store,
+        chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        llm_client,
+        llm_model: "test-model".to_string(),
+        api_token: "test-api-token-suggestions".to_string(),
+        api_allowed_ip_ranges: Vec::new(),
+        chat_config: ChatConfig::default(),
+        static_dir: None,
+        allowed_origins: vec![],
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
+        reranker: None,
+        rerank_config: RerankConfig::default(),
+        low_recall_config: None,
+        sites_config: suggestions_sites_config(),
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })
+}
+
+/// Build a GET request for `/api/chat/suggestions`.
+fn suggestions_get_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())
+        .expect("build request")
+}
+
+// User Story: support-multiple-website — A Widget or main-site request with a
+// valid `siteId` receives the site-level suggested questions, localized by the
+// `locale` query parameter.
+// Covers: `suggestions` handler validates the site, looks up the site's
+// `suggested_questions`, and uses `match_locale` to return the localized list.
+
+#[tokio::test]
+async fn suggestions_valid_site_id_returns_localized_questions() {
+    let state = test_app_state_for_suggestions().await;
+    let app = create_api_routes(state);
+
+    let req = suggestions_get_request(&format!(
+        "/api/chat/suggestions?siteId={SUGGESTIONS_SITE_A}&locale=zh-CN"
+    ));
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "valid site suggestions request must return 200"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert_eq!(
+        body["questions"],
+        serde_json::json!(["如何开始？", "如何联系客服？"]),
+        "must return the zh-CN questions configured for the site, got {body}"
+    );
+}
+
+// User Story: support-multiple-website — When a site has no configured
+// suggested questions, the endpoint returns an empty array. The Widget must
+// not fall back to its own local list.
+// Covers: `match_locale` receives `None` for the site's questions and returns
+// an empty Vec, which the handler serializes as `[]`.
+
+#[tokio::test]
+async fn suggestions_site_without_configured_questions_returns_empty_array() {
+    let state = test_app_state_for_suggestions().await;
+    let app = create_api_routes(state);
+
+    let req = suggestions_get_request(&format!(
+        "/api/chat/suggestions?siteId={SUGGESTIONS_SITE_B}&locale=en"
+    ));
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "suggestions request for a site without questions must return 200"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert_eq!(
+        body["questions"],
+        serde_json::json!([]),
+        "must return an empty array when the site has no suggested questions, got {body}"
+    );
+}
+
+// User Story: support-multiple-website — The suggestions endpoint must reject
+// requests that omit the required `siteId` query parameter.
+// Covers: axum's `Query<SuggestionsQuery>` extractor rejects missing required
+// fields with 400 Bad Request.
+
+#[tokio::test]
+async fn suggestions_missing_site_id_returns_400() {
+    let state = test_app_state_for_suggestions().await;
+    let app = create_api_routes(state);
+
+    let req = suggestions_get_request("/api/chat/suggestions?locale=en");
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "suggestions request without siteId must return 400"
+    );
+}
+
+// User Story: support-multiple-website — An unconfigured `siteId` must be
+// rejected by the suggestions endpoint.
+// Covers: `suggestions` handler calls `sites_config.require_configured` and
+// maps NotConfigured to 400 Bad Request.
+
+#[tokio::test]
+async fn suggestions_unconfigured_site_id_returns_400() {
+    let state = test_app_state_for_suggestions().await;
+    let app = create_api_routes(state);
+
+    let req = suggestions_get_request("/api/chat/suggestions?siteId=unknown-site&locale=en");
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "suggestions request with unknown siteId must return 400"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown-site"),
+        "error message must mention the unknown site id, got {body}"
+    );
+}

@@ -5,6 +5,7 @@
 //! responses matching the `FaqParseError` Display contract. Also verifies
 //! OpenAPI `.json` uploads are unaffected by the FAQ support split.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
 
@@ -23,6 +24,7 @@ use crate::application::http::state::AppState;
 
 const TEST_API_TOKEN: &str = "test-faq-upload-token";
 const EMBEDDING_DIMS: usize = 1536;
+const SITE_ID: &str = "site-a";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -154,6 +156,18 @@ async fn test_app_state() -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
+        sites_config: {
+            let mut sites = HashMap::new();
+            sites.insert(
+                SITE_ID.to_string(),
+                rwiki_core::config::SiteConfig {
+                    name: "Site A".to_string(),
+                    system_prompt: None,
+                    suggested_questions: None,
+                },
+            );
+            rwiki_core::config::SitesConfig { sites }
+        },
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -175,8 +189,35 @@ async fn read_body_string(body: Body) -> String {
     String::from_utf8(bytes.to_vec()).expect("body is utf-8")
 }
 
-/// Build a multipart upload request with the given file name and content.
+/// Build a multipart upload request with the given file name, content, and siteId.
 fn upload_request(file_name: &str, content: &[u8], boundary: &str) -> Request<Body> {
+    let mut body_bytes = Vec::new();
+    body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"siteId\"\r\n\r\n");
+    body_bytes.extend_from_slice(SITE_ID.as_bytes());
+    body_bytes.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+    body_bytes.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+            .as_bytes(),
+    );
+    body_bytes.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body_bytes.extend_from_slice(content);
+    body_bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/documents/upload")
+        .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body_bytes))
+        .expect("build upload request")
+}
+
+/// Build a multipart upload request without a siteId field.
+fn upload_request_without_site(file_name: &str, content: &[u8], boundary: &str) -> Request<Body> {
     let mut body_bytes = Vec::new();
     body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body_bytes.extend_from_slice(
@@ -425,5 +466,66 @@ async fn upload_openapi_json_unaffected_by_faq_support() {
     assert!(
         body["id"].is_string() && !body["id"].as_str().unwrap().is_empty(),
         "response must have a non-empty id"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Site-scoped upload assertions (BE-T02)
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — As a knowledge base editor, I want the
+// FAQ JSONL upload path to persist the siteId I provide and echo it back.
+// Covers: BE-D02 (FAQ JSONL upload writes documents.site_id and returns siteId).
+#[tokio::test]
+async fn upload_faq_with_site_id_persists_site_id() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state.clone());
+
+    let req = upload_request("faq.jsonl", &valid_faq_jsonl(), "----BoundaryFaqSite");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "upload FAQ JSONL with siteId must return 200"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    let doc_id = body["id"].as_str().expect("document id").to_string();
+    assert_eq!(
+        body["siteId"], SITE_ID,
+        "upload response must include the provided siteId"
+    );
+
+    let stored_site_id: String = state
+        .sqlite
+        .call(move |conn| {
+            conn.query_row(
+                "SELECT site_id FROM documents WHERE id = ?",
+                rusqlite::params![doc_id],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .await
+        .expect("query document site_id");
+    assert_eq!(
+        stored_site_id, SITE_ID,
+        "documents.site_id must match the uploaded siteId"
+    );
+}
+
+// User Story: support-multiple-website — As an API operator, I want FAQ
+// uploads without a siteId to be rejected with 400.
+// Covers: BE-D02 (upload endpoint requires siteId before format routing).
+#[tokio::test]
+async fn upload_faq_without_site_id_returns_400() {
+    let state = test_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = upload_request_without_site("faq.jsonl", &valid_faq_jsonl(), "----BoundaryFaqNoSite");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "upload without siteId must return 400"
     );
 }

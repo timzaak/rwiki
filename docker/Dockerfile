@@ -2,7 +2,7 @@
 # Build order: backend first, then frontend (which depends on backend for API generation)
 
 # Stage 1: Shared Rust build environment
-FROM rust:1.90-bookworm AS backend-chef
+FROM rust:1.96-bookworm AS backend-chef
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \

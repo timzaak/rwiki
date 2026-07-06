@@ -75,19 +75,30 @@ fn make_sql_only_store() -> VectorStoreManager {
 
 /// Insert a test document row into the documents table.
 async fn insert_test_document(store: &VectorStoreManager, document_id: &str, status: &str) {
+    insert_test_document_with_site(store, document_id, status, None).await;
+}
+
+/// Insert a test document row with an optional owning site.
+async fn insert_test_document_with_site(
+    store: &VectorStoreManager,
+    document_id: &str,
+    status: &str,
+    site_id: Option<&str>,
+) {
     let doc_id = document_id.to_string();
     let status_val = status.to_string();
+    let site_val = site_id.map(|s| s.to_string());
     store
         .conn
         .call(move |conn| {
             conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count) VALUES (?, 'test.xlsx', ?, 1)",
-                rusqlite::params![doc_id, status_val],
+                "INSERT INTO documents (id, file_name, status, row_count, site_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
+                rusqlite::params![doc_id, status_val, 1, site_val],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
         .await
-        .expect("insert_test_document should succeed");
+        .expect("insert_test_document_with_site should succeed");
 }
 
 /// Insert a test chunk directly into chunk_metadata + vec_chunks (zero vector matching migration dimensions).
@@ -1986,4 +1997,171 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
         found_ids.contains(&"bf_draft_chunk"),
         "newly published chunk should now be found"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Site-scoped retrieval scenario tests (BE-T02)
+// ---------------------------------------------------------------------------
+
+const SITE_A: &str = "site-a";
+const SITE_B: &str = "site-b";
+
+// Covers: BE-D02 — RetrievalScope::Site exposes the exact SQL filter and
+// bound parameter needed by both keyword and vector search paths.
+#[test]
+fn site_scope_filter_sql_requires_site_id_and_published_status() {
+    let (sql, params) = RetrievalScope::Site(SITE_A.to_string()).filter_sql();
+    assert_eq!(
+        sql, "AND d.site_id = ? AND d.status = 'published'",
+        "Site scope must filter on site_id and published status"
+    );
+    assert_eq!(
+        params,
+        vec![SITE_A.to_string()],
+        "Site scope must bind the site id"
+    );
+}
+
+// Covers: BE-D02 — get_neighbor_chunks under RetrievalScope::Site returns
+// chunks only when both documents.site_id matches and status is published.
+// Draft chunks in the same site and published chunks in another site are excluded.
+#[tokio::test]
+async fn get_neighbor_chunks_site_scope_filters_by_site_and_published_status() {
+    let store = make_sql_only_store();
+
+    // Site A: one published chunk and one draft chunk on the same page.
+    insert_test_document_with_site(&store, "doc_a_pub", "published", Some(SITE_A)).await;
+    insert_test_chunk(
+        &store,
+        "doc_a_pub",
+        "a_pub_chunk",
+        "site a published content",
+        "page_a",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_test_document_with_site(&store, "doc_a_draft", "draft", Some(SITE_A)).await;
+    insert_test_chunk(
+        &store,
+        "doc_a_draft",
+        "a_draft_chunk",
+        "site a draft content",
+        "page_a",
+        Some(0),
+        Some(1),
+    )
+    .await;
+
+    // Site B: published chunk on a different page.
+    insert_test_document_with_site(&store, "doc_b_pub", "published", Some(SITE_B)).await;
+    insert_test_chunk(
+        &store,
+        "doc_b_pub",
+        "b_pub_chunk",
+        "site b published content",
+        "page_b",
+        Some(0),
+        Some(1),
+    )
+    .await;
+
+    // Querying site A should return only the published site-A chunk.
+    let site_a_results = store
+        .get_neighbor_chunks("page_a", 0, 5, &RetrievalScope::Site(SITE_A.to_string()))
+        .await
+        .expect("get_neighbor_chunks for site A should succeed");
+    assert_eq!(
+        site_a_results.len(),
+        1,
+        "site A query must return exactly one published chunk"
+    );
+    assert_eq!(site_a_results[0].chunk_id, "a_pub_chunk");
+    assert_eq!(site_a_results[0].document_id, "doc_a_pub");
+
+    // Querying site B should return only the site-B chunk.
+    let site_b_results = store
+        .get_neighbor_chunks("page_b", 0, 5, &RetrievalScope::Site(SITE_B.to_string()))
+        .await
+        .expect("get_neighbor_chunks for site B should succeed");
+    assert_eq!(
+        site_b_results.len(),
+        1,
+        "site B query must return exactly one chunk"
+    );
+    assert_eq!(site_b_results[0].chunk_id, "b_pub_chunk");
+}
+
+// Covers: BE-D02 — search_by_keyword under RetrievalScope::Site returns only
+// chunks from published documents that belong to the requested site.
+// Unpublished documents and documents owned by other sites are excluded.
+#[tokio::test]
+async fn search_by_keyword_site_scope_filters_by_site_and_published_status() {
+    let store = make_sql_only_store();
+
+    // Site A: published and draft chunks with overlapping content.
+    insert_test_document_with_site(&store, "doc_a_pub", "published", Some(SITE_A)).await;
+    insert_test_chunk(
+        &store,
+        "doc_a_pub",
+        "a_pub_chunk",
+        "多站点隔离测试内容",
+        "page_a_pub",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "a_pub_chunk", "多站点隔离测试内容").await;
+
+    insert_test_document_with_site(&store, "doc_a_draft", "draft", Some(SITE_A)).await;
+    insert_test_chunk(
+        &store,
+        "doc_a_draft",
+        "a_draft_chunk",
+        "多站点隔离测试内容草稿",
+        "page_a_draft",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "a_draft_chunk", "多站点隔离测试内容草稿").await;
+
+    // Site B: published chunk with overlapping content.
+    insert_test_document_with_site(&store, "doc_b_pub", "published", Some(SITE_B)).await;
+    insert_test_chunk(
+        &store,
+        "doc_b_pub",
+        "b_pub_chunk",
+        "多站点隔离测试内容站点B",
+        "page_b_pub",
+        Some(0),
+        Some(1),
+    )
+    .await;
+    insert_fts_row(&store, "b_pub_chunk", "多站点隔离测试内容站点B").await;
+
+    // Querying site A should surface only the published site-A chunk.
+    let site_a_results = store
+        .search_by_keyword("多站点隔离", 10, &RetrievalScope::Site(SITE_A.to_string()))
+        .await
+        .expect("search for site A should succeed");
+    assert_eq!(
+        site_a_results.len(),
+        1,
+        "site A keyword search must return exactly one published chunk"
+    );
+    assert_eq!(site_a_results[0].chunk_id, "a_pub_chunk");
+    assert_eq!(site_a_results[0].document_id, "doc_a_pub");
+
+    // Querying site B should surface only the site-B chunk.
+    let site_b_results = store
+        .search_by_keyword("多站点隔离", 10, &RetrievalScope::Site(SITE_B.to_string()))
+        .await
+        .expect("search for site B should succeed");
+    assert_eq!(
+        site_b_results.len(),
+        1,
+        "site B keyword search must return exactly one chunk"
+    );
+    assert_eq!(site_b_results[0].chunk_id, "b_pub_chunk");
 }

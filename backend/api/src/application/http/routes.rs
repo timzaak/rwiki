@@ -63,9 +63,10 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
         ))
         .with_state(state.clone());
 
-    // Unprotected routes: health check and chat
+    // Unprotected routes: health check, chat, and public site metadata
     let app = Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/api/sites", get(handlers::site::list_sites))
         .route("/api/chat", post(handlers::chat::chat))
         .route("/api/chat/suggestions", get(handlers::chat::suggestions))
         .route(

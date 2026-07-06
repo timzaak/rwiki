@@ -317,6 +317,20 @@ async fn main() -> Result<()> {
     // 包装为 tokio-rusqlite 异步连接
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
+    // 校验至少存在一个已配置站点
+    if config.sites.is_empty() {
+        return Err(anyhow::anyhow!(
+            "At least one [sites.<siteId>] section must be configured."
+        ));
+    }
+
+    // 校验历史数据中不存在 site_id 为空的行（documents / chat_feedback / low_recall_records）
+    rwiki_core::config::validate_historical_rows_have_site_id(
+        &sqlite,
+        &["documents", "chat_feedback", "low_recall_records"],
+    )
+    .await?;
+
     // 创建向量存储管理器
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
@@ -438,14 +452,14 @@ async fn main() -> Result<()> {
                     &db_path,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 ) {
-                    let count: u64 = conn
+                    let count: i64 = conn
                         .query_row(
                             "SELECT COUNT(*) FROM documents WHERE status = 'published'",
                             [],
                             |row| row.get(0),
                         )
                         .unwrap_or(0);
-                    observer.observe(count, &[KeyValue::new("status", "published")]);
+                    observer.observe(count as u64, &[KeyValue::new("status", "published")]);
                 }
             })
             .build();
@@ -460,10 +474,10 @@ async fn main() -> Result<()> {
                     &db_path_chunks,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 ) {
-                    let count: u64 = conn
+                    let count: i64 = conn
                         .query_row("SELECT COUNT(*) FROM chunk_metadata", [], |row| row.get(0))
                         .unwrap_or(0);
-                    observer.observe(count, &[]);
+                    observer.observe(count as u64, &[]);
                 }
             })
             .build();
@@ -497,6 +511,7 @@ async fn main() -> Result<()> {
         reranker,
         rerank_config: config.rerank.clone().unwrap_or_default(),
         low_recall_config: config.low_recall.clone(),
+        sites_config: config.sites.clone(),
         metrics: metrics.clone(),
         session_count: session_count.clone(),
     });

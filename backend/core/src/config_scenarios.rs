@@ -6,7 +6,10 @@
 //!
 //! These tests provide regression protection for the env var removal in BE-D01.
 
-use super::AppConfig;
+use super::{
+    validate_historical_rows_have_site_id, AppConfig, SiteConfig, SiteValidationError, SitesConfig,
+};
+use std::collections::HashMap;
 use std::env;
 use tempfile::NamedTempFile;
 
@@ -663,4 +666,328 @@ fn low_recall_threshold_explicit_value_parsed() {
     );
 
     restore_env("OPENROUTER_API_KEY", prev_or);
+}
+
+// ---------------------------------------------------------------------------
+// Site configuration scenarios (BE-T01)
+//
+// Covers: configured site parsing, default representation of omitted fields,
+//         startup rejection preconditions, and historical-row validation.
+// ---------------------------------------------------------------------------
+
+/// Helper: write a minimal valid TOML config with the given `[sites]` body.
+fn write_app_config_with_sites(sites_body: &str) -> NamedTempFile {
+    let content = format!(
+        r#"
+[server]
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+app_env = "test"
+enable_openapi = false
+
+[sqlite]
+path = "data/test.db"
+
+[llm]
+api_key = "sk-site-config-test"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[embedding]
+
+[api]
+
+[chat]
+system_prompt = "test prompt"
+
+{sites_body}
+"#
+    );
+    let mut file = NamedTempFile::new().expect("should create temp file");
+    std::io::Write::write_all(&mut file, content.as_bytes()).expect("should write config content");
+    file
+}
+
+// User Story: support-multiple-website — As a deployer, I configure multiple
+// sites with names, per-site system prompts, and localized suggested questions.
+// Covers: Design 5.1 — full AppConfig parses `[sites.<id>]` with all optional
+//         fields present on one site and absent on another.
+#[test]
+fn multiple_sites_parse_with_names_prompts_and_localized_suggestions() {
+    let sites = r#"
+[sites.help_center]
+name = "Help Center"
+system_prompt = "You are the Help Center assistant."
+[sites.help_center.suggested_questions]
+default = ["如何快速上手", "支持哪些文件格式"]
+zh-CN = ["如何快速上手", "支持哪些文件格式", "如何联系客服"]
+en = ["How to get started", "What file formats are supported"]
+
+[sites.developer_docs]
+name = "Developer Docs"
+"#;
+    let file = write_app_config_with_sites(sites);
+    let config = AppConfig::load(file.path()).expect("config with sites should load");
+
+    assert_eq!(
+        config.sites.sites.len(),
+        2,
+        "both configured sites should parse"
+    );
+
+    let help = config
+        .sites
+        .get("help_center")
+        .expect("help_center should exist");
+    assert_eq!(help.name, "Help Center");
+    assert_eq!(
+        help.system_prompt.as_deref(),
+        Some("You are the Help Center assistant.")
+    );
+    let help_qs = help
+        .suggested_questions
+        .as_ref()
+        .expect("help_center should have suggested_questions");
+    assert_eq!(
+        help_qs.get("default").unwrap(),
+        &vec!["如何快速上手", "支持哪些文件格式"]
+    );
+    assert_eq!(
+        help_qs.get("zh-CN").unwrap(),
+        &vec!["如何快速上手", "支持哪些文件格式", "如何联系客服"]
+    );
+    assert_eq!(
+        help_qs.get("en").unwrap(),
+        &vec!["How to get started", "What file formats are supported"]
+    );
+
+    let dev = config
+        .sites
+        .get("developer_docs")
+        .expect("developer_docs should exist");
+    assert_eq!(dev.name, "Developer Docs");
+    assert!(
+        dev.system_prompt.is_none(),
+        "omitted system_prompt should be None"
+    );
+    assert!(
+        dev.suggested_questions.is_none(),
+        "omitted suggested_questions should be None"
+    );
+}
+
+// User Story: support-multiple-website — As a deployer, I can declare a site
+// with only a name and rely on the global prompt / empty suggestions.
+// Covers: Design 5.1 — omitted `system_prompt` and `suggested_questions` stay
+//         `Option::None`; tests must not invent fallback values.
+#[test]
+fn omitted_site_prompt_and_suggestions_represent_defaults() {
+    let sites = r#"
+[sites.minimal]
+name = "Minimal Site"
+"#;
+    let file = write_app_config_with_sites(sites);
+    let config = AppConfig::load(file.path()).expect("config should load");
+
+    let site = config.sites.get("minimal").expect("minimal should exist");
+    assert_eq!(site.name, "Minimal Site");
+    assert!(
+        site.system_prompt.is_none(),
+        "site without prompt must default to None, not a synthesized fallback"
+    );
+    assert!(
+        site.suggested_questions.is_none(),
+        "site without suggested_questions must default to None"
+    );
+}
+
+// User Story: support-multiple-website backward compatibility — existing
+// deployments without a `[sites]` section must still load.
+// Covers: `AppConfig.sites` uses `#[serde(default)]`; missing section
+//         deserializes to an empty `SitesConfig`.
+#[test]
+fn app_config_without_sites_section_defaults_to_empty_registry() {
+    let file = write_app_config_with_sites("");
+    let config = AppConfig::load(file.path()).expect("config without sites should load");
+
+    assert!(
+        config.sites.is_empty(),
+        "missing [sites] section must default to empty registry"
+    );
+}
+
+// User Story: support-multiple-website — The service must fail loudly at
+// startup when no site is configured, so operators notice misconfiguration.
+// Covers: app/src/main.rs checks `config.sites.is_empty()` and returns Err.
+//         AppConfig::load intentionally does NOT reject empty sites (backward
+//         compat); this scenario pins the predicate that triggers startup failure.
+#[test]
+fn empty_sites_registry_is_the_startup_failure_precondition() {
+    let sites = SitesConfig::default();
+    assert!(
+        sites.is_empty(),
+        "empty registry is the condition main.rs checks before returning Err"
+    );
+    assert!(sites.list_metadata().is_empty());
+}
+
+// User Story: support-multiple-website — The public site list must expose only
+// the information needed by callers (id + name), never system prompts.
+// Covers: `SitesConfig::list_metadata` returns `SiteMetadata` with only id/name.
+#[test]
+fn site_list_metadata_excludes_system_prompt_and_suggested_questions() {
+    let mut questions = HashMap::new();
+    questions.insert("default".to_string(), vec!["q1".to_string()]);
+
+    let mut sites = SitesConfig::default();
+    sites.sites.insert(
+        "help_center".to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: Some("secret prompt".to_string()),
+            suggested_questions: Some(questions),
+        },
+    );
+
+    let metadata = sites.list_metadata();
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0].id, "help_center");
+    assert_eq!(metadata[0].name, "Help Center");
+
+    // SiteMetadata only exposes id/name; serializing it must not contain the
+    // site-level private fields.
+    let json = serde_json::to_value(&metadata[0]).expect("serialize metadata");
+    assert!(json.get("system_prompt").is_none());
+    assert!(json.get("suggested_questions").is_none());
+}
+
+// User Story: support-multiple-website — Handlers validate incoming siteIds.
+// Covers: `SitesConfig::require_configured` rejects empty/whitespace/unknown ids
+//         and normalizes whitespace around configured ids.
+#[test]
+fn require_configured_normalizes_and_rejects_invalid_site_ids() {
+    let mut sites = SitesConfig::default();
+    sites.sites.insert(
+        "help_center".to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+
+    assert_eq!(
+        sites.require_configured("help_center"),
+        Ok("help_center"),
+        "configured site should resolve"
+    );
+    assert_eq!(
+        sites.require_configured("  help_center  "),
+        Ok("help_center"),
+        "whitespace around configured id should be normalized"
+    );
+    assert_eq!(
+        sites.require_configured(""),
+        Err(SiteValidationError::Empty),
+        "empty site id should fail"
+    );
+    assert_eq!(
+        sites.require_configured("unknown"),
+        Err(SiteValidationError::NotConfigured("unknown".to_string())),
+        "unknown site id should fail"
+    );
+}
+
+// User Story: support-multiple-website — Each site may override the global
+// system prompt; omitting or emptying the override must fall back to global.
+// Covers: `SitesConfig::resolved_system_prompt` contract.
+#[test]
+fn resolved_system_prompt_uses_site_value_or_global_fallback() {
+    let mut sites = SitesConfig::default();
+    sites.sites.insert(
+        "help_center".to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: Some("Site prompt.".to_string()),
+            suggested_questions: None,
+        },
+    );
+    sites.sites.insert(
+        "empty_prompt".to_string(),
+        SiteConfig {
+            name: "Empty Prompt".to_string(),
+            system_prompt: Some("".to_string()),
+            suggested_questions: None,
+        },
+    );
+
+    let global = "Global prompt.";
+    assert_eq!(
+        sites.resolved_system_prompt(Some("help_center"), global),
+        "Site prompt."
+    );
+    assert_eq!(
+        sites.resolved_system_prompt(Some("empty_prompt"), global),
+        global,
+        "empty site prompt must fall back to global"
+    );
+    assert_eq!(
+        sites.resolved_system_prompt(Some("missing"), global),
+        global
+    );
+    assert_eq!(sites.resolved_system_prompt(None, global), global);
+}
+
+// User Story: support-multiple-website — Existing data must be backfilled with
+// site_id before the service starts; otherwise startup must fail loud.
+// Covers: `validate_historical_rows_have_site_id` detects NULL site_id rows.
+#[tokio::test]
+async fn startup_validation_rejects_historical_rows_with_null_site_id() {
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    let sqlite = tokio_rusqlite::Connection::from(conn);
+
+    sqlite
+        .call(|conn| {
+            conn.execute(
+                "CREATE TABLE documents (id TEXT PRIMARY KEY, file_name TEXT NOT NULL, site_id TEXT)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO documents (id, file_name) VALUES (?1, ?2)",
+                rusqlite::params!["doc-1", "legacy.txt"],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed table");
+
+    let err = validate_historical_rows_have_site_id(&sqlite, &["documents"])
+        .await
+        .expect_err("null site_id rows must block startup");
+    assert!(
+        err.to_string().contains("missing site_id"),
+        "error should mention missing site_id: {err}"
+    );
+}
+
+// User Story: support-multiple-website — Startup validation must not crash on
+// tables that have not yet received the `site_id` column (e.g. during staged
+// migrations).
+// Covers: `validate_historical_rows_have_site_id` skips tables without site_id.
+#[tokio::test]
+async fn startup_validation_skips_tables_without_site_id_column() {
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    let sqlite = tokio_rusqlite::Connection::from(conn);
+
+    sqlite
+        .call(|conn| {
+            conn.execute("CREATE TABLE low_recall_records (id TEXT PRIMARY KEY)", [])?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("create table");
+
+    validate_historical_rows_have_site_id(&sqlite, &["low_recall_records"])
+        .await
+        .expect("tables without site_id column should be skipped");
 }

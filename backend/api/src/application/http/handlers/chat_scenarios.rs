@@ -27,15 +27,20 @@ use super::chat::{
 // `rerank_scenarios.rs` / `feedback_scenarios.rs`.
 // ---------------------------------------------------------------------------
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
 
 use axum::body::Body;
-use axum::http::{header, Method, Request};
+use axum::http::{header, Method, Request, StatusCode};
 use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
+use uuid::Uuid;
 
-use rwiki_core::config::LowRecallConfig;
+use rwiki_core::config::{ChatConfig, LowRecallConfig, SiteConfig, SitesConfig};
+use rwiki_core::infrastructure::document_chunk::DocumentChunk;
+use rwiki_core::infrastructure::vector_store::RetrievalScope;
+use rwiki_core::infrastructure::xlsx_parser::ContentType;
 
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
@@ -44,6 +49,20 @@ use crate::application::http::state::AppState;
 /// authenticated requests (the scoped chat endpoint lives behind `doc_router`'s
 /// `auth_middleware`).
 const LOW_RECALL_TEST_API_TOKEN: &str = "test-api-token-low-recall";
+
+/// Configured site used by the low-recall integration scenarios. The seeded
+/// published document belongs to this site so that public `/api/chat` requests
+/// pass the "site has published documents" guard introduced by multi-site
+/// support.
+const LOW_RECALL_SITE_ID: &str = "help_center";
+
+/// Fixed document id for the low-recall seeded published document.
+const LOW_RECALL_DOC_ID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+// Site id constants shared by the multi-site chat scenario tests.
+const SITE_A: &str = "help_center";
+const SITE_B: &str = "dev_docs";
+const EMPTY_SITE: &str = "empty_site";
 
 // ---------------------------------------------------------------------------
 // build_rewrite_prompt scenarios
@@ -1368,9 +1387,9 @@ fn low_recall_ensure_sqlite_vec_loaded() {
 /// without hitting the real OpenAI endpoint), with `low_recall_config` set
 /// from the caller.
 ///
-/// All other fields mirror `test_app_state_with_reranker` defaults. This helper
-/// exists (rather than reusing the rerank helper) because the rerank helper
-/// hard-codes `low_recall_config: None`.
+/// The state is site-aware: `sites_config` contains `LOW_RECALL_SITE_ID` and a
+/// published document is seeded for that site so public `/api/chat` requests
+/// can reach the low-recall bypass block.
 async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) -> Arc<AppState> {
     low_recall_ensure_sqlite_vec_loaded();
 
@@ -1378,16 +1397,38 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
     rwiki_core::infrastructure::migration::migrations(1536)
         .to_latest(&mut conn)
         .expect("apply migrations");
+
+    // Seed a published document for the configured site. This satisfies the
+    // chat handler's site-scope published-document guard.
+    let created_at = "2026-01-01T00:00:00.000Z";
+    conn.execute(
+        "INSERT INTO documents (id, file_name, status, created_at, site_id) \
+         VALUES (?1, ?2, 'published', ?3, ?4)",
+        rusqlite::params![LOW_RECALL_DOC_ID, "test.md", created_at, LOW_RECALL_SITE_ID],
+    )
+    .expect("seed documents");
+
     // Seed a dummy chunk so vector_store.is_empty() returns false, allowing the
-    // chat handler to proceed. The seeded chunk will only be retrieved if the
-    // embedding search matches; otherwise the handler sees zero results and
-    // records a "完全未命中" row (top_score NULL).
+    // chat handler to proceed. The seeded chunk has no vec_chunks row, so the
+    // handler sees zero results and records a "完全未命中" row (top_score NULL).
     conn.execute(
         "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params!["test-doc", "test-chunk", "seed content", "Seed Title"],
+        rusqlite::params![LOW_RECALL_DOC_ID, "test-chunk", "seed content", "Seed Title"],
     )
     .expect("seed chunk_metadata");
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    // Site configuration that matches the seeded document.
+    let mut sites = HashMap::new();
+    sites.insert(
+        LOW_RECALL_SITE_ID.to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    let sites_config = SitesConfig { sites };
 
     // mockito embeddings mock so search_hybrid can embed the query offline.
     // Box::leak keeps the server alive for the test's lifetime (idiom shared
@@ -1447,13 +1488,14 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
         llm_model: "test-model".to_string(),
         api_token: LOW_RECALL_TEST_API_TOKEN.to_string(),
         api_allowed_ip_ranges: Vec::new(),
-        chat_config: rwiki_core::config::ChatConfig::default(),
+        chat_config: ChatConfig::default(),
         static_dir: None,
         allowed_origins: vec![],
         retrieval_config: rwiki_core::config::RetrievalConfig::default(),
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config,
+        sites_config,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -1486,6 +1528,31 @@ async fn count_low_recall_records(state: &Arc<AppState>) -> i64 {
         })
         .await
         .expect("count low_recall_records")
+}
+
+/// Read the `site_id` of the most recently inserted `low_recall_records`
+/// row whose `query` contains `query_substr`.
+async fn read_low_recall_site_id(state: &Arc<AppState>, query_substr: &str) -> Option<String> {
+    let needle = format!("%{query_substr}%");
+    state
+        .sqlite
+        .call(move |conn| -> Result<Option<String>, rusqlite::Error> {
+            let mut stmt = conn.prepare(
+                "SELECT site_id FROM low_recall_records \
+                     WHERE query LIKE ?1 \
+                     ORDER BY id DESC LIMIT 1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![needle])?;
+            match rows.next()? {
+                Some(row) => {
+                    let site_id: Option<String> = row.get(0)?;
+                    Ok(site_id)
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+        .expect("read low_recall site_id")
 }
 
 /// Read the `top_score` of the most recently inserted `low_recall_records`
@@ -1526,6 +1593,7 @@ fn low_recall_chat_request(message: &str, session_id: &str) -> Request<Body> {
     let body = serde_json::json!({
         "message": message,
         "sessionId": session_id,
+        "siteId": LOW_RECALL_SITE_ID,
     });
     Request::builder()
         .method(Method::POST)
@@ -1773,5 +1841,549 @@ async fn low_recall_skips_scoped_chat() {
         "scoped /api/chat/scoped (Collection scope) must NOT produce any \
          low_recall_records row even when low_recall is enabled; the bypass \
          block is gated on RetrievalScope::Published only",
+    );
+}
+
+// ===========================================================================
+// Multi-site public chat scenario tests (BE-T03)
+// ===========================================================================
+//
+// Covers the site-scoped behavior introduced by `support-multiple-website`:
+// configured-site validation, site-scoped retrieval, site-level prompt
+// resolution, session isolation, and low-recall write attribution.
+
+use super::chat::session_key;
+
+/// Parse an Axum response body into a JSON value.
+async fn parse_json_body(body: Body) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(body, 1024 * 64)
+        .await
+        .expect("read body");
+    serde_json::from_slice(&bytes).expect("parse json")
+}
+
+/// Build a `SitesConfig` with three sites for chat scenario tests:
+///   - SITE_A: has a site-specific system prompt and suggested questions.
+///   - SITE_B: configured, but no system prompt override and no suggested
+///     questions.
+///   - EMPTY_SITE: configured, but intentionally has no seeded documents.
+fn site_chat_sites_config() -> SitesConfig {
+    let mut sites = HashMap::new();
+
+    let mut site_a_questions = HashMap::new();
+    site_a_questions.insert(
+        "default".to_string(),
+        vec!["How do I get started?".to_string()],
+    );
+    site_a_questions.insert(
+        "zh-CN".to_string(),
+        vec!["如何开始？".to_string(), "如何联系客服？".to_string()],
+    );
+
+    sites.insert(
+        SITE_A.to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: Some("You are the Help Center assistant.".to_string()),
+            suggested_questions: Some(site_a_questions),
+        },
+    );
+
+    sites.insert(
+        SITE_B.to_string(),
+        SiteConfig {
+            name: "Developer Docs".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+
+    sites.insert(
+        EMPTY_SITE.to_string(),
+        SiteConfig {
+            name: "Empty Site".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+
+    SitesConfig { sites }
+}
+
+/// Build a minimal `AppState` for multi-site chat scenarios.
+///
+/// The state is seeded with one published document for `SITE_A` so that
+/// `has_published_documents_for_site` succeeds and `vector_store.is_empty()` is
+/// false. The embeddings endpoint is mocked so that additional documents can be
+/// indexed without hitting the real OpenAI API.
+async fn build_site_chat_app_state() -> Arc<AppState> {
+    low_recall_ensure_sqlite_vec_loaded();
+
+    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    rwiki_core::infrastructure::migration::migrations(1536)
+        .to_latest(&mut conn)
+        .expect("apply migrations");
+
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    let dummy_embedding: Vec<f64> = vec![0.0; 1536];
+    let embed_body = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": dummy_embedding, "index": 0}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    })
+    .to_string();
+    let _embed_mock = embed_server
+        .mock("POST", "/embeddings")
+        .with_status(200)
+        .with_body(&embed_body)
+        .expect_at_most(20)
+        .create_async()
+        .await;
+
+    let openai_client = rig::providers::openai::Client::builder()
+        .api_key("sk-test-fake-key-for-site-chat-tests-only")
+        .base_url(embed_server.url());
+    let embedding_model = openai_client
+        .build()
+        .expect("build openai client")
+        .embedding_model("text-embedding-3-small");
+    let app_embedding_model =
+        rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
+
+    let vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            sqlite.clone(),
+            app_embedding_model,
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+
+    let llm_client = rig::providers::openai::CompletionsClient::builder()
+        .api_key("sk-test-fake")
+        .base_url("http://localhost:0")
+        .build()
+        .expect("build LLM client");
+
+    let state = Arc::new(AppState {
+        sqlite,
+        enable_openapi: false,
+        vector_store,
+        chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        llm_client,
+        llm_model: "test-model".to_string(),
+        api_token: "test-api-token-site-chat".to_string(),
+        api_allowed_ip_ranges: Vec::new(),
+        chat_config: ChatConfig::default(),
+        static_dir: None,
+        allowed_origins: vec![],
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
+        reranker: None,
+        rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config: None,
+        sites_config: site_chat_sites_config(),
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+
+    // Seed SITE_A with a published document and indexed chunk so the site has
+    // usable data for the happy-path chat and retrieval scenarios.
+    seed_site_published_document(&state, SITE_A, SITE_A_DOC_ID, "site A content").await;
+
+    state
+}
+
+const SITE_A_DOC_ID: &str = "11111111-1111-1111-1111-111111111111";
+
+/// Seed an additional published document for a site and index one chunk for it.
+async fn seed_site_published_document(
+    state: &Arc<AppState>,
+    site_id: &str,
+    doc_id: &str,
+    content: &str,
+) {
+    let doc_uuid = Uuid::parse_str(doc_id).expect("valid uuid");
+    let created_at = "2026-01-01T00:00:00.000Z";
+    let site_id = site_id.to_string();
+    let doc_id_str = doc_id.to_string();
+
+    state
+        .sqlite
+        .call(move |conn| -> Result<(), rusqlite::Error> {
+            conn.execute(
+                "INSERT INTO documents (id, file_name, status, created_at, site_id) \
+                 VALUES (?1, ?2, 'published', ?3, ?4)",
+                rusqlite::params![doc_id_str, "test.md", created_at, site_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("insert site document");
+
+    let chunk = DocumentChunk {
+        id: format!("{doc_id}-chunk"),
+        document_id: doc_id.to_string(),
+        page_id: format!("{doc_id}-page"),
+        sub_index: None,
+        content: vec![content.to_string()],
+        title: "Test".to_string(),
+        locale: None,
+        link: None,
+        tags: vec![],
+        section: None,
+        chunk_count: None,
+        content_type: ContentType::None,
+        fts_tokens: None,
+    };
+
+    state
+        .vector_store
+        .index_document(doc_uuid, vec![chunk])
+        .await
+        .expect("index site document chunk");
+}
+
+/// Build a public `/api/chat` POST request that includes `siteId`.
+fn site_chat_request(message: &str, session_id: &str, site_id: &str) -> Request<Body> {
+    let body = serde_json::json!({
+        "message": message,
+        "sessionId": session_id,
+        "siteId": site_id,
+    });
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request")
+}
+
+// ---------------------------------------------------------------------------
+// Configured-site validation scenarios
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — Widget and main-site chat must declare
+// a `siteId`. A request without one is rejected before any retrieval or LLM
+// work is performed.
+// Covers: `chat` handler calls `sites_config.require_configured` and maps the
+// Empty error to a 400 Bad Request.
+
+#[tokio::test]
+async fn chat_missing_site_id_returns_400() {
+    let state = build_site_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let body = serde_json::json!({
+        "message": "hello",
+        "sessionId": "session-missing-site",
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "chat without siteId must return 400"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("siteId"),
+        "error message must mention siteId, got {body}"
+    );
+}
+
+// User Story: support-multiple-website — An explicitly provided but
+// unconfigured `siteId` must be rejected so that stale or guessed identifiers
+// cannot reach retrieval.
+// Covers: `sites_config.require_configured` returns NotConfigured, mapped to
+// 400 Bad Request.
+
+#[tokio::test]
+async fn chat_unconfigured_site_id_returns_400() {
+    let state = build_site_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = site_chat_request("hello", "session-unknown-site", "unknown-site");
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "chat with unknown siteId must return 400"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown-site"),
+        "error message must mention the unknown site id, got {body}"
+    );
+}
+
+// User Story: support-multiple-website — A configured site with no published
+// documents has nothing to retrieve from, so the endpoint must fail fast with
+// 503 Service Unavailable rather than reaching the LLM with empty context.
+// Covers: `chat` handler checks `has_published_documents_for_site` and returns
+// `当前站点没有可用文档` when the count is zero.
+
+#[tokio::test]
+async fn chat_configured_site_without_published_docs_returns_503() {
+    let state = build_site_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = site_chat_request("hello", "session-empty-site", EMPTY_SITE);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "chat for a configured site with no published docs must return 503"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("没有可用文档"),
+        "error message must indicate no available documents, got {body}"
+    );
+}
+
+// User Story: support-multiple-website — A valid, configured `siteId` with
+// published documents passes validation and reaches the chat pipeline.
+// Covers: the happy-path gate through `require_configured` and
+// `has_published_documents_for_site` for a public `/api/chat` request.
+
+#[tokio::test]
+async fn chat_valid_site_id_succeeds_when_published_docs_exist() {
+    let state = build_site_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = site_chat_request("hello", "session-valid-site", SITE_A);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "chat for a configured site with published docs must return 200"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Site-scoped retrieval scenario
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — Retrieval must only consider documents
+// that belong to the requested site and are published.
+// Covers: `RetrievalScope::Site` applied through `search_hybrid` filters out
+// chunks from other sites.
+
+#[tokio::test]
+async fn site_scoped_retrieval_returns_only_that_sites_published_documents() {
+    let state = build_site_chat_app_state().await;
+
+    // Seed a second published document for SITE_B.
+    seed_site_published_document(
+        &state,
+        SITE_B,
+        "22222222-2222-2222-2222-222222222222",
+        "site B content",
+    )
+    .await;
+
+    let scope = RetrievalScope::Site(SITE_A.to_string());
+    let results = state
+        .vector_store
+        .search_hybrid("site A content", 5, 1, 3, 12, 60, &scope)
+        .await
+        .expect("search_hybrid should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "site-scoped search for SITE_A must return at least one result"
+    );
+    assert!(
+        results.iter().all(|r| r.document_id == SITE_A_DOC_ID),
+        "every retrieved chunk must belong to SITE_A; got document_ids: {:?}",
+        results.iter().map(|r| &r.document_id).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Site-level system prompt scenarios
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — A site may override the global system
+// prompt; sites without an override must continue to use the global prompt.
+// Covers: `SitesConfig::resolved_system_prompt` returns the site override when
+// present and non-empty, and falls back to the global prompt otherwise.
+
+#[test]
+fn site_specific_system_prompt_overrides_global_and_unconfigured_site_falls_back() {
+    let mut sites = HashMap::new();
+    sites.insert(
+        SITE_A.to_string(),
+        SiteConfig {
+            name: "Help Center".to_string(),
+            system_prompt: Some("Site A override prompt.".to_string()),
+            suggested_questions: None,
+        },
+    );
+    sites.insert(
+        SITE_B.to_string(),
+        SiteConfig {
+            name: "Developer Docs".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    let sites_config = SitesConfig { sites };
+    let global_prompt = "Global system prompt.";
+
+    assert_eq!(
+        sites_config.resolved_system_prompt(Some(SITE_A), global_prompt),
+        "Site A override prompt.",
+        "SITE_A must use its configured system prompt"
+    );
+    assert_eq!(
+        sites_config.resolved_system_prompt(Some(SITE_B), global_prompt),
+        global_prompt,
+        "SITE_B without an override must fall back to the global prompt"
+    );
+
+    // The preamble builder receives the resolved prompt, so the final prompt
+    // embeds the site-specific text.
+    let preamble = build_preamble(
+        sites_config.resolved_system_prompt(Some(SITE_A), global_prompt),
+        None,
+        "RAG context",
+    );
+    assert!(
+        preamble.starts_with("Site A override prompt."),
+        "preamble must start with the resolved site-specific prompt"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session isolation scenario
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — The same `sessionId` used in two
+// different sites must not share conversation history, otherwise context from
+// one site would leak into another.
+// Covers: `session_key(Some(site_id), session_id)` prefixes the storage key
+// with the site id, so identical session ids produce distinct map keys.
+
+#[test]
+fn identical_session_id_in_different_sites_uses_distinct_storage_keys() {
+    let session_id = "shared-session-123";
+    let key_a = session_key(Some(SITE_A), session_id);
+    let key_b = session_key(Some(SITE_B), session_id);
+
+    assert_ne!(
+        key_a, key_b,
+        "storage keys for the same session id in different sites must differ"
+    );
+    assert!(
+        key_a.contains(SITE_A),
+        "SITE_A storage key must contain the site id"
+    );
+    assert!(
+        key_b.contains(SITE_B),
+        "SITE_B storage key must contain the site id"
+    );
+}
+
+// User Story: support-multiple-website — A session inserted for SITE_A must not
+// be visible when the handler looks up the same session id for SITE_B.
+// Covers: the in-memory session map is keyed by `session_key`, so cross-site
+// lookups miss.
+
+#[tokio::test]
+async fn cross_site_session_lookup_does_not_share_history() {
+    let state = build_site_chat_app_state().await;
+    let session_id = "shared-session-456";
+
+    {
+        let mut sessions = state.chat_sessions.lock().await;
+        let key_a = session_key(Some(SITE_A), session_id);
+        sessions
+            .entry(key_a)
+            .or_insert_with(|| rwiki_core::domain::chat::ChatSession::new(session_id.to_string()))
+            .add_message("user", "question for site A");
+    }
+
+    let key_b = session_key(Some(SITE_B), session_id);
+    let sessions = state.chat_sessions.lock().await;
+    assert!(
+        sessions.get(&key_b).is_none(),
+        "SITE_B must not see SITE_A's session history"
+    );
+    let key_a = session_key(Some(SITE_A), session_id);
+    let site_a_session = sessions.get(&key_a).expect("SITE_A session exists");
+    assert_eq!(
+        site_a_session.messages.len(),
+        1,
+        "SITE_A session history must be preserved"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Low-recall write attribution scenario
+// ---------------------------------------------------------------------------
+
+// User Story: support-multiple-website — When a site-scoped chat query triggers
+// the low-recall bypass, the written record must carry the current `siteId` so
+// operators can query low-recall records per site.
+// Covers: `chat_inner` writes `site_id` into `low_recall_records.site_id` for
+// `RetrievalScope::Site`.
+
+#[tokio::test]
+async fn low_recall_site_scoped_chat_records_site_id() {
+    let state = test_app_state_with_low_recall(0.3).await;
+    let app = create_api_routes(state.clone());
+
+    let marker = "zzzzz-low-recall-site-attribution-marker";
+    let req = low_recall_chat_request(marker, "session-low-recall-site-attribution");
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert!(
+        resp.status().is_success(),
+        "chat endpoint must succeed when low-recall bypass fires, got status {}",
+        resp.status()
+    );
+
+    let site_id = {
+        let mut maybe = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            maybe = read_low_recall_site_id(&state, marker).await;
+            if maybe.is_some() {
+                break;
+            }
+        }
+        maybe
+    };
+
+    assert_eq!(
+        site_id,
+        Some(LOW_RECALL_SITE_ID.to_string()),
+        "low_recall_records row must record the current site_id; got {:?}",
+        site_id
     );
 }

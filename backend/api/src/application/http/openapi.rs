@@ -14,6 +14,7 @@ use crate::application::http::handlers::feedback::{
 use crate::application::http::handlers::low_recall::{
     LowRecallListResponse, LowRecallQueryParams, LowRecallRecord, LowRecallSource,
 };
+use crate::application::http::handlers::site::{SiteItem, SitesResponse};
 
 /// OpenAPI 文档定义
 ///
@@ -34,6 +35,7 @@ use crate::application::http::handlers::low_recall::{
     ),
     paths(
         crate::application::http::handlers::health_check,
+        crate::application::http::handlers::site::list_sites,
         crate::application::http::handlers::auth::verify_token,
         crate::application::http::handlers::document::upload_document,
         crate::application::http::handlers::document::list_documents,
@@ -52,6 +54,8 @@ use crate::application::http::handlers::low_recall::{
     components(
         schemas(
             crate::application::http::errors::ErrorResponse,
+            SiteItem,
+            SitesResponse,
             UploadDocumentResponse,
             DocumentListItem,
             DocumentListResponse,
@@ -75,6 +79,7 @@ use crate::application::http::handlers::low_recall::{
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
+        (name = "sites", description = "Site configuration endpoints"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "documents", description = "Document upload, listing, deletion, and publishing"),
         (name = "chat", description = "Knowledge base chat with SSE streaming"),
