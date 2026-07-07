@@ -42,15 +42,15 @@ const POST_ANSWER_MAX_QUESTIONS: usize = 3;
 // DTOs
 // ---------------------------------------------------------------------------
 
-/// 公共聊天请求体：按 siteId 限定检索范围，仅命中该站点的已发布文档。
+/// 公共聊天请求体：按 channelId 限定检索范围，仅命中该频道的已发布文档。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
-    /// 站点标识；必填（在 handler 中二次校验以返回 400）
-    #[serde(rename = "siteId", default)]
-    pub site_id: Option<String>,
+    /// 频道标识；必填（在 handler 中二次校验以返回 400）
+    #[serde(rename = "channelId", default)]
+    pub channel_id: Option<String>,
 }
 
 /// 认证端点 `/api/chat/scoped` 的请求体：允许通过 documentIds 指定文档集合，
@@ -68,9 +68,9 @@ pub struct ScopedChatRequest {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SuggestionsQuery {
     pub locale: Option<String>,
-    /// 站点标识；必填
-    #[serde(rename = "siteId")]
-    pub site_id: String,
+    /// 频道标识；必填
+    #[serde(rename = "channelId")]
+    pub channel_id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -205,9 +205,9 @@ pub(crate) fn match_locale(
     }
 }
 
-/// Get site-level suggested questions for a given locale.
+/// Get channel-level suggested questions for a given locale.
 ///
-/// Returns the configured site's suggested questions; an empty list when the site
+/// Returns the configured channel's suggested questions; an empty list when the channel
 /// has none. Does NOT fall back to global/widget suggestions.
 #[utoipa::path(
     get,
@@ -216,30 +216,30 @@ pub(crate) fn match_locale(
     params(SuggestionsQuery),
     responses(
         (status = 200, description = "Suggested questions", body = SuggestionsResponse),
-        (status = 400, description = "Invalid siteId", body = ErrorResponse)
+        (status = 400, description = "Invalid channelId", body = ErrorResponse)
     )
 )]
 pub async fn suggestions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&params.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&params.channel_id)
         .map_err(|e| match e {
-            rwiki_core::config::SiteValidationError::Empty => {
-                ApiError::bad_request("siteId 不能为空")
+            rwiki_core::config::ChannelValidationError::Empty => {
+                ApiError::bad_request("channelId 不能为空")
             }
-            rwiki_core::config::SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            rwiki_core::config::ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?;
 
-    let site_questions: Option<HashMap<String, Vec<String>>> = state
-        .sites_config
-        .get(site_id)
+    let channel_questions: Option<HashMap<String, Vec<String>>> = state
+        .channels_config
+        .get(channel_id)
         .and_then(|s| s.suggested_questions.clone());
-    let questions = match_locale(&site_questions, params.locale.as_deref());
+    let questions = match_locale(&channel_questions, params.locale.as_deref());
     Ok(Json(SuggestionsResponse { questions }))
 }
 
@@ -758,26 +758,26 @@ fn has_valid_rewrite_json(raw: &str) -> bool {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// Build a session storage key that scopes memory sessions by site.
+/// Build a session storage key that scopes memory sessions by channel.
 ///
-/// Site-scoped public chat uses `site:{site_id}:{session_id}` so old global
-/// sessions (plain `session_id`) can never leak into site sessions.
+/// Channel-scoped public chat uses `channel:{channel_id}:{session_id}` so old global
+/// sessions (plain `session_id`) can never leak into channel sessions.
 /// Scoped/internal chat uses `scoped:{session_id}`.
-pub(crate) fn session_key(site_id: Option<&str>, session_id: &str) -> String {
-    match site_id {
-        Some(site_id) => format!("site:{site_id}:{session_id}"),
+pub(crate) fn session_key(channel_id: Option<&str>, session_id: &str) -> String {
+    match channel_id {
+        Some(channel_id) => format!("channel:{channel_id}:{session_id}"),
         None => format!("scoped:{session_id}"),
     }
 }
 
 /// 共享的 SSE 聊天主体：解析完请求、确定作用域之后的全部逻辑。
 /// public `/api/chat` 与认证的 `/api/chat/scoped` 均通过此函数复用，
-/// 仅检索作用域不同（前者恒为 Site，后者可由 documentIds 构建 Collection）。
+/// 仅检索作用域不同（前者恒为 Channel，后者可由 documentIds 构建 Collection）。
 async fn chat_inner(
     state: Arc<AppState>,
     message: String,
     session_id: Option<String>,
-    site_id: Option<&str>,
+    channel_id: Option<&str>,
     scope: rwiki_core::infrastructure::vector_store::RetrievalScope,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Validate message is not empty
@@ -803,11 +803,11 @@ async fn chat_inner(
     // Determine session ID
     let is_new_session = session_id.is_none();
     let session_id = session_id.unwrap_or_else(|| Uuid::now_v7().to_string());
-    let storage_key = session_key(site_id, &session_id);
+    let storage_key = session_key(channel_id, &session_id);
     let chat_span = tracing::info_span!(
         "chat_request",
         session_id = %session_id,
-        site_id = ?site_id,
+        channel_id = ?channel_id,
         storage_key = %storage_key,
         user_message_preview = %preview_chars(&message, 50),
         user_message_len = message.chars().count(),
@@ -881,16 +881,16 @@ async fn chat_inner(
             );
         }
 
-        // 旁路：低相关召回记录（不阻塞回答；仅公开 Site 作用域；仅功能启用时）
+        // 旁路：低相关召回记录（不阻塞回答；仅公开 Channel 作用域；仅功能启用时）
         // 写入为 detached tokio::spawn，chat 不 join/不 await，与 SSE 流式回答并发；
         // 返回 Err 仅 warn、不传播；任务 panic 由 tokio 隔离——均不影响 chat 回答。
-        let low_recall_site_id: Option<String> = match &scope {
-            rwiki_core::infrastructure::vector_store::RetrievalScope::Site(site_id) => {
-                Some(site_id.clone())
+        let low_recall_channel_id: Option<String> = match &scope {
+            rwiki_core::infrastructure::vector_store::RetrievalScope::Channel(channel_id) => {
+                Some(channel_id.clone())
             }
             _ => None,
         };
-        if let Some(site_id_for_low_recall) = low_recall_site_id {
+        if let Some(channel_id_for_low_recall) = low_recall_channel_id {
             if let Some(lr_cfg) = state.low_recall_config.as_ref() {
                 let top_score = search_results.first().map(|r| r.score); // None = 完全未命中
                 let should_log = top_score.is_none_or(|s| s < lr_cfg.threshold); // 无结果必记
@@ -917,11 +917,11 @@ async fn chat_inner(
                             .call(move |conn| {
                                 conn.execute(
                                     "INSERT INTO low_recall_records \
-                                     (session_id, site_id, query, top_score, result_count, sources) \
+                                     (session_id, channel_id, query, top_score, result_count, sources) \
                                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                                     rusqlite::params![
                                         session_id,
-                                        site_id_for_low_recall,
+                                        channel_id_for_low_recall,
                                         query,
                                         top_score,
                                         result_count,
@@ -947,8 +947,8 @@ async fn chat_inner(
         let context_chars = context_text.chars().count();
 
         let system_prompt = state
-            .sites_config
-            .resolved_system_prompt(site_id, &state.chat_config.system_prompt);
+            .channels_config
+            .resolved_system_prompt(channel_id, &state.chat_config.system_prompt);
         let preamble = build_preamble(system_prompt, summary.as_deref(), &context_text);
 
         // Build per-request agent with context in preamble
@@ -1212,7 +1212,7 @@ async fn chat_inner(
 
 /// Public SSE chat endpoint (no authentication required).
 ///
-/// Retrieves published content for the configured `siteId` only (RetrievalScope::Site).
+/// Retrieves published content for the configured `channelId` only (RetrievalScope::Channel).
 #[utoipa::path(
     post,
     path = "/api/chat",
@@ -1220,40 +1220,40 @@ async fn chat_inner(
     request_body = ChatRequest,
     responses(
         (status = 200, description = "SSE stream of chat response events", content_type = "text/event-stream"),
-        (status = 400, description = "Invalid request or site", body = ErrorResponse),
-        (status = 503, description = "Knowledge base is empty or site has no published documents", body = ErrorResponse)
+        (status = 400, description = "Invalid request or channel", body = ErrorResponse),
+        (status = 503, description = "Knowledge base is empty or channel has no published documents", body = ErrorResponse)
     )
 )]
 pub async fn chat(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(req.site_id.as_deref().unwrap_or(""))
+    let channel_id = state
+        .channels_config
+        .require_configured(req.channel_id.as_deref().unwrap_or(""))
         .map_err(|e| match e {
-            rwiki_core::config::SiteValidationError::Empty => {
-                ApiError::bad_request("siteId 不能为空")
+            rwiki_core::config::ChannelValidationError::Empty => {
+                ApiError::bad_request("channelId 不能为空")
             }
-            rwiki_core::config::SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            rwiki_core::config::ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?;
 
     if !state
         .vector_store
-        .has_published_documents_for_site(site_id)
+        .has_published_documents_for_channel(channel_id)
         .await
     {
-        return Err(ApiError::service_unavailable("当前站点没有可用文档"));
+        return Err(ApiError::service_unavailable("当前频道没有可用文档"));
     }
 
     chat_inner(
         state,
         req.message,
         req.session_id,
-        Some(site_id),
-        rwiki_core::infrastructure::vector_store::RetrievalScope::Site(site_id.to_string()),
+        Some(channel_id),
+        rwiki_core::infrastructure::vector_store::RetrievalScope::Channel(channel_id.to_string()),
     )
     .await
 }
@@ -2505,28 +2505,28 @@ mod tests {
 
     // --- session_key tests (BE-D03) ---
 
-    /// Covers: site-scoped chat keys include site id and session id with a prefix,
+    /// Covers: channel-scoped chat keys include channel id and session id with a prefix,
     /// so they cannot collide with old global sessions that used plain session_id.
     #[test]
-    fn session_key_scopes_public_chat_by_site() {
+    fn session_key_scopes_public_chat_by_channel() {
         let key = session_key(Some("help_center"), "sess-123");
-        assert_eq!(key, "site:help_center:sess-123");
+        assert_eq!(key, "channel:help_center:sess-123");
     }
 
     /// Covers: scoped/internal chat uses a distinct prefix so it does not share
-    /// the same key namespace as site-scoped public chat.
+    /// the same key namespace as channel-scoped public chat.
     #[test]
-    fn session_key_scopes_scoped_chat_without_site() {
+    fn session_key_scopes_scoped_chat_without_channel() {
         let key = session_key(None, "sess-456");
         assert_eq!(key, "scoped:sess-456");
     }
 
-    /// Covers: the same raw session id under different sites produces different
-    /// storage keys, ensuring cross-site session isolation.
+    /// Covers: the same raw session id under different channels produces different
+    /// storage keys, ensuring cross-channel session isolation.
     #[test]
-    fn session_key_same_session_id_differs_by_site() {
-        let key_a = session_key(Some("site_a"), "shared-session");
-        let key_b = session_key(Some("site_b"), "shared-session");
-        assert_ne!(key_a, key_b, "same session id must be isolated by site");
+    fn session_key_same_session_id_differs_by_channel() {
+        let key_a = session_key(Some("channel_a"), "shared-session");
+        let key_b = session_key(Some("channel_b"), "shared-session");
+        assert_ne!(key_a, key_b, "same session id must be isolated by channel");
     }
 }

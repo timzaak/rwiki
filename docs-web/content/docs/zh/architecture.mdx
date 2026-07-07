@@ -4,7 +4,7 @@ description: 技术选型、RAG 核心流程
 icon: Boxes
 ---
 
-RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处理文档解析、向量化、检索和流式对话，前端用 React SPA 提供聊天界面和文档管理后台，同时支持以 widget 形式嵌入外部站点。
+RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处理文档解析、向量化、检索和流式对话，前端用 React SPA 提供聊天界面和文档管理后台，同时支持以 widget 形式嵌入外部频道。
 
 ## 技术栈
 
@@ -73,7 +73,7 @@ flowchart LR
 
 ### 检索与对话
 
-用户通过 `POST /api/chat` 发起对话（无需鉴权）：
+用户通过 `POST /api/chat` 发起对话（无需鉴权）。请求需携带 `channelId`；检索限定在该频道的已发布文档（`RetrievalScope::Channel`），会话键带 `channelId` 前缀，历史不会跨频道。详见[多频道](/zh/docs/multi-channel)。
 
 1. **会话管理**：请求携带可选的 `sessionId`，没有则生成新的
 2. **查询改写**：所有查询（不只是追问）都会经过改写。首轮查询时，LLM 会把短或模糊的输入扩展为更具体、更可检索的形式；追问时则结合对话历史解析代词和上下文。当配置了 `content_language`（如 `"English"`）时，改写 prompt 会引导 LLM 将查询翻译为目标语言，使 FTS5 关键词搜索和向量检索都能跨语言命中。改写输出最多 2 条查询变体（JSON 格式），有 8 秒超时——超时或失败时回退到原始查询
@@ -138,7 +138,7 @@ RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用
 
 ### 推荐问题
 
-`GET /api/chat/suggestions?locale=zh-CN` 返回预配置的推荐问题列表，用于聊天空状态展示。locale 匹配在服务端完成：精确匹配、最长前缀匹配、然后回退到 `default`。这样主聊天界面不需要内置 locale 逻辑（但 widget 支持通过 `suggestedQuestions` 配置在客户端做 locale 匹配）。
+`GET /api/chat/suggestions?locale=zh-CN&channelId=help_center` 返回预配置的推荐问题列表，用于聊天空状态展示，并按指定频道过滤。locale 匹配在服务端完成：精确匹配、最长前缀匹配、然后回退到 `default`。当频道配置了 `[channels.<channelId>.suggested_questions]` 时，以服务端为准，覆盖 widget 的本地 `suggestedQuestions`；否则使用 widget 本地配置。详见[多频道](/zh/docs/multi-channel)。
 
 ### 消息反馈
 

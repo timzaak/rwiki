@@ -6,26 +6,26 @@ import { type ReactNode } from 'react'
 import { server } from '@/test/mocks/server'
 import { client } from '@/lib/api-generated/client.gen'
 import {
-  AdminSiteProvider,
-  useAdminSite,
-} from '@/lib/admin-site-context'
+  AdminChannelProvider,
+  useAdminChannel,
+} from '@/lib/admin-channel-context'
 
 /**
- * FE-T03 — AdminSiteProvider global site context tests
+ * FE-T03 — AdminChannelProvider global channel context tests
  *
- * Covers FE-D03's `admin-site-context.tsx`:
- *  - default-first: on success with a non-empty list, `siteId` becomes the first
- *    site's id (`sites[0].id`), `loading===false`, `error===null`, `sites`
+ * Covers FE-D03's `admin-channel-context.tsx`:
+ *  - default-first: on success with a non-empty list, `channelId` becomes the first
+ *    channel's id (`channels[0].id`), `loading===false`, `error===null`, `channels`
  *    populated.
- *  - switch: `setSiteId('site-b')` updates `siteId`.
- *  - empty: success with `sites: []` → `siteId===null` (consumers disable).
- *  - fail + retry: 500 → `error` non-null, `siteId===null`; `retry()` re-requests
- *    `/api/sites`; swapping to a 200 handler → after retry `siteId==='site-a'`,
+ *  - switch: `setChannelId('channel-b')` updates `channelId`.
+ *  - empty: success with `channels: []` → `channelId===null` (consumers disable).
+ *  - fail + retry: 500 → `error` non-null, `channelId===null`; `retry()` re-requests
+ *    `/api/channels`; swapping to a 200 handler → after retry `channelId==='channel-a'`,
  *    `error===null`.
  *
  * Strategy mirrors `use-feedback.test.tsx` / `api-client-setup.test.tsx`:
- * `renderHook(... , { wrapper })` + MSW `/api/sites` + `client.setConfig({
- * baseUrl })` so the generated SDK's fetch reaches MSW. `listSites` is NOT
+ * `renderHook(... , { wrapper })` + MSW `/api/channels` + `client.setConfig({
+ * baseUrl })` so the generated SDK's fetch reaches MSW. `listChannels` is NOT
  * mocked — the real SDK fetch flows through MSW.
  *
  * We do NOT assert the exact localStorage key (an implementation detail). The
@@ -35,23 +35,23 @@ import {
  */
 
 const BASE_URL = 'http://localhost:3000'
-const SITES_URL = `${BASE_URL}/api/sites`
+const CHANNELS_URL = `${BASE_URL}/api/channels`
 
-const SITE_A = { id: 'site-a', name: 'A' }
-const SITE_B = { id: 'site-b', name: 'B' }
+const CHANNEL_A = { id: 'channel-a', name: 'A' }
+const CHANNEL_B = { id: 'channel-b', name: 'B' }
 
-// renderHook wrapper: AdminSiteProvider owns listSites + the context value.
+// renderHook wrapper: AdminChannelProvider owns listChannels + the context value.
 function wrapper({ children }: { children: ReactNode }) {
-  return <AdminSiteProvider>{children}</AdminSiteProvider>
+  return <AdminChannelProvider>{children}</AdminChannelProvider>
 }
 
-let sitesCallCount: number
+let channelsCallCount: number
 
 beforeEach(() => {
   // jsdom requires an absolute URL for the SDK's fetch to reach MSW.
   client.setConfig({ baseUrl: BASE_URL })
   localStorage.clear()
-  sitesCallCount = 0
+  channelsCallCount = 0
 })
 
 afterEach(() => {
@@ -60,12 +60,12 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function sitesHandler(
+function channelsHandler(
   body: Record<string, unknown>,
   status: 200 | 500 = 200,
 ): ReturnType<typeof http.get> {
-  return http.get(SITES_URL, () => {
-    sitesCallCount += 1
+  return http.get(CHANNELS_URL, () => {
+    channelsCallCount += 1
     if (status === 500) {
       return HttpResponse.json(
         { code: 500, message: 'boom' },
@@ -76,63 +76,63 @@ function sitesHandler(
   })
 }
 
-describe('AdminSiteProvider — default-first selection', () => {
-  it('defaults siteId to the first site and clears loading on success', async () => {
-    server.use(sitesHandler({ sites: [SITE_A, SITE_B] }))
+describe('AdminChannelProvider — default-first selection', () => {
+  it('defaults channelId to the first channel and clears loading on success', async () => {
+    server.use(channelsHandler({ channels: [CHANNEL_A, CHANNEL_B] }))
 
-    const { result } = renderHook(() => useAdminSite(), { wrapper })
+    const { result } = renderHook(() => useAdminChannel(), { wrapper })
 
     await waitFor(() => {
-      expect(result.current.siteId).toBe('site-a')
+      expect(result.current.channelId).toBe('channel-a')
     })
 
     expect(result.current.loading).toBe(false)
     expect(result.current.error).toBeNull()
-    expect(result.current.sites).toHaveLength(2)
-    expect(result.current.sites.map((s) => s.id)).toEqual([
-      'site-a',
-      'site-b',
+    expect(result.current.channels).toHaveLength(2)
+    expect(result.current.channels.map((c) => c.id)).toEqual([
+      'channel-a',
+      'channel-b',
     ])
   })
 })
 
-describe('AdminSiteProvider — setSiteId', () => {
-  it('updates siteId when setSiteId is called', async () => {
-    server.use(sitesHandler({ sites: [SITE_A, SITE_B] }))
+describe('AdminChannelProvider — setChannelId', () => {
+  it('updates channelId when setChannelId is called', async () => {
+    server.use(channelsHandler({ channels: [CHANNEL_A, CHANNEL_B] }))
 
-    const { result } = renderHook(() => useAdminSite(), { wrapper })
+    const { result } = renderHook(() => useAdminChannel(), { wrapper })
 
     await waitFor(() => {
-      expect(result.current.siteId).toBe('site-a')
+      expect(result.current.channelId).toBe('channel-a')
     })
 
     act(() => {
-      result.current.setSiteId('site-b')
+      result.current.setChannelId('channel-b')
     })
 
-    expect(result.current.siteId).toBe('site-b')
+    expect(result.current.channelId).toBe('channel-b')
   })
 })
 
-describe('AdminSiteProvider — empty sites list', () => {
-  it('keeps siteId null when the sites list is empty', async () => {
-    server.use(sitesHandler({ sites: [] }))
+describe('AdminChannelProvider — empty channels list', () => {
+  it('keeps channelId null when the channels list is empty', async () => {
+    server.use(channelsHandler({ channels: [] }))
 
-    const { result } = renderHook(() => useAdminSite(), { wrapper })
+    const { result } = renderHook(() => useAdminChannel(), { wrapper })
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false)
     })
 
-    expect(result.current.siteId).toBeNull()
-    expect(result.current.sites).toEqual([])
-    // Empty sites is an anomaly state — no error string, just a null selection
+    expect(result.current.channelId).toBeNull()
+    expect(result.current.channels).toEqual([])
+    // Empty channels is an anomaly state — no error string, just a null selection
     // that consumers use to disable operations.
     expect(result.current.error).toBeNull()
   })
 })
 
-describe('AdminSiteProvider — failure and manual retry', () => {
+describe('AdminChannelProvider — failure and manual retry', () => {
   // The provider auto-retries on failure up to MAX_ATTEMPTS (3) with a real
   // `setTimeout` delay (5s). Waiting through 3 real intervals would blow the
   // test timeout, so this suite uses fake timers and advances them to fire the
@@ -142,11 +142,11 @@ describe('AdminSiteProvider — failure and manual retry', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   })
 
-  it('sets error + null siteId after exhausting auto-retries, then retry recovers', async () => {
+  it('sets error + null channelId after exhausting auto-retries, then retry recovers', async () => {
     // Persistently failing handler: every attempt returns 500.
-    server.use(sitesHandler({ code: 500, message: 'boom' }, 500))
+    server.use(channelsHandler({ code: 500, message: 'boom' }, 500))
 
-    const { result } = renderHook(() => useAdminSite(), { wrapper })
+    const { result } = renderHook(() => useAdminChannel(), { wrapper })
 
     // Drive the auto-retry loop to completion. Initial mount fetch is attempt 1;
     // each subsequent advance fires one 5s retry timer. After MAX_ATTEMPTS the
@@ -163,11 +163,11 @@ describe('AdminSiteProvider — failure and manual retry', () => {
     })
 
     // Three attempts fired, terminal error reached.
-    expect(sitesCallCount).toBe(3)
+    expect(channelsCallCount).toBe(3)
     expect(result.current.error).not.toBeNull()
-    expect(result.current.siteId).toBeNull()
+    expect(result.current.channelId).toBeNull()
     expect(result.current.loading).toBe(false)
-    const failingCallCount = sitesCallCount
+    const failingCallCount = channelsCallCount
 
     // Restore real timers so the recovery path's fetch resolves via the normal
     // microtask queue (no further auto-retry timers are scheduled on success).
@@ -175,21 +175,21 @@ describe('AdminSiteProvider — failure and manual retry', () => {
 
     // Swap the handler to a successful response BEFORE retrying, so the retry
     // request observes the 200.
-    server.use(sitesHandler({ sites: [SITE_A, SITE_B] }))
+    server.use(channelsHandler({ channels: [CHANNEL_A, CHANNEL_B] }))
 
     await act(async () => {
       result.current.retry()
     })
 
-    // retry() must issue a fresh /api/sites request.
+    // retry() must issue a fresh /api/channels request.
     await waitFor(() => {
-      expect(sitesCallCount).toBeGreaterThan(failingCallCount)
+      expect(channelsCallCount).toBeGreaterThan(failingCallCount)
     })
 
-    // After the successful retry the provider selects the first site and
+    // After the successful retry the provider selects the first channel and
     // clears the error.
     await waitFor(() => {
-      expect(result.current.siteId).toBe('site-a')
+      expect(result.current.channelId).toBe('channel-a')
     })
     expect(result.current.error).toBeNull()
     expect(result.current.loading).toBe(false)

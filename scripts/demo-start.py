@@ -23,9 +23,15 @@ DOCS_WEB_PORT = int(os.environ.get("DOCS_WEB_PORT", "3001"))
 TUTORIALS_DIR = REPO_ROOT / "docs-web" / "content" / "docs"
 RWIKI_URL = "https://rwiki.fornetcode.com"
 
+# All demo KB content (tutorials + OpenAPI) is seeded into this single channel.
+# The demo chat/RAG tests (DE-D01..DE-D04) target help_center; the document
+# lifecycle endpoints now require channelId, so the seeder must carry it on
+# upload/publish/list or the KB stays empty and RAG fails.
+DEMO_CHANNEL_ID = "help_center"
+
 
 def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
-    """Inject or update the `link` field in frontmatter with the docs site URL."""
+    """Inject or update the `link` field in frontmatter with the docs channel URL."""
     text = file_bytes.decode("utf-8-sig")
     doc_link = f"{RWIKI_URL}/docs/{slug}"
 
@@ -57,10 +63,10 @@ def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
 
 
 def _get_published_filenames(base_url: str, api_token: str) -> set[str]:
-    """Fetch all published document filenames from the API."""
+    """Fetch all published document filenames for the demo channel from the API."""
     try:
         req = urllib.request.Request(
-            f"{base_url}/api/documents",
+            f"{base_url}/api/documents?channelId={DEMO_CHANNEL_ID}",
             headers={"Authorization": f"Bearer {api_token}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -90,7 +96,13 @@ def _upload_and_publish_markdown(
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         f"Content-Type: text/markdown; charset=utf-8\r\n"
         f"\r\n"
-    ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+    ).encode() + file_bytes + (
+        f"\r\n--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="channelId"\r\n'
+        f"\r\n"
+        f"{DEMO_CHANNEL_ID}\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
 
     req = urllib.request.Request(
         f"{base_url}/api/documents/upload",
@@ -117,7 +129,7 @@ def _upload_and_publish_markdown(
         return False
 
     pub_req = urllib.request.Request(
-        f"{base_url}/api/documents/{doc_id}/publish",
+        f"{base_url}/api/documents/{doc_id}/publish?channelId={DEMO_CHANNEL_ID}",
         data=b"",
         headers={"Authorization": f"Bearer {api_token}"},
         method="PATCH",
@@ -150,7 +162,13 @@ def _upload_and_publish_openapi(
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         f"Content-Type: application/json\r\n"
         f"\r\n"
-    ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+    ).encode() + file_bytes + (
+        f"\r\n--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="channelId"\r\n'
+        f"\r\n"
+        f"{DEMO_CHANNEL_ID}\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
 
     req = urllib.request.Request(
         f"{base_url}/api/documents/upload",
@@ -177,7 +195,7 @@ def _upload_and_publish_openapi(
         return False
 
     pub_req = urllib.request.Request(
-        f"{base_url}/api/documents/{doc_id}/publish",
+        f"{base_url}/api/documents/{doc_id}/publish?channelId={DEMO_CHANNEL_ID}",
         data=b"",
         headers={"Authorization": f"Bearer {api_token}"},
         method="PATCH",

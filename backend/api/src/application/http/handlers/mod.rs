@@ -1,10 +1,10 @@
 pub mod auth;
+pub mod channel;
 pub mod chat;
 pub mod document;
 pub mod eval;
 pub mod feedback;
 pub mod low_recall;
-pub mod site;
 
 #[cfg(test)]
 mod chat_scenarios;
@@ -13,7 +13,7 @@ mod chat_scenarios;
 mod chat_suggestions_scenarios;
 
 #[cfg(test)]
-mod site_scenarios;
+mod channel_scenarios;
 
 #[cfg(test)]
 mod document_status_scenarios;

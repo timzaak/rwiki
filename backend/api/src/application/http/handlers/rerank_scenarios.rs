@@ -68,6 +68,13 @@ async fn test_app_state_with_reranker(
         rusqlite::params!["test-doc", "test-chunk", "seed content", "Seed Title"],
     )
     .expect("seed chunk_metadata");
+    // Seed a published document for the test channel so the public chat handler
+    // passes the "channel has published documents" guard.
+    conn.execute(
+        "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?1, ?2, 'published', 1, ?3)",
+        rusqlite::params!["test-doc", "seed.md", TEST_CHANNEL_ID],
+    )
+    .expect("seed published document");
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     // Start a mockito server for the embedding API so search_hybrid can
@@ -131,7 +138,7 @@ async fn test_app_state_with_reranker(
         reranker,
         rerank_config,
         low_recall_config: None,
-        sites_config: rwiki_core::config::SitesConfig::default(),
+        channels_config: test_channels_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -142,11 +149,27 @@ async fn test_app_state_rerank_disabled() -> Arc<AppState> {
     test_app_state_with_reranker(None, RerankConfig::default()).await
 }
 
+const TEST_CHANNEL_ID: &str = "help_center";
+
+fn test_channels_config() -> rwiki_core::config::ChannelsConfig {
+    let mut channels = std::collections::HashMap::new();
+    channels.insert(
+        TEST_CHANNEL_ID.to_string(),
+        rwiki_core::config::ChannelConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    rwiki_core::config::ChannelsConfig { channels }
+}
+
 /// Build a chat POST request with JSON body.
 fn chat_request(message: &str, session_id: &str) -> Request<Body> {
     let body = serde_json::json!({
         "message": message,
         "sessionId": session_id,
+        "channelId": TEST_CHANNEL_ID,
     });
     Request::builder()
         .method(Method::POST)

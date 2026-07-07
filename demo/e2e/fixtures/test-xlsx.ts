@@ -2,15 +2,16 @@
  * Test XLSX fixture helper
  *
  * Exports the path to a pre-built minimal xlsx file for upload tests.
- * The file contains a "Sales" sheet with known data for assertions.
+ * The file uses the Wiki-style columns required by
+ * `backend/core/src/infrastructure/xlsx_parser.rs` (`Title` + `Markdown Content`
+ * are mandatory; `Locale`, `Link`, `Tags` are optional). The `Monthly Revenue
+ * Report` row is intentionally seeded with a markdown body whose content
+ * answers the chat-rag-streaming RAG question ("Revenue 最高的月份是哪个?").
  *
- * Content:
- *   Month    | Revenue | Region
- *   January  | 10000   | East
- *   February | 12000   | West
- *   March    | 15000   | North
- *   April    | 11000   | South
- *   May      | 13000   | East
+ * Content (sheet "Sales"):
+ *   Title                  | Markdown Content                          | Locale | Link | Tags
+ *   Monthly Revenue Report | # 月度营收报告 … Revenue 最高的是 March | zh-CN  |      | sales,revenue
+ *   Product Overview       | # Product Overview …                      | en     |      | product
  *
  * Usage:
  * ```typescript
@@ -30,17 +31,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const TEST_XLSX_PATH = path.join(__dirname, 'test-data.xlsx')
 
 /**
- * Known data from the test xlsx file, usable for assertions.
+ * Known titles authored in the test xlsx file, usable for assertions.
  */
 export const TEST_XLSX_DATA = {
   sheetName: 'Sales',
-  columns: ['Month', 'Revenue', 'Region'],
-  rows: [
-    { Month: 'January', Revenue: 10000, Region: 'East' },
-    { Month: 'February', Revenue: 12000, Region: 'West' },
-    { Month: 'March', Revenue: 15000, Region: 'North' },
-    { Month: 'April', Revenue: 11000, Region: 'South' },
-    { Month: 'May', Revenue: 13000, Region: 'East' },
-  ],
-  rowCount: 5,
+  columns: ['Title', 'Markdown Content', 'Locale', 'Link', 'Tags'],
+  titles: ['Monthly Revenue Report', 'Product Overview'],
+  rowCount: 2,
 } as const

@@ -1,16 +1,16 @@
 /**
- * 管理后台全局站点上下文。
+ * 管理后台全局频道上下文。
  *
- * 单一来源：在 admin 布局顶部由 `AdminSiteProvider` 拉取 `listSites()` 并维护
- * 当前 `siteId`，所有 admin 页（文档列表/上传/批处理发布取消删除/低召回）通过
- * `useAdminSite()` 消费，避免 prop drilling，并保证切换站点后各列表按新 siteId 重取。
+ * 单一来源：在 admin 布局顶部由 `AdminChannelProvider` 拉取 `listChannels()` 并维护
+ * 当前 `channelId`，所有 admin 页（文档列表/上传/批处理发布取消删除/低召回）通过
+ * `useAdminChannel()` 消费，避免 prop drilling，并保证切换频道后各列表按新 channelId 重取。
  *
- * `siteId: string | null`：null 表示尚未选定或无可用站点，消费方据此跳过请求与禁用操作。
+ * `channelId: string | null`：null 表示尚未选定或无可用频道，消费方据此跳过请求与禁用操作。
  *
  * 状态：
  *   - 加载中：`loading=true`，渲染 selector 旁「Loading…」。
  *   - 成功且非空：默认选首项（或命中 localStorage 且在列表内则用之）。
- *   - 成功但空数组：`siteId=null`（系统应至少一站点，空态为异常，提示联系管理员）。
+ *   - 成功但空数组：`channelId=null`（系统应至少一频道，空态为异常，提示联系管理员）。
  *   - 失败：`error` 态 + `retry`，按设计 §4.4.2 自动重试最多 3 次、间隔 5s。
  */
 import {
@@ -22,25 +22,25 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { listSites } from '@/lib/api-generated/sdk.gen'
-import type { SiteItem } from '@/lib/api-generated/types.gen'
+import { listChannels } from '@/lib/api-generated/sdk.gen'
+import type { ChannelItem } from '@/lib/api-generated/types.gen'
 
-const STORAGE_KEY = 'rwiki_admin_site_id'
+const STORAGE_KEY = 'rwiki_admin_channel_id'
 const MAX_ATTEMPTS = 3
 const RETRY_DELAY_MS = 5000
 
-export interface AdminSiteValue {
-  siteId: string | null
-  setSiteId: (id: string) => void
-  sites: SiteItem[]
+export interface AdminChannelValue {
+  channelId: string | null
+  setChannelId: (id: string) => void
+  channels: ChannelItem[]
   loading: boolean
   error: string | null
   retry: () => void
 }
 
-const AdminSiteContext = createContext<AdminSiteValue | null>(null)
+const AdminChannelContext = createContext<AdminChannelValue | null>(null)
 
-function readStoredSiteId(): string | null {
+function readStoredChannelId(): string | null {
   try {
     const value = window.localStorage.getItem(STORAGE_KEY)
     return value && value.trim() !== '' ? value : null
@@ -50,7 +50,7 @@ function readStoredSiteId(): string | null {
   }
 }
 
-function writeStoredSiteId(id: string): void {
+function writeStoredChannelId(id: string): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, id)
   } catch {
@@ -58,9 +58,9 @@ function writeStoredSiteId(id: string): void {
   }
 }
 
-export function AdminSiteProvider({ children }: { children: ReactNode }) {
-  const [sites, setSites] = useState<SiteItem[]>([])
-  const [siteId, setSiteIdState] = useState<string | null>(null)
+export function AdminChannelProvider({ children }: { children: ReactNode }) {
+  const [channels, setChannels] = useState<ChannelItem[]>([])
+  const [channelId, setChannelIdState] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -72,26 +72,26 @@ export function AdminSiteProvider({ children }: { children: ReactNode }) {
     setLoading(true)
     setError(null)
     try {
-      const result = await listSites()
+      const result = await listChannels()
       if (result.error || (result.response && !result.response.ok)) {
-        throw new Error('Failed to load sites')
+        throw new Error('Failed to load channels')
       }
-      const fetched = result.data?.sites ?? []
-      setSites(fetched)
+      const fetched = result.data?.channels ?? []
+      setChannels(fetched)
       if (fetched.length === 0) {
-        // 空站点为异常态：保持 siteId=null，消费方禁用操作并提示联系管理员。
-        setSiteIdState(null)
+        // 空频道为异常态：保持 channelId=null，消费方禁用操作并提示联系管理员。
+        setChannelIdState(null)
         attemptRef.current = 0
         setLoading(false)
         return
       }
       // 成功：优先用 localStorage 命中（且需在列表内），否则默认首项。
-      const stored = readStoredSiteId()
+      const stored = readStoredChannelId()
       const initial =
-        stored && fetched.some((s) => s.id === stored)
+        stored && fetched.some((c) => c.id === stored)
           ? stored
           : fetched[0].id
-      setSiteIdState(initial)
+      setChannelIdState(initial)
       attemptRef.current = 0
       setLoading(false)
     } catch {
@@ -103,7 +103,7 @@ export function AdminSiteProvider({ children }: { children: ReactNode }) {
           void load()
         }, RETRY_DELAY_MS)
       } else {
-        setError('Failed to load sites')
+        setError('Failed to load channels')
         setLoading(false)
       }
     }
@@ -121,9 +121,9 @@ export function AdminSiteProvider({ children }: { children: ReactNode }) {
     }
   }, [load])
 
-  const setSiteId = useCallback((id: string) => {
-    setSiteIdState(id)
-    writeStoredSiteId(id)
+  const setChannelId = useCallback((id: string) => {
+    setChannelIdState(id)
+    writeStoredChannelId(id)
   }, [])
 
   // 手动重试：重置计数并立即拉取。
@@ -137,22 +137,22 @@ export function AdminSiteProvider({ children }: { children: ReactNode }) {
   }, [load])
 
   return (
-    <AdminSiteContext.Provider
-      value={{ siteId, setSiteId, sites, loading, error, retry }}
+    <AdminChannelContext.Provider
+      value={{ channelId, setChannelId, channels, loading, error, retry }}
     >
       {children}
-    </AdminSiteContext.Provider>
+    </AdminChannelContext.Provider>
   )
 }
 
 /**
- * 读取管理后台当前站点上下文。必须在 `AdminSiteProvider` 内调用，否则抛错——
+ * 读取管理后台当前频道上下文。必须在 `AdminChannelProvider` 内调用，否则抛错——
  * 这强制 admin 路由在渲染布局前先包裹 Provider。
  */
-export function useAdminSite(): AdminSiteValue {
-  const value = useContext(AdminSiteContext)
+export function useAdminChannel(): AdminChannelValue {
+  const value = useContext(AdminChannelContext)
   if (value === null) {
-    throw new Error('useAdminSite must be used within an AdminSiteProvider')
+    throw new Error('useAdminChannel must be used within an AdminChannelProvider')
   }
   return value
 }

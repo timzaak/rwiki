@@ -36,6 +36,7 @@
 | core | 可配置系统提示词 | [core/configurable-system-prompt.md](core/configurable-system-prompt.md) | Implemented | 系统提示词配置和聊天行为基线 |
 | chat | 多轮对话 Hybrid 记忆管理 | [chat/multi-turn-conversation-hybrid-memory.md](chat/multi-turn-conversation-hybrid-memory.md) | Implemented | 多轮记忆策略和用户可见对话行为 |
 | integration | 可嵌入 Chat Widget (JS) | [integration/chat-widget-embeddable-js.md](integration/chat-widget-embeddable-js.md) | Implemented | Widget 集成契约、加载生命周期和限制 |
+| integration | 多网站 Widget 嵌入支持 | [integration/support-multiple-website.md](integration/support-multiple-website.md) | Implemented | 按 channelId 的多频道数据隔离、频道静态定义、双入口传递、全局 CORS |
 | chat | 查询改写与扩展 | [chat/query-rewrite.md](chat/query-rewrite.md) | Implemented | 首轮改写、多查询扩展、RRF 融合、降级保障 |
 | document | 关键词搜索支持 | [document/keyword-search-support.md](document/keyword-search-support.md) | Implemented | FTS5 全文搜索、jieba-rs 分词、混合检索、RRF 融合、降级保障 |
 | chat | 查询语言感知改写 | [chat/query-language-aware-rewrite.md](chat/query-language-aware-rewrite.md) | Implemented | 知识库内容语言配置、语言感知查询改写、多轮持续语言改写、向后兼容 |

@@ -9,7 +9,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
-use rwiki_core::config::SiteValidationError;
+use rwiki_core::config::ChannelValidationError;
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -18,9 +18,9 @@ use rwiki_core::config::SiteValidationError;
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRequest {
-    /// 站点标识；必填（在 handler 中二次校验以返回 400）
+    /// 频道标识；必填（在 handler 中二次校验以返回 400）
     #[serde(default)]
-    pub site_id: Option<String>,
+    pub channel_id: Option<String>,
     pub session_id: String,
     pub message_id: String,
     pub feedback: Option<String>,
@@ -32,8 +32,8 @@ pub struct FeedbackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackItem {
     pub id: i64,
-    /// 反馈所属站点
-    pub site_id: String,
+    /// 反馈所属频道
+    pub channel_id: String,
     pub session_id: String,
     pub message_id: String,
     pub feedback: String,
@@ -51,8 +51,8 @@ pub struct FeedbackListResponse {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackQueryParams {
-    /// 站点标识；必填
-    pub site_id: String,
+    /// 频道标识；必填
+    pub channel_id: String,
     pub feedback: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -81,13 +81,13 @@ pub async fn submit_feedback(
     State(state): State<Arc<AppState>>,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(req.site_id.as_deref().unwrap_or(""))
+    let channel_id = state
+        .channels_config
+        .require_configured(req.channel_id.as_deref().unwrap_or(""))
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -115,15 +115,15 @@ pub async fn submit_feedback(
                 None => {
                     // Idempotent: no error if the row doesn't exist.
                     conn.execute(
-                        "DELETE FROM chat_feedback WHERE site_id = ?1 AND session_id = ?2 AND message_id = ?3",
-                        rusqlite::params![site_id, req.session_id, req.message_id],
+                        "DELETE FROM chat_feedback WHERE channel_id = ?1 AND session_id = ?2 AND message_id = ?3",
+                        rusqlite::params![channel_id, req.session_id, req.message_id],
                     )?;
                 }
                 Some(ref feedback) => {
                     conn.execute(
-                        "INSERT OR REPLACE INTO chat_feedback (site_id, session_id, message_id, feedback, user_message, assistant_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        "INSERT OR REPLACE INTO chat_feedback (channel_id, session_id, message_id, feedback, user_message, assistant_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         rusqlite::params![
-                            site_id,
+                            channel_id,
                             req.session_id,
                             req.message_id,
                             feedback,
@@ -141,10 +141,10 @@ pub async fn submit_feedback(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Query site-scoped feedback list with pagination and optional filtering.
+/// Query channel-scoped feedback list with pagination and optional filtering.
 ///
 /// Requires Bearer Token authentication (registered in doc_router).
-/// Only returns feedback records belonging to the requested `siteId`.
+/// Only returns feedback records belonging to the requested `channelId`.
 #[utoipa::path(
     get,
     path = "/api/chat/feedback",
@@ -153,7 +153,7 @@ pub async fn submit_feedback(
     params(FeedbackQueryParams),
     responses(
         (status = 200, description = "Feedback list", body = FeedbackListResponse),
-        (status = 400, description = "Missing or invalid siteId", body = crate::application::http::errors::ErrorResponse),
+        (status = 400, description = "Missing or invalid channelId", body = crate::application::http::errors::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::application::http::errors::ErrorResponse),
         (status = 500, description = "Database error", body = crate::application::http::errors::ErrorResponse)
     )
@@ -162,13 +162,13 @@ pub async fn list_feedback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FeedbackQueryParams>,
 ) -> Result<Json<FeedbackListResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&params.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&params.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -180,7 +180,7 @@ pub async fn list_feedback(
         .sqlite
         .call(move |conn| {
             let filter_feedback = params.feedback.as_deref();
-            let base_where = "WHERE site_id = ?1";
+            let base_where = "WHERE channel_id = ?1";
 
             let (count_sql, data_sql) = if filter_feedback.is_some() {
                 (
@@ -188,7 +188,7 @@ pub async fn list_feedback(
                         "SELECT COUNT(*) FROM chat_feedback {base_where} AND feedback = ?2"
                     ),
                     format!(
-                        "SELECT id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
+                        "SELECT id, channel_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
                          FROM chat_feedback {base_where} AND feedback = ?2 \
                          ORDER BY created_at DESC LIMIT ?3 OFFSET ?4"
                     ),
@@ -197,7 +197,7 @@ pub async fn list_feedback(
                 (
                     format!("SELECT COUNT(*) FROM chat_feedback {base_where}"),
                     format!(
-                        "SELECT id, site_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
+                        "SELECT id, channel_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
                          FROM chat_feedback {base_where} \
                          ORDER BY created_at DESC LIMIT ?2 OFFSET ?3"
                     ),
@@ -207,11 +207,11 @@ pub async fn list_feedback(
             let total = if let Some(feedback) = filter_feedback {
                 conn.query_row(
                     &count_sql,
-                    rusqlite::params![site_id, feedback],
+                    rusqlite::params![channel_id, feedback],
                     |row| row.get::<_, i64>(0),
                 )?
             } else {
-                conn.query_row(&count_sql, rusqlite::params![site_id], |row| {
+                conn.query_row(&count_sql, rusqlite::params![channel_id], |row| {
                     row.get::<_, i64>(0)
                 })?
             };
@@ -219,7 +219,7 @@ pub async fn list_feedback(
             let row_to_item = |row: &rusqlite::Row| -> Result<FeedbackItem, rusqlite::Error> {
                 Ok(FeedbackItem {
                     id: row.get(0)?,
-                    site_id: row.get(1)?,
+                    channel_id: row.get(1)?,
                     session_id: row.get(2)?,
                     message_id: row.get(3)?,
                     feedback: row.get(4)?,
@@ -231,13 +231,13 @@ pub async fn list_feedback(
 
             let items = if let Some(feedback) = filter_feedback {
                 conn.prepare(&data_sql)?.query_map(
-                    rusqlite::params![site_id, feedback, limit, offset],
+                    rusqlite::params![channel_id, feedback, limit, offset],
                     row_to_item,
                 )?
                 .collect::<Result<Vec<_>, _>>()?
             } else {
                 conn.prepare(&data_sql)?
-                    .query_map(rusqlite::params![site_id, limit, offset], row_to_item)?
+                    .query_map(rusqlite::params![channel_id, limit, offset], row_to_item)?
                     .collect::<Result<Vec<_>, _>>()?
             };
 

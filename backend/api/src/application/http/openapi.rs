@@ -1,6 +1,7 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
 
+use crate::application::http::handlers::channel::{ChannelItem, ChannelsResponse};
 use crate::application::http::handlers::chat::{
     ChatRequest, ScopedChatRequest, SuggestionsResponse,
 };
@@ -14,7 +15,6 @@ use crate::application::http::handlers::feedback::{
 use crate::application::http::handlers::low_recall::{
     LowRecallListResponse, LowRecallQueryParams, LowRecallRecord, LowRecallSource,
 };
-use crate::application::http::handlers::site::{SiteItem, SitesResponse};
 
 /// OpenAPI 文档定义
 ///
@@ -35,7 +35,7 @@ use crate::application::http::handlers::site::{SiteItem, SitesResponse};
     ),
     paths(
         crate::application::http::handlers::health_check,
-        crate::application::http::handlers::site::list_sites,
+        crate::application::http::handlers::channel::list_channels,
         crate::application::http::handlers::auth::verify_token,
         crate::application::http::handlers::document::upload_document,
         crate::application::http::handlers::document::list_documents,
@@ -54,8 +54,8 @@ use crate::application::http::handlers::site::{SiteItem, SitesResponse};
     components(
         schemas(
             crate::application::http::errors::ErrorResponse,
-            SiteItem,
-            SitesResponse,
+            ChannelItem,
+            ChannelsResponse,
             UploadDocumentResponse,
             DocumentListItem,
             DocumentListResponse,
@@ -79,7 +79,7 @@ use crate::application::http::handlers::site::{SiteItem, SitesResponse};
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
-        (name = "sites", description = "Site configuration endpoints"),
+        (name = "channels", description = "Channel configuration endpoints"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "documents", description = "Document upload, listing, deletion, and publishing"),
         (name = "chat", description = "Knowledge base chat with SSE streaming"),

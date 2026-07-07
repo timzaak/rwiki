@@ -167,12 +167,13 @@ RWiki 是一个 RAG + Agent 驱动的知识库问答平台。
 
 ### 上传文档
 
-通过 API 上传（token 就是配置文件里 `[api] token` 的值）：
+通过 API 上传（token 就是配置文件里 `[api] token` 的值）。`channelId` 字段把文档归属到某个已配置的频道——见[多频道](/zh/docs/multi-channel)：
 
 ```bash
 curl -X POST http://localhost:8080/api/documents/upload \
   -H "Authorization: Bearer dev-test" \
-  -F "file=@faq.md"
+  -F "file=@faq.md" \
+  -F "channelId=help_center"
 ```
 
 返回类似这样：
@@ -196,7 +197,7 @@ curl -X POST http://localhost:8080/api/documents/upload \
 `draft` 状态的文档不会参与检索，发布后才行：
 
 ```bash
-curl -X PATCH http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish \
+curl -X PATCH "http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish?channelId=help_center" \
   -H "Authorization: Bearer dev-test"
 ```
 
@@ -209,7 +210,7 @@ curl -X PATCH http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e
 ```bash
 curl -N -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "RWiki 支持哪些文件格式？"}'
+  -d '{"message": "RWiki 支持哪些文件格式？", "channelId": "help_center"}'
 ```
 
 返回是 SSE 流式响应：
@@ -237,7 +238,7 @@ data: {}
 ```bash
 curl -X POST http://localhost:8080/api/chat/feedback \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","userMessage":"支持哪些格式？","assistantMessage":"RWiki 支持..."}'
+  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","channelId":"help_center","userMessage":"支持哪些格式？","assistantMessage":"RWiki 支持..."}'
 ```
 
 成功返回 `204 No Content`。发送 `feedback: null` 可取消反馈。查看已收集的反馈（需要鉴权）：
@@ -267,7 +268,7 @@ npm run build:widget
 ```html
 <script src="rwiki-chat.js"></script>
 <script>
-  RWikiChat.init({ apiUrl: 'http://localhost:8080' });
+  RWikiChat.init({ apiUrl: 'http://localhost:8080', channelId: 'help_center' });
 </script>
 ```
 
@@ -292,7 +293,7 @@ RWikiChat.destroy();
 
 ### 方式 B：React 组件（docs-web 的集成方式）
 
-如果你的站点是 React 应用，可以动态加载 widget JS 并从组件中调用 `RWikiChat.init()`。docs-web 就是这么做的。
+如果你的网站是 React 应用，可以动态加载 widget JS 并从组件中调用 `RWikiChat.init()`。docs-web 就是这么做的。
 
 1. 把 `rwiki-chat.js` 复制到项目的 public 目录：
 
@@ -307,12 +308,12 @@ import { useEffect } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget({ locale }: { locale: string }) {
+export default function RWikiChatWidget({ channelId, locale }: { channelId: string; locale: string }) {
   useEffect(() => {
     const w = window as any;
 
     const initWidget = () => {
-      w.RWikiChat?.init?.({ apiUrl, locale });
+      w.RWikiChat?.init?.({ apiUrl, channelId, locale });
     };
 
     if (w.RWikiChat?.init) {
@@ -333,10 +334,10 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
 }
 ```
 
-3. 在根布局中放置这个组件（provider 之后、`</body>` 之前），并传入应用当前的 locale：
+3. 在根布局中放置这个组件（provider 之后、`</body>` 之前），并传入应用当前的频道和 locale：
 
 ```tsx
-<RWikiChatWidget locale={locale} />
+<RWikiChatWidget channelId="help_center" locale={locale} />
 ```
 
 4. 构建时设置后端地址：

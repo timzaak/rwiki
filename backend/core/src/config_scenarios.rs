@@ -7,11 +7,59 @@
 //! These tests provide regression protection for the env var removal in BE-D01.
 
 use super::{
-    validate_historical_rows_have_site_id, AppConfig, SiteConfig, SiteValidationError, SitesConfig,
+    validate_historical_rows_have_channel_id, AppConfig, ChannelConfig, ChannelValidationError,
+    ChannelsConfig,
 };
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
+use std::sync::{Mutex, MutexGuard};
 use tempfile::NamedTempFile;
+
+// ---------------------------------------------------------------------------
+// Env-var test synchronization
+// ---------------------------------------------------------------------------
+
+/// Global mutex used to serialize tests that mutate process environment variables.
+/// `env::set_var` / `env::remove_var` are not thread-safe when observed by other
+/// tests that read the same variables, so any test touching `OPENROUTER_API_KEY`
+/// or `RERANK_API_KEY` must hold this lock for its critical section.
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// Per-thread reentrancy depth for the env-var lock. Tests sometimes call
+    /// `take_env` multiple times in a row (e.g. for OPENROUTER_API_KEY and
+    /// RERANK_API_KEY); the lock must stay held until the matching number of
+    /// `restore_env` calls have completed.
+    static ENV_LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// The actual mutex guard is stored on the thread that acquired it. Because
+    /// `MutexGuard` is not `Send`, the guard lives in a thread-local `RefCell`.
+    static ENV_MUTEX_GUARD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+}
+
+/// Acquire the env-var test lock, reentrantly on the same thread.
+fn env_lock_acquire() {
+    let depth = ENV_LOCK_DEPTH.get();
+    if depth == 0 {
+        let guard = ENV_MUTEX.lock().expect("env test mutex poisoned");
+        ENV_MUTEX_GUARD.with(|g| *g.borrow_mut() = Some(guard));
+    }
+    ENV_LOCK_DEPTH.set(depth + 1);
+}
+
+/// Release one level of the env-var test lock.
+fn env_lock_release() {
+    let depth = ENV_LOCK_DEPTH.get();
+    assert!(
+        depth > 0,
+        "env_lock_release called without matching acquire"
+    );
+    if depth == 1 {
+        ENV_MUTEX_GUARD.with(|g| *g.borrow_mut() = None);
+    }
+    ENV_LOCK_DEPTH.set(depth - 1);
+}
 
 /// Helper: write a minimal valid TOML config with the given LLM api_key.
 fn write_test_config(llm_api_key: &str) -> NamedTempFile {
@@ -45,7 +93,10 @@ system_prompt = "test prompt"
 }
 
 /// Helper: safely remove an env var, returning the previous value (if any) for restoration.
+///
+/// This acquires the env-var test lock; the matching `restore_env` call releases it.
 fn take_env(var: &str) -> Option<String> {
+    env_lock_acquire();
     match env::var(var) {
         Ok(val) => {
             env::remove_var(var);
@@ -56,11 +107,14 @@ fn take_env(var: &str) -> Option<String> {
 }
 
 /// Helper: restore an env var to its previous value.
+///
+/// This releases one level of the env-var test lock acquired by `take_env`.
 fn restore_env(var: &str, prev: Option<String>) {
     match prev {
         Some(val) => env::set_var(var, val),
         None => env::remove_var(var),
     }
+    env_lock_release();
 }
 
 // ---------------------------------------------------------------------------
@@ -669,14 +723,14 @@ fn low_recall_threshold_explicit_value_parsed() {
 }
 
 // ---------------------------------------------------------------------------
-// Site configuration scenarios (BE-T01)
+// Channel configuration scenarios (BE-T01)
 //
-// Covers: configured site parsing, default representation of omitted fields,
+// Covers: configured channel parsing, default representation of omitted fields,
 //         startup rejection preconditions, and historical-row validation.
 // ---------------------------------------------------------------------------
 
-/// Helper: write a minimal valid TOML config with the given `[sites]` body.
-fn write_app_config_with_sites(sites_body: &str) -> NamedTempFile {
+/// Helper: write a minimal valid TOML config with the given `[channels]` body.
+fn write_app_config_with_channels(channels_body: &str) -> NamedTempFile {
     let content = format!(
         r#"
 [server]
@@ -689,7 +743,7 @@ enable_openapi = false
 path = "data/test.db"
 
 [llm]
-api_key = "sk-site-config-test"
+api_key = "sk-channel-config-test"
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 
@@ -700,7 +754,7 @@ model = "gpt-4o-mini"
 [chat]
 system_prompt = "test prompt"
 
-{sites_body}
+{channels_body}
 "#
     );
     let mut file = NamedTempFile::new().expect("should create temp file");
@@ -709,34 +763,34 @@ system_prompt = "test prompt"
 }
 
 // User Story: support-multiple-website — As a deployer, I configure multiple
-// sites with names, per-site system prompts, and localized suggested questions.
-// Covers: Design 5.1 — full AppConfig parses `[sites.<id>]` with all optional
-//         fields present on one site and absent on another.
+// channels with names, per-channel system prompts, and localized suggested questions.
+// Covers: Design 5.1 — full AppConfig parses `[channels.<id>]` with all optional
+//         fields present on one channel and absent on another.
 #[test]
-fn multiple_sites_parse_with_names_prompts_and_localized_suggestions() {
-    let sites = r#"
-[sites.help_center]
+fn multiple_channels_parse_with_names_prompts_and_localized_suggestions() {
+    let channels = r#"
+[channels.help_center]
 name = "Help Center"
 system_prompt = "You are the Help Center assistant."
-[sites.help_center.suggested_questions]
+[channels.help_center.suggested_questions]
 default = ["如何快速上手", "支持哪些文件格式"]
 zh-CN = ["如何快速上手", "支持哪些文件格式", "如何联系客服"]
 en = ["How to get started", "What file formats are supported"]
 
-[sites.developer_docs]
+[channels.developer_docs]
 name = "Developer Docs"
 "#;
-    let file = write_app_config_with_sites(sites);
-    let config = AppConfig::load(file.path()).expect("config with sites should load");
+    let file = write_app_config_with_channels(channels);
+    let config = AppConfig::load(file.path()).expect("config with channels should load");
 
     assert_eq!(
-        config.sites.sites.len(),
+        config.channels.channels.len(),
         2,
-        "both configured sites should parse"
+        "both configured channels should parse"
     );
 
     let help = config
-        .sites
+        .channels
         .get("help_center")
         .expect("help_center should exist");
     assert_eq!(help.name, "Help Center");
@@ -762,7 +816,7 @@ name = "Developer Docs"
     );
 
     let dev = config
-        .sites
+        .channels
         .get("developer_docs")
         .expect("developer_docs should exist");
     assert_eq!(dev.name, "Developer Docs");
@@ -776,100 +830,103 @@ name = "Developer Docs"
     );
 }
 
-// User Story: support-multiple-website — As a deployer, I can declare a site
+// User Story: support-multiple-website — As a deployer, I can declare a channel
 // with only a name and rely on the global prompt / empty suggestions.
 // Covers: Design 5.1 — omitted `system_prompt` and `suggested_questions` stay
 //         `Option::None`; tests must not invent fallback values.
 #[test]
-fn omitted_site_prompt_and_suggestions_represent_defaults() {
-    let sites = r#"
-[sites.minimal]
-name = "Minimal Site"
+fn omitted_channel_prompt_and_suggestions_represent_defaults() {
+    let channels = r#"
+[channels.minimal]
+name = "Minimal Channel"
 "#;
-    let file = write_app_config_with_sites(sites);
+    let file = write_app_config_with_channels(channels);
     let config = AppConfig::load(file.path()).expect("config should load");
 
-    let site = config.sites.get("minimal").expect("minimal should exist");
-    assert_eq!(site.name, "Minimal Site");
+    let channel = config
+        .channels
+        .get("minimal")
+        .expect("minimal should exist");
+    assert_eq!(channel.name, "Minimal Channel");
     assert!(
-        site.system_prompt.is_none(),
-        "site without prompt must default to None, not a synthesized fallback"
+        channel.system_prompt.is_none(),
+        "channel without prompt must default to None, not a synthesized fallback"
     );
     assert!(
-        site.suggested_questions.is_none(),
-        "site without suggested_questions must default to None"
+        channel.suggested_questions.is_none(),
+        "channel without suggested_questions must default to None"
     );
 }
 
 // User Story: support-multiple-website backward compatibility — existing
-// deployments without a `[sites]` section must still load.
-// Covers: `AppConfig.sites` uses `#[serde(default)]`; missing section
-//         deserializes to an empty `SitesConfig`.
+// deployments without a `[channels]` section must still load.
+// Covers: `AppConfig.channels` uses `#[serde(default)]`; missing section
+//         deserializes to an empty `ChannelsConfig`.
 #[test]
-fn app_config_without_sites_section_defaults_to_empty_registry() {
-    let file = write_app_config_with_sites("");
-    let config = AppConfig::load(file.path()).expect("config without sites should load");
+fn app_config_without_channels_section_defaults_to_empty_registry() {
+    let file = write_app_config_with_channels("");
+    let config = AppConfig::load(file.path()).expect("config without channels should load");
 
     assert!(
-        config.sites.is_empty(),
-        "missing [sites] section must default to empty registry"
+        config.channels.is_empty(),
+        "missing [channels] section must default to empty registry"
     );
 }
 
 // User Story: support-multiple-website — The service must fail loudly at
-// startup when no site is configured, so operators notice misconfiguration.
-// Covers: app/src/main.rs checks `config.sites.is_empty()` and returns Err.
-//         AppConfig::load intentionally does NOT reject empty sites (backward
+// startup when no channel is configured, so operators notice misconfiguration.
+// Covers: app/src/main.rs checks `config.channels.is_empty()` and returns Err.
+//         AppConfig::load intentionally does NOT reject empty channels (backward
 //         compat); this scenario pins the predicate that triggers startup failure.
 #[test]
-fn empty_sites_registry_is_the_startup_failure_precondition() {
-    let sites = SitesConfig::default();
+fn empty_channels_registry_is_the_startup_failure_precondition() {
+    let channels = ChannelsConfig::default();
     assert!(
-        sites.is_empty(),
+        channels.is_empty(),
         "empty registry is the condition main.rs checks before returning Err"
     );
-    assert!(sites.list_metadata().is_empty());
+    assert!(channels.list_metadata().is_empty());
 }
 
-// User Story: support-multiple-website — The public site list must expose only
+// User Story: support-multiple-website — The public channel list must expose only
 // the information needed by callers (id + name), never system prompts.
-// Covers: `SitesConfig::list_metadata` returns `SiteMetadata` with only id/name.
+// Covers: `ChannelsConfig::list_metadata` returns `ChannelMetadata` with only id/name.
 #[test]
-fn site_list_metadata_excludes_system_prompt_and_suggested_questions() {
+fn channel_list_metadata_excludes_system_prompt_and_suggested_questions() {
     let mut questions = HashMap::new();
     questions.insert("default".to_string(), vec!["q1".to_string()]);
 
-    let mut sites = SitesConfig::default();
-    sites.sites.insert(
+    let mut channels = ChannelsConfig::default();
+    channels.channels.insert(
         "help_center".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Help Center".to_string(),
             system_prompt: Some("secret prompt".to_string()),
             suggested_questions: Some(questions),
         },
     );
 
-    let metadata = sites.list_metadata();
+    let metadata = channels.list_metadata();
     assert_eq!(metadata.len(), 1);
     assert_eq!(metadata[0].id, "help_center");
     assert_eq!(metadata[0].name, "Help Center");
 
-    // SiteMetadata only exposes id/name; serializing it must not contain the
-    // site-level private fields.
+    // ChannelMetadata only exposes id/name; serializing it must not contain the
+    // channel-level private fields.
     let json = serde_json::to_value(&metadata[0]).expect("serialize metadata");
     assert!(json.get("system_prompt").is_none());
     assert!(json.get("suggested_questions").is_none());
 }
 
-// User Story: support-multiple-website — Handlers validate incoming siteIds.
-// Covers: `SitesConfig::require_configured` rejects empty/whitespace/unknown ids
+// User Story: support-multiple-website — Handlers validate incoming channelIds.
+// Covers: `ChannelsConfig::require_configured` rejects empty/whitespace/unknown ids
 //         and normalizes whitespace around configured ids.
 #[test]
-fn require_configured_normalizes_and_rejects_invalid_site_ids() {
-    let mut sites = SitesConfig::default();
-    sites.sites.insert(
+fn require_configured_normalizes_and_rejects_invalid_channel_ids() {
+    let mut channels = ChannelsConfig::default();
+    channels.channels.insert(
         "help_center".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
@@ -877,44 +934,44 @@ fn require_configured_normalizes_and_rejects_invalid_site_ids() {
     );
 
     assert_eq!(
-        sites.require_configured("help_center"),
+        channels.require_configured("help_center"),
         Ok("help_center"),
-        "configured site should resolve"
+        "configured channel should resolve"
     );
     assert_eq!(
-        sites.require_configured("  help_center  "),
+        channels.require_configured("  help_center  "),
         Ok("help_center"),
         "whitespace around configured id should be normalized"
     );
     assert_eq!(
-        sites.require_configured(""),
-        Err(SiteValidationError::Empty),
-        "empty site id should fail"
+        channels.require_configured(""),
+        Err(ChannelValidationError::Empty),
+        "empty channel id should fail"
     );
     assert_eq!(
-        sites.require_configured("unknown"),
-        Err(SiteValidationError::NotConfigured("unknown".to_string())),
-        "unknown site id should fail"
+        channels.require_configured("unknown"),
+        Err(ChannelValidationError::NotConfigured("unknown".to_string())),
+        "unknown channel id should fail"
     );
 }
 
-// User Story: support-multiple-website — Each site may override the global
+// User Story: support-multiple-website — Each channel may override the global
 // system prompt; omitting or emptying the override must fall back to global.
-// Covers: `SitesConfig::resolved_system_prompt` contract.
+// Covers: `ChannelsConfig::resolved_system_prompt` contract.
 #[test]
-fn resolved_system_prompt_uses_site_value_or_global_fallback() {
-    let mut sites = SitesConfig::default();
-    sites.sites.insert(
+fn resolved_system_prompt_uses_channel_value_or_global_fallback() {
+    let mut channels = ChannelsConfig::default();
+    channels.channels.insert(
         "help_center".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Help Center".to_string(),
-            system_prompt: Some("Site prompt.".to_string()),
+            system_prompt: Some("Channel prompt.".to_string()),
             suggested_questions: None,
         },
     );
-    sites.sites.insert(
+    channels.channels.insert(
         "empty_prompt".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Empty Prompt".to_string(),
             system_prompt: Some("".to_string()),
             suggested_questions: None,
@@ -923,33 +980,33 @@ fn resolved_system_prompt_uses_site_value_or_global_fallback() {
 
     let global = "Global prompt.";
     assert_eq!(
-        sites.resolved_system_prompt(Some("help_center"), global),
-        "Site prompt."
+        channels.resolved_system_prompt(Some("help_center"), global),
+        "Channel prompt."
     );
     assert_eq!(
-        sites.resolved_system_prompt(Some("empty_prompt"), global),
+        channels.resolved_system_prompt(Some("empty_prompt"), global),
         global,
-        "empty site prompt must fall back to global"
+        "empty channel prompt must fall back to global"
     );
     assert_eq!(
-        sites.resolved_system_prompt(Some("missing"), global),
+        channels.resolved_system_prompt(Some("missing"), global),
         global
     );
-    assert_eq!(sites.resolved_system_prompt(None, global), global);
+    assert_eq!(channels.resolved_system_prompt(None, global), global);
 }
 
 // User Story: support-multiple-website — Existing data must be backfilled with
-// site_id before the service starts; otherwise startup must fail loud.
-// Covers: `validate_historical_rows_have_site_id` detects NULL site_id rows.
+// channel_id before the service starts; otherwise startup must fail loud.
+// Covers: `validate_historical_rows_have_channel_id` detects NULL channel_id rows.
 #[tokio::test]
-async fn startup_validation_rejects_historical_rows_with_null_site_id() {
+async fn startup_validation_rejects_historical_rows_with_null_channel_id() {
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
     let sqlite = tokio_rusqlite::Connection::from(conn);
 
     sqlite
         .call(|conn| {
             conn.execute(
-                "CREATE TABLE documents (id TEXT PRIMARY KEY, file_name TEXT NOT NULL, site_id TEXT)",
+                "CREATE TABLE documents (id TEXT PRIMARY KEY, file_name TEXT NOT NULL, channel_id TEXT)",
                 [],
             )?;
             conn.execute(
@@ -961,21 +1018,21 @@ async fn startup_validation_rejects_historical_rows_with_null_site_id() {
         .await
         .expect("seed table");
 
-    let err = validate_historical_rows_have_site_id(&sqlite, &["documents"])
+    let err = validate_historical_rows_have_channel_id(&sqlite, &["documents"])
         .await
-        .expect_err("null site_id rows must block startup");
+        .expect_err("null channel_id rows must block startup");
     assert!(
-        err.to_string().contains("missing site_id"),
-        "error should mention missing site_id: {err}"
+        err.to_string().contains("missing channel_id"),
+        "error should mention missing channel_id: {err}"
     );
 }
 
 // User Story: support-multiple-website — Startup validation must not crash on
-// tables that have not yet received the `site_id` column (e.g. during staged
+// tables that have not yet received the `channel_id` column (e.g. during staged
 // migrations).
-// Covers: `validate_historical_rows_have_site_id` skips tables without site_id.
+// Covers: `validate_historical_rows_have_channel_id` skips tables without channel_id.
 #[tokio::test]
-async fn startup_validation_skips_tables_without_site_id_column() {
+async fn startup_validation_skips_tables_without_channel_id_column() {
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
     let sqlite = tokio_rusqlite::Connection::from(conn);
 
@@ -987,7 +1044,7 @@ async fn startup_validation_skips_tables_without_site_id_column() {
         .await
         .expect("create table");
 
-    validate_historical_rows_have_site_id(&sqlite, &["low_recall_records"])
+    validate_historical_rows_have_channel_id(&sqlite, &["low_recall_records"])
         .await
-        .expect("tables without site_id column should be skipped");
+        .expect("tables without channel_id column should be skipped");
 }

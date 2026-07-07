@@ -1,7 +1,12 @@
 /**
- * Chat Page Object — floating chat modal
+ * Chat Page Object — floating chat modal on a channel route
+ *
+ * With multi-channel support, the main-channel chat lives under `/c/$channelId`
+ * (no channel-less chat at root `/`). The modal is opened via the floating button
+ * which only renders once the route has validated the channel against `listChannels`.
  *
  * Business methods for the chat modal (opened via floating button) covering:
+ * - US-INTG-006/007: channel-scoped chat on `/c/$channelId`
  * - US-CORE-002: multi-turn conversation
  * - US-CORE-003: streaming response
  * - US-CORE-005: chat modal layout
@@ -12,6 +17,9 @@ import { SELECTORS } from '../selectors'
 import { BasePage } from './base-page'
 import { FRONTEND_URL } from '../fixtures/chat.fixtures'
 import type { UnifiedLogger } from 'playwright-unified-logger'
+
+/** Default demo channel for the positive chat/RAG tests (DE-D01..DE-D04). */
+export const DEFAULT_CHANNEL_ID = 'help_center'
 
 export class ChatPage extends BasePage {
   // Chat modal and scoped locators
@@ -34,15 +42,22 @@ export class ChatPage extends BasePage {
     this.messageList = this.modal.locator(SELECTORS.chat.messageList)
     this.messageListEmpty = this.modal.locator(SELECTORS.chat.messageListEmpty)
     this.errorBanner = this.modal.locator(SELECTORS.chat.errorBanner)
-    this.suggestedQuestionsContainer = this.modal.locator(SELECTORS.chat.suggestedQuestions)
+    this.suggestedQuestionsContainer = this.modal.locator(SELECTORS.chat.emptyStateSuggestions)
     this.suggestedQuestionButtons = this.modal.locator(SELECTORS.chat.suggestedQuestionButton)
   }
 
   /**
-   * Navigate to the home page and open the chat modal via floating button.
+   * Navigate to `/c/$channelId`, wait for the channel route to reach the ready state
+   * (the floating button only renders once the channel is validated), then open
+   * the chat modal via the floating button.
+   *
+   * @param channelId channel to chat against; defaults to `help_center`.
    */
-  async navigate(): Promise<void> {
-    await this.page.goto(`${FRONTEND_URL}/`)
+  async navigate(channelId: string = DEFAULT_CHANNEL_ID): Promise<void> {
+    await this.page.goto(`${FRONTEND_URL}/c/${channelId}`)
+
+    // The ready state renders the floating button; channel-loading/error/not-found do not.
+    // Waiting on the floating button is the stable "channel resolved + ready" signal.
     const floatingBtn = this.page.locator(SELECTORS.chat.floatingButton)
     await expect(floatingBtn).toBeVisible()
     await floatingBtn.click()

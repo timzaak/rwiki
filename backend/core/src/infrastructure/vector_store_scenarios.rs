@@ -75,30 +75,30 @@ fn make_sql_only_store() -> VectorStoreManager {
 
 /// Insert a test document row into the documents table.
 async fn insert_test_document(store: &VectorStoreManager, document_id: &str, status: &str) {
-    insert_test_document_with_site(store, document_id, status, None).await;
+    insert_test_document_with_channel(store, document_id, status, None).await;
 }
 
-/// Insert a test document row with an optional owning site.
-async fn insert_test_document_with_site(
+/// Insert a test document row with an optional owning channel.
+async fn insert_test_document_with_channel(
     store: &VectorStoreManager,
     document_id: &str,
     status: &str,
-    site_id: Option<&str>,
+    channel_id: Option<&str>,
 ) {
     let doc_id = document_id.to_string();
     let status_val = status.to_string();
-    let site_val = site_id.map(|s| s.to_string());
+    let channel_val = channel_id.map(|s| s.to_string());
     store
         .conn
         .call(move |conn| {
             conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count, site_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
-                rusqlite::params![doc_id, status_val, 1, site_val],
+                "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
+                rusqlite::params![doc_id, status_val, 1, channel_val],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
         .await
-        .expect("insert_test_document_with_site should succeed");
+        .expect("insert_test_document_with_channel should succeed");
 }
 
 /// Insert a test chunk directly into chunk_metadata + vec_chunks (zero vector matching migration dimensions).
@@ -2000,168 +2000,186 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 }
 
 // ---------------------------------------------------------------------------
-// Site-scoped retrieval scenario tests (BE-T02)
+// Channel-scoped retrieval scenario tests (BE-T02)
 // ---------------------------------------------------------------------------
 
-const SITE_A: &str = "site-a";
-const SITE_B: &str = "site-b";
+const CHANNEL_A: &str = "channel-a";
+const CHANNEL_B: &str = "channel-b";
 
-// Covers: BE-D02 — RetrievalScope::Site exposes the exact SQL filter and
+// Covers: BE-D02 — RetrievalScope::Channel exposes the exact SQL filter and
 // bound parameter needed by both keyword and vector search paths.
 #[test]
-fn site_scope_filter_sql_requires_site_id_and_published_status() {
-    let (sql, params) = RetrievalScope::Site(SITE_A.to_string()).filter_sql();
+fn channel_scope_filter_sql_requires_channel_id_and_published_status() {
+    let (sql, params) = RetrievalScope::Channel(CHANNEL_A.to_string()).filter_sql();
     assert_eq!(
-        sql, "AND d.site_id = ? AND d.status = 'published'",
-        "Site scope must filter on site_id and published status"
+        sql, "AND d.channel_id = ? AND d.status = 'published'",
+        "Channel scope must filter on channel_id and published status"
     );
     assert_eq!(
         params,
-        vec![SITE_A.to_string()],
-        "Site scope must bind the site id"
+        vec![CHANNEL_A.to_string()],
+        "Channel scope must bind the channel id"
     );
 }
 
-// Covers: BE-D02 — get_neighbor_chunks under RetrievalScope::Site returns
-// chunks only when both documents.site_id matches and status is published.
-// Draft chunks in the same site and published chunks in another site are excluded.
+// Covers: BE-D02 — get_neighbor_chunks under RetrievalScope::Channel returns
+// chunks only when both documents.channel_id matches and status is published.
+// Draft chunks in the same channel and published chunks in another channel are excluded.
 #[tokio::test]
-async fn get_neighbor_chunks_site_scope_filters_by_site_and_published_status() {
+async fn get_neighbor_chunks_channel_scope_filters_by_channel_and_published_status() {
     let store = make_sql_only_store();
 
-    // Site A: one published chunk and one draft chunk on the same page.
-    insert_test_document_with_site(&store, "doc_a_pub", "published", Some(SITE_A)).await;
+    // Channel A: one published chunk and one draft chunk on the same page.
+    insert_test_document_with_channel(&store, "doc_a_pub", "published", Some(CHANNEL_A)).await;
     insert_test_chunk(
         &store,
         "doc_a_pub",
         "a_pub_chunk",
-        "site a published content",
+        "channel a published content",
         "page_a",
         Some(0),
         Some(1),
     )
     .await;
-    insert_test_document_with_site(&store, "doc_a_draft", "draft", Some(SITE_A)).await;
+    insert_test_document_with_channel(&store, "doc_a_draft", "draft", Some(CHANNEL_A)).await;
     insert_test_chunk(
         &store,
         "doc_a_draft",
         "a_draft_chunk",
-        "site a draft content",
+        "channel a draft content",
         "page_a",
         Some(0),
         Some(1),
     )
     .await;
 
-    // Site B: published chunk on a different page.
-    insert_test_document_with_site(&store, "doc_b_pub", "published", Some(SITE_B)).await;
+    // Channel B: published chunk on a different page.
+    insert_test_document_with_channel(&store, "doc_b_pub", "published", Some(CHANNEL_B)).await;
     insert_test_chunk(
         &store,
         "doc_b_pub",
         "b_pub_chunk",
-        "site b published content",
+        "channel b published content",
         "page_b",
         Some(0),
         Some(1),
     )
     .await;
 
-    // Querying site A should return only the published site-A chunk.
-    let site_a_results = store
-        .get_neighbor_chunks("page_a", 0, 5, &RetrievalScope::Site(SITE_A.to_string()))
+    // Querying channel A should return only the published channel-A chunk.
+    let channel_a_results = store
+        .get_neighbor_chunks(
+            "page_a",
+            0,
+            5,
+            &RetrievalScope::Channel(CHANNEL_A.to_string()),
+        )
         .await
-        .expect("get_neighbor_chunks for site A should succeed");
+        .expect("get_neighbor_chunks for channel A should succeed");
     assert_eq!(
-        site_a_results.len(),
+        channel_a_results.len(),
         1,
-        "site A query must return exactly one published chunk"
+        "channel A query must return exactly one published chunk"
     );
-    assert_eq!(site_a_results[0].chunk_id, "a_pub_chunk");
-    assert_eq!(site_a_results[0].document_id, "doc_a_pub");
+    assert_eq!(channel_a_results[0].chunk_id, "a_pub_chunk");
+    assert_eq!(channel_a_results[0].document_id, "doc_a_pub");
 
-    // Querying site B should return only the site-B chunk.
-    let site_b_results = store
-        .get_neighbor_chunks("page_b", 0, 5, &RetrievalScope::Site(SITE_B.to_string()))
+    // Querying channel B should return only the channel-B chunk.
+    let channel_b_results = store
+        .get_neighbor_chunks(
+            "page_b",
+            0,
+            5,
+            &RetrievalScope::Channel(CHANNEL_B.to_string()),
+        )
         .await
-        .expect("get_neighbor_chunks for site B should succeed");
+        .expect("get_neighbor_chunks for channel B should succeed");
     assert_eq!(
-        site_b_results.len(),
+        channel_b_results.len(),
         1,
-        "site B query must return exactly one chunk"
+        "channel B query must return exactly one chunk"
     );
-    assert_eq!(site_b_results[0].chunk_id, "b_pub_chunk");
+    assert_eq!(channel_b_results[0].chunk_id, "b_pub_chunk");
 }
 
-// Covers: BE-D02 — search_by_keyword under RetrievalScope::Site returns only
-// chunks from published documents that belong to the requested site.
-// Unpublished documents and documents owned by other sites are excluded.
+// Covers: BE-D02 — search_by_keyword under RetrievalScope::Channel returns only
+// chunks from published documents that belong to the requested channel.
+// Unpublished documents and documents owned by other channels are excluded.
 #[tokio::test]
-async fn search_by_keyword_site_scope_filters_by_site_and_published_status() {
+async fn search_by_keyword_channel_scope_filters_by_channel_and_published_status() {
     let store = make_sql_only_store();
 
-    // Site A: published and draft chunks with overlapping content.
-    insert_test_document_with_site(&store, "doc_a_pub", "published", Some(SITE_A)).await;
+    // Channel A: published and draft chunks with overlapping content.
+    insert_test_document_with_channel(&store, "doc_a_pub", "published", Some(CHANNEL_A)).await;
     insert_test_chunk(
         &store,
         "doc_a_pub",
         "a_pub_chunk",
-        "多站点隔离测试内容",
+        "多频道隔离测试内容",
         "page_a_pub",
         Some(0),
         Some(1),
     )
     .await;
-    insert_fts_row(&store, "a_pub_chunk", "多站点隔离测试内容").await;
+    insert_fts_row(&store, "a_pub_chunk", "多频道隔离测试内容").await;
 
-    insert_test_document_with_site(&store, "doc_a_draft", "draft", Some(SITE_A)).await;
+    insert_test_document_with_channel(&store, "doc_a_draft", "draft", Some(CHANNEL_A)).await;
     insert_test_chunk(
         &store,
         "doc_a_draft",
         "a_draft_chunk",
-        "多站点隔离测试内容草稿",
+        "多频道隔离测试内容草稿",
         "page_a_draft",
         Some(0),
         Some(1),
     )
     .await;
-    insert_fts_row(&store, "a_draft_chunk", "多站点隔离测试内容草稿").await;
+    insert_fts_row(&store, "a_draft_chunk", "多频道隔离测试内容草稿").await;
 
-    // Site B: published chunk with overlapping content.
-    insert_test_document_with_site(&store, "doc_b_pub", "published", Some(SITE_B)).await;
+    // Channel B: published chunk with overlapping content.
+    insert_test_document_with_channel(&store, "doc_b_pub", "published", Some(CHANNEL_B)).await;
     insert_test_chunk(
         &store,
         "doc_b_pub",
         "b_pub_chunk",
-        "多站点隔离测试内容站点B",
+        "多频道隔离测试内容频道B",
         "page_b_pub",
         Some(0),
         Some(1),
     )
     .await;
-    insert_fts_row(&store, "b_pub_chunk", "多站点隔离测试内容站点B").await;
+    insert_fts_row(&store, "b_pub_chunk", "多频道隔离测试内容频道B").await;
 
-    // Querying site A should surface only the published site-A chunk.
-    let site_a_results = store
-        .search_by_keyword("多站点隔离", 10, &RetrievalScope::Site(SITE_A.to_string()))
+    // Querying channel A should surface only the published channel-A chunk.
+    let channel_a_results = store
+        .search_by_keyword(
+            "多频道隔离",
+            10,
+            &RetrievalScope::Channel(CHANNEL_A.to_string()),
+        )
         .await
-        .expect("search for site A should succeed");
+        .expect("search for channel A should succeed");
     assert_eq!(
-        site_a_results.len(),
+        channel_a_results.len(),
         1,
-        "site A keyword search must return exactly one published chunk"
+        "channel A keyword search must return exactly one published chunk"
     );
-    assert_eq!(site_a_results[0].chunk_id, "a_pub_chunk");
-    assert_eq!(site_a_results[0].document_id, "doc_a_pub");
+    assert_eq!(channel_a_results[0].chunk_id, "a_pub_chunk");
+    assert_eq!(channel_a_results[0].document_id, "doc_a_pub");
 
-    // Querying site B should surface only the site-B chunk.
-    let site_b_results = store
-        .search_by_keyword("多站点隔离", 10, &RetrievalScope::Site(SITE_B.to_string()))
+    // Querying channel B should surface only the channel-B chunk.
+    let channel_b_results = store
+        .search_by_keyword(
+            "多频道隔离",
+            10,
+            &RetrievalScope::Channel(CHANNEL_B.to_string()),
+        )
         .await
-        .expect("search for site B should succeed");
+        .expect("search for channel B should succeed");
     assert_eq!(
-        site_b_results.len(),
+        channel_b_results.len(),
         1,
-        "site B keyword search must return exactly one chunk"
+        "channel B keyword search must return exactly one chunk"
     );
-    assert_eq!(site_b_results[0].chunk_id, "b_pub_chunk");
+    assert_eq!(channel_b_results[0].chunk_id, "b_pub_chunk");
 }

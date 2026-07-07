@@ -4,7 +4,7 @@ import { useLowRecallRecords } from '@/hooks/use-low-recall-records'
 import { LowRecallFilters } from '@/components/admin/low-recall-filters'
 import { LowRecallTable } from '@/components/admin/low-recall-table'
 import { Button } from '@/components/ui/button'
-import { useAdminSite } from '@/lib/admin-site-context'
+import { useAdminChannel } from '@/lib/admin-channel-context'
 
 // 无自身 beforeLoad：守卫集中在父 route `routes/admin/route.tsx`，本子 route 继承。
 export const Route = createFileRoute('/admin/low-recall')({
@@ -14,8 +14,8 @@ export const Route = createFileRoute('/admin/low-recall')({
 const DEFAULT_LIMIT = 20
 
 function LowRecallPage() {
-  // 全局站点上下文：siteId 为 null 时 useLowRecallRecords 跳过请求。
-  const { siteId } = useAdminSite()
+  // 全局频道上下文：channelId 为 null 时 useLowRecallRecords 跳过请求。
+  const { channelId } = useAdminChannel()
   const [minScore, setMinScore] = useState<number | null>(null)
   const [maxScore, setMaxScore] = useState<number | null>(null)
   const [from, setFrom] = useState<string | null>(null)
@@ -24,7 +24,7 @@ function LowRecallPage() {
   const [offset, setOffset] = useState<number>(0)
 
   const { items, total, loading, error } = useLowRecallRecords({
-    siteId,
+    channelId,
     minScore,
     maxScore,
     from,

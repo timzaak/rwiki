@@ -8,6 +8,10 @@ RWiki uses Docker multi-stage builds to produce a single binary + static fronten
 
 Pre-built images are available on [GitHub Container Registry](https://github.com/timzaak/rwiki/pkgs/container/rwiki).
 
+<Callout type="warning">
+  The backend **requires at least one `[channels.<channelId>]` section** in the config, otherwise it refuses to start. Provide a config file (mount it at `/app/config.toml` or set `APP_CONFIG`) with a channel defined — see [Multi-Channel](/en/docs/multi-channel). Without a mounted config the container has no channels configured and will exit on boot.
+</Callout>
+
 ## Docker Deployment
 
 ### Pull

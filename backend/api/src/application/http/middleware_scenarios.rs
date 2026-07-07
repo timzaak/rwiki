@@ -106,7 +106,7 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
-        sites_config: rwiki_core::config::SitesConfig::default(),
+        channels_config: test_channels_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -114,6 +114,19 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
 
 fn parse_ip_range(range: &str) -> IpNet {
     range.parse().expect("test CIDR should parse")
+}
+
+fn test_channels_config() -> rwiki_core::config::ChannelsConfig {
+    let mut channels = std::collections::HashMap::new();
+    channels.insert(
+        "help_center".to_string(),
+        rwiki_core::config::ChannelConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    rwiki_core::config::ChannelsConfig { channels }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +145,7 @@ async fn document_list_without_token_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .body(Body::empty())
         .expect("build request");
 
@@ -155,7 +168,7 @@ async fn document_list_with_invalid_token_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .header(header::AUTHORIZATION, "Bearer wrong-token")
         .body(Body::empty())
         .expect("build request");
@@ -179,7 +192,7 @@ async fn document_list_with_valid_token_returns_200() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
         .body(Body::empty())
         .expect("build request");
@@ -206,7 +219,7 @@ async fn document_list_with_valid_token_and_allowed_peer_ip_returns_200() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
         .body(Body::empty())
         .expect("build request");
@@ -232,7 +245,7 @@ async fn document_list_with_valid_token_but_disallowed_peer_ip_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
         .body(Body::empty())
         .expect("build request");
@@ -258,7 +271,7 @@ async fn document_list_with_spoofed_forwarded_ip_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/api/documents")
+        .uri("/api/documents?channelId=help_center")
         .header(header::AUTHORIZATION, format!("Bearer {TEST_API_TOKEN}"))
         .header("x-forwarded-for", "203.0.113.10")
         .body(Body::empty())

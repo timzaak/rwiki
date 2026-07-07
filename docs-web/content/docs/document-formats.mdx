@@ -4,7 +4,7 @@ description: File formats RWiki accepts and how each is parsed
 icon: FileText
 ---
 
-RWiki handles every format through the same endpoint, `POST /api/documents/upload`. The file extension picks the parser. After parsing, every format takes the same path: embed the chunks, build the FTS5 index, persist metadata.
+RWiki handles every format through the same endpoint, `POST /api/documents/upload`. The file extension picks the parser. After parsing, every format takes the same path: embed the chunks, build the FTS5 index, persist metadata. The upload requires a `channelId` field (multipart) that scopes the document to a configured channel, plus a Bearer token — see [Multi-Channel](/en/docs/multi-channel) and [Configuration → API Token](/en/docs/configuration#api-token).
 
 ## Supported formats
 

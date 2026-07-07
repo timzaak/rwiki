@@ -150,3 +150,117 @@ When 用户提问且检索相关性低于阈值
 Then 系统不产生任何低相关召回记录
 And 用户的提问与回答体验与功能开启前完全一致
 ```
+
+---
+
+## 故事 39：通过配置文件定义可接入的频道 [US-INTG-005]
+
+**优先级**: P0
+
+**【用户故事】**
+**作为**：Admin（详见 [docs/user-stories/_roles.md](/docs/user-stories/_roles.md)）
+**我希望**：在配置文件中静态定义一个或多个频道，每个频道有全局唯一的频道标识
+**从而**：系统可以为不同网站提供相互独立的知识库空间，且频道列表由 Admin 集中控制
+
+**【验收标准】**
+
+**场景 1：成功配置多个频道**
+```gherkin
+Given 管理员已编辑配置文件并定义频道 channel-a 与 channel-b
+When 服务启动后
+Then channel-a 与 channel-b 成为系统中有效的频道标识
+And 请求携带对应频道标识时可被正确路由
+```
+
+**场景 2：未配置任何频道时拒绝服务**
+```gherkin
+Given 配置文件中未定义任何频道
+When 用户或 Widget 发起不带频道标识的请求
+Then 系统拒绝该请求并提示缺少频道标识
+```
+
+**场景 3：重复频道标识配置被拒绝**
+```gherkin
+Given 管理员在配置文件中定义了两个相同频道标识的频道
+When 服务加载配置时
+Then 启动失败并提示频道标识重复
+```
+
+---
+
+## 故事 40：频道间数据隔离 [US-INTG-008]
+
+**优先级**: P0
+
+**【用户故事】**
+**作为**：Admin（详见 [docs/user-stories/_roles.md](/docs/user-stories/_roles.md)）
+**我希望**：不同频道的文档、聊天、反馈、推荐问题、系统提示词等数据相互隔离
+**从而**：一个频道的运营调整不会影响其他频道，也不会出现跨频道内容混用
+
+**【验收标准】**
+
+**场景 1：文档隔离**
+```gherkin
+Given 管理员已向频道 channel-a 上传并发布文档《A.md》
+And 未向频道 channel-b 上传任何文档
+When 用户在 channel-b 的聊天中询问与《A.md》相关的问题
+Then 系统告知未找到相关信息
+```
+
+**场景 2：反馈隔离**
+```gherkin
+Given 频道 channel-a 的访客提交了一条赞/踩反馈
+When 管理员查看频道 channel-b 的反馈记录
+Then channel-b 的反馈列表中不包含 channel-a 的反馈
+```
+
+**场景 3：系统提示词隔离**
+```gherkin
+Given 管理员为频道 channel-a 配置了"技术文档助手"系统提示词
+And 为频道 channel-b 配置了"客服助手"系统提示词
+When 用户在 channel-a 提问时
+Then 回答风格遵循"技术文档助手"的规则
+```
+
+**场景 4：管理操作不跨频道**
+```gherkin
+Given 管理员在频道 channel-a 的管理视图中操作文档
+When 尝试访问或修改频道 channel-b 的文档
+Then 该操作按不存在处理，不影响 channel-b 的内容
+```
+
+---
+
+## 故事 41：全局 CORS 控制所有频道的嵌入来源 [US-INTG-009]
+
+**优先级**: P1
+
+**【用户故事】**
+**作为**：Admin（详见 [docs/user-stories/_roles.md](/docs/user-stories/_roles.md)）
+**我希望**：通过全局 CORS 配置控制哪些第三方网站可以嵌入 Widget
+**从而**：即使频道标识正确，未授权的域名也无法调用任何频道的聊天接口
+
+**【验收标准】**
+
+**场景 1：允许来源的 Widget 可跨域访问任意已配置频道**
+```gherkin
+Given 全局允许来源列表包含 "https://partner.com"
+And 频道 channel-a 已配置
+When partner.com 上的 Widget 使用 channel-a 发起聊天请求
+Then 跨域请求成功并得到 channel-a 的回答
+```
+
+**场景 2：未授权来源被 CORS 阻止**
+```gherkin
+Given 全局允许来源列表不包含 "https://unauthorized.com"
+When unauthorized.com 上的 Widget 使用任意频道标识发起聊天请求
+Then 浏览器跨域请求被阻止
+And Widget 显示连接失败提示
+```
+
+**场景 3：空 CORS 配置保持全开放**
+```gherkin
+Given 全局允许来源列表为空
+When 任意第三方网站嵌入 Widget 并携带有效频道标识
+Then 跨域请求被允许
+```

@@ -52,7 +52,7 @@ function processSseLines(
   return false
 }
 
-export function useWidgetChatStream(apiUrl: string, siteId: string): ChatStreamValue {
+export function useWidgetChatStream(apiUrl: string, channelId: string): ChatStreamValue {
   const abortRef = useRef<AbortController | null>(null)
   const storeRef = useRef(useChatStore.getState())
   storeRef.current = useChatStore.getState()
@@ -79,7 +79,7 @@ export function useWidgetChatStream(apiUrl: string, siteId: string): ChatStreamV
           body: JSON.stringify({
             message: content,
             sessionId: store.sessionId,
-            siteId,
+            channelId,
           }),
           signal: controller.signal,
         })
@@ -116,7 +116,7 @@ export function useWidgetChatStream(apiUrl: string, siteId: string): ChatStreamV
         store.finishStreaming()
       }
     },
-    [apiUrl, siteId],
+    [apiUrl, channelId],
   )
 
   useEffect(() => {

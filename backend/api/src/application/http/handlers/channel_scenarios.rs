@@ -1,9 +1,9 @@
-//! Site list handler scenario tests.
+//! Channel list handler scenario tests.
 //!
-//! Verifies the public `GET /api/sites` endpoint:
-//! - Returns configured sites as `{ id, name }` entries.
+//! Verifies the public `GET /api/channels` endpoint:
+//! - Returns configured channels as `{ id, name }` entries.
 //! - Does not expose system prompts or suggested questions.
-//! - Returns an empty array when no sites are configured.
+//! - Returns an empty array when no channels are configured.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Once};
@@ -14,7 +14,7 @@ use http_body_util::BodyExt;
 use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
 
-use rwiki_core::config::{SiteConfig, SitesConfig};
+use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
@@ -23,7 +23,7 @@ use crate::application::http::state::AppState;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-const TEST_API_TOKEN: &str = "test-api-token-site-list";
+const TEST_API_TOKEN: &str = "test-api-token-channel-list";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -43,8 +43,8 @@ fn ensure_sqlite_vec_loaded() {
     });
 }
 
-/// Build a minimal `AppState` with the supplied site registry.
-async fn test_app_state_with_sites(sites_config: SitesConfig) -> Arc<AppState> {
+/// Build a minimal `AppState` with the supplied channel registry.
+async fn test_app_state_with_channels(channels_config: ChannelsConfig) -> Arc<AppState> {
     ensure_sqlite_vec_loaded();
 
     let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
@@ -53,8 +53,8 @@ async fn test_app_state_with_sites(sites_config: SitesConfig) -> Arc<AppState> {
         .expect("apply migrations");
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
-    let openai_client =
-        rig::providers::openai::Client::builder().api_key("sk-test-fake-key-for-site-tests-only");
+    let openai_client = rig::providers::openai::Client::builder()
+        .api_key("sk-test-fake-key-for-channel-tests-only");
     let embedding_model = openai_client
         .build()
         .expect("build openai client")
@@ -92,17 +92,17 @@ async fn test_app_state_with_sites(sites_config: SitesConfig) -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
-        sites_config,
+        channels_config,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
 
-/// Build a `GET /api/sites` request.
-fn sites_request() -> Request<Body> {
+/// Build a `GET /api/channels` request.
+fn channels_request() -> Request<Body> {
     Request::builder()
         .method(Method::GET)
-        .uri("/api/sites")
+        .uri("/api/channels")
         .body(Body::empty())
         .expect("build request")
 }
@@ -118,102 +118,111 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("parse json")
 }
 
-fn sample_sites_config() -> SitesConfig {
+fn sample_channels_config() -> ChannelsConfig {
     let mut questions = HashMap::new();
     questions.insert("default".to_string(), vec!["如何快速上手".to_string()]);
     questions.insert("en".to_string(), vec!["How to get started".to_string()]);
 
-    let mut sites = HashMap::new();
-    sites.insert(
+    let mut channels = HashMap::new();
+    channels.insert(
         "help_center".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Help Center".to_string(),
             system_prompt: Some("You are the Help Center assistant.".to_string()),
             suggested_questions: Some(questions),
         },
     );
-    sites.insert(
+    channels.insert(
         "developer_docs".to_string(),
-        SiteConfig {
+        ChannelConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
         },
     );
-    SitesConfig { sites }
+    ChannelsConfig { channels }
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/sites scenarios
+// GET /api/channels scenarios
 // ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As a frontend or widget, I want to
-// discover configured sites so I can let users pick or validate a site.
-// Covers: Design 4.2.1 — `/api/sites` returns `{ id, name }` for every
-//         configured site and does not leak system prompts or questions.
+// discover configured channels so I can let users pick or validate a channel.
+// Covers: Design 4.2.1 — `/api/channels` returns `{ id, name }` for every
+//         configured channel and does not leak system prompts or questions.
 #[tokio::test]
-async fn list_sites_returns_id_and_name_without_prompts_or_suggestions() {
-    let state = test_app_state_with_sites(sample_sites_config()).await;
+async fn list_channels_returns_id_and_name_without_prompts_or_suggestions() {
+    let state = test_app_state_with_channels(sample_channels_config()).await;
     let app = create_api_routes(state);
 
-    let resp = app.oneshot(sites_request()).await.expect("send request");
+    let resp = app.oneshot(channels_request()).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "GET /api/sites must return 200"
+        "GET /api/channels must return 200"
     );
 
     let body = body_json(resp).await;
-    let sites = body
-        .get("sites")
-        .expect("response should have sites")
+    let channels = body
+        .get("channels")
+        .expect("response should have channels")
         .as_array()
-        .expect("sites should be an array");
-    assert_eq!(sites.len(), 2, "both configured sites should be returned");
+        .expect("channels should be an array");
+    assert_eq!(
+        channels.len(),
+        2,
+        "both configured channels should be returned"
+    );
 
-    let mut ids: Vec<&str> = sites
+    let mut ids: Vec<&str> = channels
         .iter()
-        .map(|s| s.get("id").expect("site id").as_str().expect("id string"))
+        .map(|s| {
+            s.get("id")
+                .expect("channel id")
+                .as_str()
+                .expect("id string")
+        })
         .collect();
     ids.sort();
     assert_eq!(ids, vec!["developer_docs", "help_center"]);
 
-    for site in sites {
-        assert!(site.get("id").is_some(), "every entry must have id");
-        assert!(site.get("name").is_some(), "every entry must have name");
+    for channel in channels {
+        assert!(channel.get("id").is_some(), "every entry must have id");
+        assert!(channel.get("name").is_some(), "every entry must have name");
         assert!(
-            site.get("systemPrompt").is_none(),
+            channel.get("systemPrompt").is_none(),
             "system_prompt must not be exposed"
         );
         assert!(
-            site.get("suggestedQuestions").is_none(),
+            channel.get("suggestedQuestions").is_none(),
             "suggested_questions must not be exposed"
         );
     }
 }
 
 // User Story: support-multiple-website — Callers must be able to handle a
-// registry with no sites even though startup validation normally prevents it.
-// Covers: Design 4.2.1 — `/api/sites` returns `sites: []` for an empty registry.
+// registry with no channels even though startup validation normally prevents it.
+// Covers: Design 4.2.1 — `/api/channels` returns `channels: []` for an empty registry.
 #[tokio::test]
-async fn list_sites_returns_empty_array_when_no_sites_configured() {
-    let state = test_app_state_with_sites(SitesConfig::default()).await;
+async fn list_channels_returns_empty_array_when_no_channels_configured() {
+    let state = test_app_state_with_channels(ChannelsConfig::default()).await;
     let app = create_api_routes(state);
 
-    let resp = app.oneshot(sites_request()).await.expect("send request");
+    let resp = app.oneshot(channels_request()).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "GET /api/sites must return 200 even with no sites"
+        "GET /api/channels must return 200 even with no channels"
     );
 
     let body = body_json(resp).await;
-    let sites = body
-        .get("sites")
+    let channels = body
+        .get("channels")
         .and_then(|v| v.as_array())
-        .expect("sites should be an array");
+        .expect("channels should be an array");
     assert!(
-        sites.is_empty(),
-        "sites array should be empty when nothing is configured"
+        channels.is_empty(),
+        "channels array should be empty when nothing is configured"
     );
 }

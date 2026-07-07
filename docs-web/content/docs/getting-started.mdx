@@ -167,12 +167,13 @@ Save it as `faq.md`.
 
 ### Upload the document
 
-Upload via API (the token is the `[api] token` value from your config):
+Upload via API (the token is the `[api] token` value from your config). The `channelId` field scopes the document to a configured channel — see [Multi-Channel](/en/docs/multi-channel):
 
 ```bash
 curl -X POST http://localhost:8080/api/documents/upload \
   -H "Authorization: Bearer dev-test" \
-  -F "file=@faq.md"
+  -F "file=@faq.md" \
+  -F "channelId=help_center"
 ```
 
 You'll get a response like:
@@ -196,7 +197,7 @@ You can also upload via the frontend: open `http://localhost:3000/admin`, sign i
 Documents in `draft` status are not included in search results. Publish it to make them available:
 
 ```bash
-curl -X PATCH http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish \
+curl -X PATCH "http://localhost:8080/api/documents/0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b/publish?channelId=help_center" \
   -H "Authorization: Bearer dev-test"
 ```
 
@@ -209,7 +210,7 @@ Now you can ask questions about the document content. Via API:
 ```bash
 curl -N -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "What file formats does RWiki support?"}'
+  -d '{"message": "What file formats does RWiki support?", "channelId": "help_center"}'
 ```
 
 The response is an SSE stream:
@@ -237,7 +238,7 @@ After streaming completes, you can submit like/dislike feedback on the answer:
 ```bash
 curl -X POST http://localhost:8080/api/chat/feedback \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","userMessage":"What file formats?","assistantMessage":"RWiki supports..."}'
+  -d '{"sessionId":"0196a1b2-...","messageId":"msg-abc123","feedback":"like","channelId":"help_center","userMessage":"What file formats?","assistantMessage":"RWiki supports..."}'
 ```
 
 Returns `204 No Content` on success. To cancel feedback, send `feedback: null`. To view collected feedback (requires auth):
@@ -267,7 +268,7 @@ Include the script and initialize on any page:
 ```html
 <script src="rwiki-chat.js"></script>
 <script>
-  RWikiChat.init({ apiUrl: 'http://localhost:8080' });
+  RWikiChat.init({ apiUrl: 'http://localhost:8080', channelId: 'help_center' });
 </script>
 ```
 
@@ -307,12 +308,12 @@ import { useEffect } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget({ locale }: { locale: string }) {
+export default function RWikiChatWidget({ channelId, locale }: { channelId: string; locale: string }) {
   useEffect(() => {
     const w = window as any;
 
     const initWidget = () => {
-      w.RWikiChat?.init?.({ apiUrl, locale });
+      w.RWikiChat?.init?.({ apiUrl, channelId, locale });
     };
 
     if (w.RWikiChat?.init) {
@@ -333,10 +334,10 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
 }
 ```
 
-3. Place the component in your root layout (after the provider, before `</body>`) and pass your app's current locale:
+3. Place the component in your root layout (after the provider, before `</body>`) and pass your app's current channel and locale:
 
 ```tsx
-<RWikiChatWidget locale={locale} />
+<RWikiChatWidget channelId="help_center" locale={locale} />
 ```
 
 4. Set the backend URL at build time:

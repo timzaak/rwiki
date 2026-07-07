@@ -11,37 +11,37 @@ import type {
   DocumentListItem,
 } from '@/lib/api-generated/types.gen'
 import {
-  seedSite,
-  seedEmptySites,
-  withAdminSiteProvider,
-} from '@/test/helpers/admin-site'
-import { useAdminSite } from '@/lib/admin-site-context'
+  seedChannel,
+  seedEmptyChannels,
+  withAdminChannelProvider,
+} from '@/test/helpers/admin-channel'
+import { useAdminChannel } from '@/lib/admin-channel-context'
 
 /**
- * FE-T04 / FE-T03 — BatchActions CORE regression + site-context tests
+ * FE-T04 / FE-T03 — BatchActions CORE regression + channel-context tests
  *
  * Guards the design §4.1 / §4.4.3 invariant: a single batch publish or
  * unpublish action MUST trigger exactly ONE `POST /api/documents/batch-status`
  * request carrying a combined `{ publish, unpublish }` body — never per-document
  * `publishDocument` / `unpublishDocument` calls.
  *
- * FE-T03 extends this with the global site-context contract (FE-D03):
- *  - BatchActions consumes `useAdminSite()`; when wrapped in AdminSiteProvider
- *    seeded with `site-a`, the batch-status request body carries
- *    `siteId === 'site-a'` (siteId in BODY — BatchStatusRequest.siteId).
- *  - the per-id delete request carries `siteId === 'site-a'` in the URL QUERY
- *    (`DELETE /api/documents/:id?siteId=`), NOT in the body.
- *  - when `siteId === null` (empty-sites anomaly), all three buttons are
+ * FE-T03 extends this with the global channel-context contract (FE-D03):
+ *  - BatchActions consumes `useAdminChannel()`; when wrapped in AdminChannelProvider
+ *    seeded with `channel-a`, the batch-status request body carries
+ *    `channelId === 'channel-a'` (channelId in BODY — BatchStatusRequest.channelId).
+ *  - the per-id delete request carries `channelId === 'channel-a'` in the URL QUERY
+ *    (`DELETE /api/documents/:id?channelId=`), NOT in the body.
+ *  - when `channelId === null` (empty-channels anomaly), all three buttons are
  *    disabled even with selectedIds present.
  *
- * The batch body.siteId vs delete query.siteId location split is load-bearing:
- * do NOT assert delete's siteId in body or batch's siteId in query.
+ * The batch body.channelId vs delete query.channelId location split is load-bearing:
+ * do NOT assert delete's channelId in body or batch's channelId in query.
  *
  * Strategy: MSW intercepts the real network path the generated SDK emits
  * (`client.post('/api/documents/batch-status')` after `setConfig({ baseUrl })`),
  * a closure-captured array records each request body, and tests assert on the
  * array length (exactly one) and shape. No internal SDK function is mocked.
- * The provider is seeded via MSW `/api/sites` (see `helpers/admin-site`); the
+ * The provider is seeded via MSW `/api/channels` (see `helpers/admin-channel`); the
  * prod context is private, so injection goes through the real provider.
  */
 
@@ -50,12 +50,12 @@ const BASE_URL = 'http://localhost:3000'
 type BatchStatusBody = {
   publish: string[]
   unpublish: string[]
-  siteId: string
+  channelId: string
 }
 
 let batchStatusRequests: BatchStatusBody[]
 let deleteRequests: string[]
-let deleteSiteIds: (string | null)[]
+let deleteChannelIds: (string | null)[]
 let singlePublishHit: boolean
 let singleUnpublishHit: boolean
 
@@ -70,7 +70,7 @@ function makeDoc(
     rowCount: 5,
     createdAt: '2026-01-01',
     errorMessage: null,
-    siteId: 'site-a',
+    channelId: 'channel-a',
   }
 }
 
@@ -94,15 +94,15 @@ interface RenderOpts {
 }
 
 // Probe rendered inside the provider to expose when bootstrap has settled
-// (loading false). The provider's listSites() runs async on mount; until it
-// resolves, siteId is null and the batch buttons are disabled, so interaction
-// tests must wait for readiness before clicking. `waitForSiteReady` awaits
+// (loading false). The provider's listChannels() runs async on mount; until it
+// resolves, channelId is null and the batch buttons are disabled, so interaction
+// tests must wait for readiness before clicking. `waitForChannelReady` awaits
 // this sentinel before each interaction.
-function SiteReadyProbe() {
-  const { loading } = useAdminSite()
+function ChannelReadyProbe() {
+  const { loading } = useAdminChannel()
   return (
     <span
-      data-testid="site-ready-probe"
+      data-testid="channel-ready-probe"
       data-loading={loading ? 'true' : 'false'}
     />
   )
@@ -111,10 +111,10 @@ function SiteReadyProbe() {
 function renderBatchActions(opts: RenderOpts = {}) {
   const onCompleted = opts.onCompleted ?? vi.fn()
   const utils = render(
-    withAdminSiteProvider({
+    withAdminChannelProvider({
       children: (
         <>
-          <SiteReadyProbe />
+          <ChannelReadyProbe />
           <BatchActions
             selectedIds={opts.selectedIds ?? new Set()}
             documents={opts.documents ?? []}
@@ -127,12 +127,12 @@ function renderBatchActions(opts: RenderOpts = {}) {
   return { ...utils, onCompleted }
 }
 
-// Await the provider's listSites() bootstrap so the BatchActions buttons reach
-// their settled (site-selected / empty) state before interactions run.
-async function waitForSiteReady() {
+// Await the provider's listChannels() bootstrap so the BatchActions buttons reach
+// their settled (channel-selected / empty) state before interactions run.
+async function waitForChannelReady() {
   await waitFor(() => {
     expect(
-      screen.getByTestId('site-ready-probe').getAttribute('data-loading'),
+      screen.getByTestId('channel-ready-probe').getAttribute('data-loading'),
     ).toBe('false')
   })
 }
@@ -140,12 +140,12 @@ async function waitForSiteReady() {
 beforeEach(() => {
   // jsdom requires an absolute URL for the SDK's fetch to reach MSW.
   client.setConfig({ baseUrl: BASE_URL })
-  // Default seed: a single site so the provider auto-selects siteId='site-a'.
-  // Cases that need a different/null siteId override via seedEmptySites().
-  seedSite('site-a')
+  // Default seed: a single channel so the provider auto-selects channelId='channel-a'.
+  // Cases that need a different/null channelId override via seedEmptyChannels().
+  seedChannel('channel-a')
   batchStatusRequests = []
   deleteRequests = []
-  deleteSiteIds = []
+  deleteChannelIds = []
   singlePublishHit = false
   singleUnpublishHit = false
   vi.clearAllMocks()
@@ -163,9 +163,9 @@ function installCountingHandlers(results: BatchStatusItem[] = []) {
     }),
     http.delete(`${BASE_URL}/api/documents/:id`, ({ params, request }) => {
       deleteRequests.push(params.id as string)
-      // FE-T03: delete's siteId lives in the URL QUERY (not the body).
-      deleteSiteIds.push(
-        new URL(request.url).searchParams.get('siteId'),
+      // FE-T03: delete's channelId lives in the URL QUERY (not the body).
+      deleteChannelIds.push(
+        new URL(request.url).searchParams.get('channelId'),
       )
       return new HttpResponse(null, { status: 204 })
     }),
@@ -213,7 +213,7 @@ describe('BatchActions — CORE: exactly one batch-status request', () => {
         selectedIds: new Set(['a', 'b']),
         documents,
       })
-      await waitForSiteReady()
+      await waitForChannelReady()
 
       await user.click(screen.getByTestId(button))
 
@@ -225,9 +225,9 @@ describe('BatchActions — CORE: exactly one batch-status request', () => {
       expect(body[expectedField]).toEqual(['a', 'b'])
       expect(body[otherField]).toEqual([])
 
-      // FE-T03: siteId travels in the BODY (BatchStatusRequest.siteId), equal
-      // to the injected provider siteId. Load-bearing: body, NOT query.
-      expect(body.siteId).toBe('site-a')
+      // FE-T03: channelId travels in the BODY (BatchStatusRequest.channelId), equal
+      // to the injected provider channelId. Load-bearing: body, NOT query.
+      expect(body.channelId).toBe('channel-a')
 
       // No single-document publish/unpublish leaked onto the batch path.
       expect(singlePublishHit).toBe(false)
@@ -245,7 +245,7 @@ describe('BatchActions — CORE: exactly one batch-status request', () => {
       selectedIds: new Set(['a', 'b']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-publish-button'))
 
@@ -270,7 +270,7 @@ describe('BatchActions — concise feedback (summary + only failures)', () => {
       selectedIds: new Set(['a', 'b']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-publish-button'))
 
@@ -292,7 +292,7 @@ describe('BatchActions — concise feedback (summary + only failures)', () => {
       selectedIds: new Set(['a', 'b']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-publish-button'))
 
@@ -322,7 +322,7 @@ describe('BatchActions — batch delete', () => {
       selectedIds: new Set(['a', 'b', 'c']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-delete-button'))
 
@@ -331,9 +331,9 @@ describe('BatchActions — batch delete', () => {
     expect(deleteRequests).toEqual(expect.arrayContaining(['a', 'b', 'c']))
     // Delete path must not invoke the batch-status endpoint.
     expect(batchStatusRequests).toHaveLength(0)
-    // FE-T03: every per-id delete carries siteId in the URL QUERY (not body).
+    // FE-T03: every per-id delete carries channelId in the URL QUERY (not body).
     // Load-bearing: query, NOT body.
-    expect(deleteSiteIds).toEqual(['site-a', 'site-a', 'site-a'])
+    expect(deleteChannelIds).toEqual(['channel-a', 'channel-a', 'channel-a'])
   })
 
   it('only deletes selected docs that are in the passed documents (data-loss guard)', async () => {
@@ -348,7 +348,7 @@ describe('BatchActions — batch delete', () => {
       selectedIds: new Set(['a', 'b', 'c']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-delete-button'))
 
@@ -388,7 +388,7 @@ describe('BatchActions — disabled state', () => {
       selectedIds: new Set(['a']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     // Click and immediately assert disabled before the response resolves.
     await user.click(screen.getByTestId('batch-publish-button'))
@@ -421,7 +421,7 @@ describe('BatchActions — onCompleted', () => {
       documents,
       onCompleted,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-publish-button'))
 
@@ -439,7 +439,7 @@ describe('BatchActions — onCompleted', () => {
       documents,
       onCompleted,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
     await user.click(screen.getByTestId('batch-delete-button'))
 
@@ -447,19 +447,19 @@ describe('BatchActions — onCompleted', () => {
   })
 })
 
-describe('BatchActions — null siteId disables all operations (FE-D03)', () => {
-  it('disables publish/unpublish/delete even with selectedIds when siteId is null', async () => {
-    // Empty-sites anomaly → provider keeps siteId === null.
-    seedEmptySites()
+describe('BatchActions — null channelId disables all operations (FE-D03)', () => {
+  it('disables publish/unpublish/delete even with selectedIds when channelId is null', async () => {
+    // Empty-channels anomaly → provider keeps channelId === null.
+    seedEmptyChannels()
 
     const documents = [makeDoc('a', 'draft'), makeDoc('b', 'published')]
     renderBatchActions({
       selectedIds: new Set(['a', 'b']),
       documents,
     })
-    await waitForSiteReady()
+    await waitForChannelReady()
 
-    // All three buttons disabled despite a non-empty selection: siteId missing
+    // All three buttons disabled despite a non-empty selection: channelId missing
     // is a hard gate (the operations cannot be dispatched without it).
     expect(screen.getByTestId('batch-publish-button')).toBeDisabled()
     expect(screen.getByTestId('batch-unpublish-button')).toBeDisabled()

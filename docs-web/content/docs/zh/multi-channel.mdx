@@ -1,0 +1,109 @@
+---
+title: 多频道
+description: 一个后端同时服务多个相互隔离的知识库
+icon: Globe
+---
+
+一个 RWiki 后端可以同时服务多个独立频道。每个频道拥有自己的知识库——文档、聊天会话、反馈、低相关召回记录、系统提示词、推荐问题——全部按 `channelId` 隔离。不存在共享的默认池：每个请求都必须指定一个频道。
+
+对单频道部署而言这是**破坏性变更**。不携带 `channelId` 或携带未知 `channelId` 的请求会被拒绝。详见[从单频道升级](#从单频道升级)。
+
+## 隔离机制
+
+`channelId` 是几乎所有数据的作用域键：
+
+| 数据 | 按频道隔离 |
+|------|----------------|
+| 文档与分块 | 上传、列表、发布/取消发布、删除、检索都按 `channelId` 过滤 |
+| 聊天会话 | 会话键带 `channel:{channelId}:` 前缀，同一 `sessionId` 在不同频道各自维护历史 |
+| 反馈 | `channelId` 是自然键 `(channel_id, session_id, message_id)` 的一部分；查询只返回当前频道 |
+| 低相关召回记录 | 按频道写入与查询 |
+| 系统提示词与推荐问题 | 频道级配置覆盖全局 `[chat]` 默认值 |
+
+公开接口无法跨频道管理：属于其他频道的文档 ID 会被当作不存在，因此无法用 ID 枚举或触达其他频道的内容。
+
+## 配置频道
+
+频道在 `config.toml` 中静态声明。**必须至少配置一个 `[channels.<channelId>]` 段**，否则后端拒绝启动。
+
+```toml
+[channels.help_center]
+name = "Help Center"
+# 可选：覆盖全局 [chat].system_prompt
+system_prompt = """
+你是 Help Center 的知识库助手。优先回答产品使用相关问题，语气简洁专业。
+"""
+# 可选：按语言分组的推荐问题
+[channels.help_center.suggested_questions]
+default = ["如何快速上手", "系统支持哪些文件格式"]
+zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何联系客服"]
+en = ["How to get started", "What file formats are supported"]
+
+[channels.developer_docs]
+name = "Developer Docs"
+# 未配置推荐问题的频道，该频道返回空数组
+```
+
+启动时校验的规则：
+
+- **至少一个频道** —— `[channels]` 为空时启动失败。
+- **`channelId` 唯一** —— 重复时启动失败。
+- **无空 `channel_id` 历史行** —— 若 `documents`、`chat_feedback`、`low_recall_records` 中存在 `channel_id` 为空的行，启动失败并提示先回填。
+- **`channelId` 格式** —— URL-safe 字符串（字母、数字、连字符、下划线），由运营方在配置中定义。
+
+每个频道可选地配置 `system_prompt` 和 `suggested_questions`。未配置时使用全局 `[chat]` 的值。详见[配置 → Chat](/zh/docs/configuration#chat)。
+
+## 三种指定频道的方式
+
+### 1. Widget 嵌入
+
+Widget 初始化时 `channelId` 为必填，与 `apiUrl` 同等必需：
+
+```html
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
+  });
+</script>
+```
+
+缺少有效 `channelId` 时，Widget 在控制台输出 `channelId is required` 且不渲染。详见[配置 → Widget](/zh/docs/configuration#widget)。
+
+### 2. 主站 URL
+
+主站前端把每个频道暴露在 `/c/<channelId>`。首页列出所有已配置频道作为入口链接；根路径本身不再是聊天入口。
+
+- `/c/help_center` → 加载 help_center 聊天
+- `/c/unknown` → 显示"频道不存在或不可用"，且**不发起**任何聊天、推荐问题或反馈请求
+
+频道页发出的所有聊天、推荐问题、反馈请求都会携带该频道的 `channelId`。
+
+### 3. 管理后台
+
+管理后台在顶部有一个全局频道选择器（不是每次上传单独选择）。选定频道后，文档列表、上传、批量发布/取消发布、低相关召回记录都限定在该频道。选择会在刷新后保留。详见[文档管理后台](/zh/docs/admin)。
+
+## CORS 是全局的，不是按频道
+
+所有频道共享同一份 CORS 白名单（`[server].allowed_origins`）。为空表示允许所有来源（`*`）；设置具体来源以限制哪些域名可以嵌入 Widget 或调用接口。这一点与单频道一致——详见[配置 → Server](/zh/docs/configuration#server)。
+
+## 推荐问题由频道强控
+
+一旦频道配置了 `suggested_questions`，Widget 初始化传入的本地 `suggestedQuestions` 会被**忽略**，以服务端为唯一来源。未配置推荐问题的频道返回空数组（Widget 只显示欢迎语）。
+
+## 从单频道升级
+
+这是破坏性变更。升级既有部署前：
+
+1. **在 `config.toml` 中配置至少一个频道**（例如 `[channels.default]`，`name = "Default"`）。
+2. **回填历史数据** —— 每条既有行都需要 `channel_id`。存在空 `channel_id` 行时后端拒绝启动：
+   ```sql
+   UPDATE documents SET channel_id = 'default' WHERE channel_id IS NULL;
+   UPDATE chat_feedback SET channel_id = 'default' WHERE channel_id IS NULL;
+   UPDATE low_recall_records SET channel_id = 'default' WHERE channel_id IS NULL;
+   ```
+   （聊天会话在内存中，无需回填。）
+3. **更新 Widget 嵌入代码** —— 每个 `RWikiChat.init({ apiUrl, ... })` 调用都必须加 `channelId`。缺少该字段的旧代码将不再渲染。
+4. **更新 API 客户端** —— `/api/chat`、`/api/chat/suggestions`、`/api/documents/*`、`/api/chat/feedback`、`/api/low-recall/records` 现在都要求 `channelId`。缺失时返回 `400`。
+
+完成回填和配置后，后端正常启动，该频道的行为与原先的单知识库一致。

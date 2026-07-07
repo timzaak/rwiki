@@ -3,7 +3,7 @@ import { useCallback, useRef, useState } from 'react'
 import { submitFeedback } from '@/lib/api-generated/sdk.gen'
 import type { FeedbackRequest } from '@/lib/api-generated/types.gen'
 import { useChatStore } from '@/stores/chat-store'
-import { useSiteId } from '@/components/chat/site-id-context'
+import { useChannelId } from '@/components/chat/channel-id-context'
 
 import { useFeedbackSubmitFnFromContext } from './feedback-context'
 
@@ -22,7 +22,7 @@ export interface UseFeedbackReturn {
 
 export function useFeedback(options: UseFeedbackOptions): UseFeedbackReturn {
   const { sessionId, messageId, userMessage, assistantMessage } = options
-  const siteId = useSiteId()
+  const channelId = useChannelId()
 
   const feedback = useChatStore(
     (s) =>
@@ -59,7 +59,7 @@ export function useFeedback(options: UseFeedbackOptions): UseFeedbackReturn {
         feedback: target ?? null,
         userMessage,
         assistantMessage,
-        siteId,
+        channelId,
       }
 
       try {
@@ -79,7 +79,7 @@ export function useFeedback(options: UseFeedbackOptions): UseFeedbackReturn {
     },
     [
       sessionId,
-      siteId,
+      channelId,
       messageId,
       feedback,
       userMessage,

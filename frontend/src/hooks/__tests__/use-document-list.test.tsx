@@ -10,19 +10,19 @@ import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 /**
  * FE-T05 / FE-T03 — useDocumentList hook tests
  *
- * Covers FE-D06/FE-D03's `useDocumentList(siteId)` (`src/hooks/use-document-list.ts`):
+ * Covers FE-D06/FE-D03's `useDocumentList(channelId)` (`src/hooks/use-document-list.ts`):
  *  - on mount calls `listDocuments` (GET /api/documents) once, carrying
- *    `siteId` in the URL query (FE-D03 contract).
+ *    `channelId` in the URL query (FE-D03 contract).
  *  - success → `documents` populated from `result.data.documents`,
  *    `loading` false, `error` null
  *  - failure (non-2xx / network) → `error` set to `'Failed to load'`, `loading` false
  *  - `refreshList()` re-fetches (the hook calls it on mount via useEffect)
- *  - `siteId === null` → skips the fetch entirely (zero requests).
- *  - switching `siteId` ('site-a' → 'site-b') re-fetches with the new query.
+ *  - `channelId === null` → skips the fetch entirely (zero requests).
+ *  - switching `channelId` ('channel-a' → 'channel-b') re-fetches with the new query.
  *
  * Strategy mirrors `use-feedback.test.tsx`: `renderHook` + MSW +
  * `client.setConfig({ baseUrl })` so the generated SDK's fetch reaches MSW.
- * The query siteId is observed via the MSW handler's `request.url.searchParams`
+ * The query channelId is observed via the MSW handler's `request.url.searchParams`
  * — `listDocuments` is NOT mocked.
  */
 
@@ -40,7 +40,7 @@ function makeDoc(
     rowCount: 3,
     createdAt: '2026-01-01T00:00:00.000Z',
     errorMessage: null,
-    siteId: 'site-a',
+    channelId: 'channel-a',
   }
 }
 
@@ -69,7 +69,7 @@ describe('useDocumentList — initial load', () => {
   it('loads documents on mount via listDocuments and clears loading', async () => {
     installCountingHandler([makeDoc('a', 'published'), makeDoc('b', 'draft')])
 
-    const { result } = renderHook(() => useDocumentList('site-a'))
+    const { result } = renderHook(() => useDocumentList('channel-a'))
 
     await waitFor(() => {
       expect(result.current.documents).toHaveLength(2)
@@ -78,8 +78,8 @@ describe('useDocumentList — initial load', () => {
     expect(result.current.loading).toBe(false)
     expect(result.current.error).toBeNull()
     expect(listCallCount).toBe(1)
-    // FE-T03: siteId travels in the URL query.
-    expect(lastSearchParams.get('siteId')).toBe('site-a')
+    // FE-T03: channelId travels in the URL query.
+    expect(lastSearchParams.get('channelId')).toBe('channel-a')
     // The populated documents match the server response order/shape.
     expect(result.current.documents.map((d) => d.id)).toEqual(['a', 'b'])
   })
@@ -88,7 +88,7 @@ describe('useDocumentList — initial load', () => {
     // Synchronous assertion before any await — the hook's initial state.
     installCountingHandler([])
 
-    const { result } = renderHook(() => useDocumentList('site-a'))
+    const { result } = renderHook(() => useDocumentList('channel-a'))
 
     expect(result.current.loading).toBe(true)
     expect(result.current.documents).toEqual([])
@@ -115,7 +115,7 @@ describe('useDocumentList — failure path', () => {
         http.get(LIST_URL, () => HttpResponse.json(body, { status })),
       )
 
-      const { result } = renderHook(() => useDocumentList('site-a'))
+      const { result } = renderHook(() => useDocumentList('channel-a'))
 
       await waitFor(() => {
         expect(result.current.error).toBe('Failed to load')
@@ -129,7 +129,7 @@ describe('useDocumentList — failure path', () => {
   it('sets error on a network failure (fetch rejects)', async () => {
     server.use(http.get(LIST_URL, () => HttpResponse.error()))
 
-    const { result } = renderHook(() => useDocumentList('site-a'))
+    const { result } = renderHook(() => useDocumentList('channel-a'))
 
     await waitFor(() => {
       expect(result.current.error).toBe('Failed to load')
@@ -143,7 +143,7 @@ describe('useDocumentList — refreshList', () => {
     // First response: 2 docs.
     installCountingHandler([makeDoc('a'), makeDoc('b')])
 
-    const { result } = renderHook(() => useDocumentList('site-a'))
+    const { result } = renderHook(() => useDocumentList('channel-a'))
 
     await waitFor(() => {
       expect(result.current.documents).toHaveLength(2)
@@ -179,7 +179,7 @@ describe('useDocumentList — refreshList', () => {
       ),
     )
 
-    const { result } = renderHook(() => useDocumentList('site-a'))
+    const { result } = renderHook(() => useDocumentList('channel-a'))
 
     await waitFor(() => {
       expect(result.current.error).toBe('Failed to load')
@@ -197,8 +197,8 @@ describe('useDocumentList — refreshList', () => {
   })
 })
 
-describe('useDocumentList — siteId contract (FE-D03)', () => {
-  it('skips the fetch and empties the list when siteId is null', async () => {
+describe('useDocumentList — channelId contract (FE-D03)', () => {
+  it('skips the fetch and empties the list when channelId is null', async () => {
     installCountingHandler([makeDoc('a')])
 
     const { result } = renderHook(() => useDocumentList(null))
@@ -208,33 +208,33 @@ describe('useDocumentList — siteId contract (FE-D03)', () => {
       expect(result.current.loading).toBe(false)
     })
 
-    // siteId null → no request to the required-siteId endpoint.
+    // channelId null → no request to the required-channelId endpoint.
     expect(listCallCount).toBe(0)
     expect(result.current.documents).toEqual([])
     expect(result.current.error).toBeNull()
   })
 
-  it('re-fetches with the new siteId when siteId switches', async () => {
+  it('re-fetches with the new channelId when channelId switches', async () => {
     installCountingHandler([makeDoc('a')])
 
-    // Start on site-a; the mount fetch carries siteId=site-a.
-    let site: string | null = 'site-a'
-    const { result, rerender } = renderHook(() => useDocumentList(site))
+    // Start on channel-a; the mount fetch carries channelId=channel-a.
+    let channel: string | null = 'channel-a'
+    const { result, rerender } = renderHook(() => useDocumentList(channel))
 
     await waitFor(() => {
       expect(listCallCount).toBe(1)
     })
-    expect(lastSearchParams.get('siteId')).toBe('site-a')
+    expect(lastSearchParams.get('channelId')).toBe('channel-a')
 
-    // Switch to site-b → effect re-runs (dep array includes siteId) and a
-    // second request carries siteId=site-b.
-    site = 'site-b'
+    // Switch to channel-b → effect re-runs (dep array includes channelId) and a
+    // second request carries channelId=channel-b.
+    channel = 'channel-b'
     rerender()
 
     await waitFor(() => {
       expect(listCallCount).toBe(2)
     })
-    expect(lastSearchParams.get('siteId')).toBe('site-b')
+    expect(lastSearchParams.get('channelId')).toBe('channel-b')
     expect(result.current.error).toBeNull()
   })
 })

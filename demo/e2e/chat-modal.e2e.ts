@@ -1,104 +1,96 @@
 /**
- * Chat Floating Modal E2E Tests
+ * 频道聊天浮窗 E2E（support-multiple-website 迁移）
  *
- * Covers:
- * - US-CORE-006: Click floating button on home page -> verify modal opens ->
- *   close -> reopen -> verify conversation preserved
- *   - Scenario 1: Opening and closing the chat modal
- *   - Scenario 2: Conversation preserved after close/reopen
+ * Main-channel chat now lives under `/c/$channelId`; root `/` is a channel-entry list
+ * (no floating button). The modal is opened from `/c/help_center` via the
+ * floating button, which only renders once the route validates the channel.
  *
- * Dependencies (from DE-D01):
- * - demo/e2e/fixtures/chat.fixtures.ts
- * - demo/e2e/pages/home-page.ts
- * - demo/e2e/selectors.ts
+ * US-story traceability:
+ * - US-INTG-007 (DRAFT, `.ai/user-stories/integration/support-multiple-website.md`)
+ *   - Scenario 1 "通过 /c/channel-a 访问频道": open/close the floating chat modal
+ *     on `/c/help_center`, and verify the conversation is preserved across a
+ *     close/reopen cycle. (Scenario 2 — unknown channel — is covered by DE-D04.)
+ *
+ * Dependencies:
+ * - demo/e2e/fixtures/chat.fixtures.ts (demoLogger via fixture)
+ * - demo/e2e/pages/chat-page.ts (navigate('/c/$channelId') + open modal)
+ * - demo/e2e/selectors.ts (SELECTORS.chat.*)
  */
 
 import { test, expect } from './fixtures/chat.fixtures'
-import { HomePage } from './pages/home-page'
+import { ChatPage } from './pages/chat-page'
 import { SELECTORS } from './selectors'
 
-// ---------------------------------------------------------------------------
-// US-CORE-006 - Scenario 1: Open and close floating chat modal from home page
-// ---------------------------------------------------------------------------
-test.describe('Chat Modal', () => {
-  test('US-CORE-006 scenario 1 - open floating chat modal from home page', async ({ page }) => {
-    const homePage = new HomePage(page)
-    await homePage.navigate()
-    await homePage.waitForReady()
-
-    // Assert: floating-chat-button is visible on the home page
-    await expect(page.locator(SELECTORS.chat.floatingButton)).toBeVisible()
-
-    // Click the floating button to open the modal
-    await homePage.openChatModal()
+test.describe('Chat Modal on /c/help_center', () => {
+  // US-INTG-007 - Scenario 1a: open and close floating chat modal from a channel route
+  test('US-INTG-007 scenario 1 - open floating chat modal from /c/help_center', async ({
+    page,
+    demoLogger: _demoLogger,
+  }) => {
+    const chatPage = new ChatPage(page)
+    // navigate() waits for the channel to resolve (floating button visible = ready)
+    // and opens the modal.
+    await chatPage.navigate('help_center')
 
     // Assert: chat-modal is visible
     await expect(page.locator(SELECTORS.chat.modal)).toBeVisible()
 
-    // Assert: chat-modal-header is visible
+    // Assert: chat-modal-header is visible (stable element, not auto-dismissing)
     await expect(page.locator(SELECTORS.chat.modalHeader)).toBeVisible()
-
-    // Assert: chat-modal-header contains "Chat Assistant" text
-    await expect(page.locator(SELECTORS.chat.modalHeader)).toContainText('Chat Assistant')
 
     // Assert: chat-modal-close button is visible
     await expect(page.locator(SELECTORS.chat.modalClose)).toBeVisible()
 
-    // Assert: chat-panel is visible inside the modal (ChatPanel is reused)
+    // Assert: chat-panel is visible inside the modal
     await expect(page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.panel)).toBeVisible()
 
     // Assert: chat-input is visible inside the modal
     await expect(page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.input)).toBeVisible()
 
-    // Assert: floating-chat-button is now hidden (floating button hides when modal is open)
+    // Assert: floating-chat-button is hidden while the modal is open
     await expect(page.locator(SELECTORS.chat.floatingButton)).toBeHidden()
   })
 
-  // US-CORE-006 - Scenario 2: Close and reopen modal preserves conversation
-  test('US-CORE-006 scenario 2 - close and reopen modal preserves conversation', async ({
+  // US-INTG-007 - Scenario 1b: close and reopen modal preserves conversation on /c/help_center
+  test('US-INTG-007 scenario 1 - close and reopen modal preserves conversation', async ({
     page,
+    demoLogger: _demoLogger,
   }) => {
-    const homePage = new HomePage(page)
-    await homePage.navigate()
-    await homePage.waitForReady()
+    const chatPage = new ChatPage(page)
+    await chatPage.navigate('help_center')
 
-    // Open the chat modal
-    await homePage.openChatModal()
-
-    // Send a message via the modal's chat input
+    // Send a message via the modal's chat input (channel-scoped, channelId carried by route)
     const chatInput = page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.input)
     const sendButton = page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.sendButton)
     await chatInput.fill('Hello test message')
     await sendButton.click()
 
-    // Wait for the user message to appear in the message list inside the modal
-    const userMessage = page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.messageItem('user'))
+    // Wait for the user message to appear inside the modal
+    const userMessage = page
+      .locator(SELECTORS.chat.modal)
+      .locator(SELECTORS.chat.messageItem('user'))
     await expect(userMessage).toBeVisible({ timeout: 5000 })
-
-    // Assert: at least one user message is visible inside the modal
-    const userMessageCount = await userMessage.count()
-    expect(userMessageCount).toBeGreaterThanOrEqual(1)
+    expect(await userMessage.count()).toBeGreaterThanOrEqual(1)
 
     // Close the modal via the close button
-    await homePage.closeChatModal()
+    await page.locator(SELECTORS.chat.modalClose).click()
 
     // Assert: chat-modal is hidden
     await expect(page.locator(SELECTORS.chat.modal)).toBeHidden()
 
-    // Assert: floating-chat-button is visible again
+    // Assert: floating-chat-button is visible again (channel still resolved)
     await expect(page.locator(SELECTORS.chat.floatingButton)).toBeVisible()
 
     // Reopen the modal by clicking the floating button
-    await homePage.openChatModal()
-
-    // Assert: chat-modal is visible again
+    await page.locator(SELECTORS.chat.floatingButton).click()
     await expect(page.locator(SELECTORS.chat.modal)).toBeVisible()
 
     // Assert: the previous user message is still visible (conversation preserved)
-    const preservedUserMessage = page.locator(SELECTORS.chat.modal).locator(SELECTORS.chat.messageItem('user'))
+    const preservedUserMessage = page
+      .locator(SELECTORS.chat.modal)
+      .locator(SELECTORS.chat.messageItem('user'))
     await expect(preservedUserMessage).toBeVisible()
-    const preservedCount = await preservedUserMessage.count()
-    expect(preservedCount).toBeGreaterThanOrEqual(1)
+    expect(await preservedUserMessage.count()).toBeGreaterThanOrEqual(1)
 
     // Assert: the user message content is still "Hello test message"
     const preservedText = await preservedUserMessage.first().textContent()

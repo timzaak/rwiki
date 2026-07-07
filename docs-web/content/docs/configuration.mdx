@@ -316,13 +316,14 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `apiUrl` | string | Yes | — | Backend URL, must start with `http://` or `https://` |
+| `channelId` | string | Yes | — | Target channel identifier. Must match a configured `[channels.<channelId>]`. Without it the widget logs `channelId is required` and does not render. See [Multi-Channel](/en/docs/multi-channel). |
 | `locale` | string | No | `navigator.language` | UI language. Accepts a BCP-47 tag and resolves to a supported locale (`en`, `zh-CN`). Any Chinese variant (`zh`, `zh-Hans`, `zh-TW`, …) resolves to `zh-CN`; everything else falls back to `en`. |
 | `title` | string | No | locale default | Chat window title. Omit to use the locale default (`Rwiki Chat` for `en`, `Rwiki 助手` for `zh-CN`). |
 | `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
 | `position` | string | No | `"right"` | Button position: `left` or `right` |
 | `welcomeMessage` | string | No | — | Welcome message |
 | `messages` | object | No | — | Override individual UI strings for the resolved locale. Any subset of: `titleDefault`, `inputPlaceholder`, `responseFailed`, `retry`, `a11yOpen`, `a11yClose`, `a11yClear`, `a11yLike`, `a11yDislike`, `errorBoundary`. |
-| `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). |
+| `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). Ignored when the target channel has configured `[channels.<channelId>.suggested_questions]` — the server is then the single source of truth (see [Multi-Channel](/en/docs/multi-channel)). |
 
 ### HTML integration
 
@@ -331,6 +332,7 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 <script>
   RWikiChat.init({
     apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
     locale: 'en',
     title: 'Assistant',
     primaryColor: '#6366f1',
@@ -363,7 +365,7 @@ The widget uses Shadow DOM for style isolation and won't affect host page CSS.
 
 ### React integration (docs-web pattern)
 
-For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`). Pass the app's current locale in so the widget follows it: seed it at `init`, then call `setLocale` when it changes.
+For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`). Pass the target `channelId` and the app's current locale: seed both at `init`, then call `setLocale` when the locale changes.
 
 ```tsx
 // src/components/rwiki-chat-widget.tsx
@@ -371,7 +373,7 @@ import { useEffect, useRef } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget({ locale }: { locale: string }) {
+export default function RWikiChatWidget({ channelId, locale }: { channelId: string; locale: string }) {
   const firstRun = useRef(true);
   // Keep the latest locale in a ref so the async script's onload init always
   // uses the current locale, not the one captured at mount.
@@ -381,7 +383,7 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
   // Load + init once, seeding the initial locale.
   useEffect(() => {
     const w = window as any;
-    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, locale: localeRef.current }); };
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, channelId, locale: localeRef.current }); };
     if (w.RWikiChat?.init) {
       initWidget();
     } else {
@@ -405,10 +407,10 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
 }
 ```
 
-Place the component in your root layout and pass the current locale (docs-web derives it from the URL path):
+Place the component in your root layout and pass the current channel and locale (docs-web derives locale from the URL path):
 
 ```tsx
-<RWikiChatWidget locale={locale} />
+<RWikiChatWidget channelId="help_center" locale={locale} />
 ```
 
 Build and copy the widget before starting docs-web:

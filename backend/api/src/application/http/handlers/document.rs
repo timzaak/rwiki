@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use rwiki_core::config::SiteValidationError;
+use rwiki_core::config::ChannelValidationError;
 use rwiki_core::domain::document::{DocumentRow, DocumentStatus};
 use rwiki_core::infrastructure::document_chunk::DocumentChunk;
 use rwiki_core::infrastructure::faq_parser;
@@ -32,14 +32,14 @@ pub struct UploadDocumentResponse {
     pub file_name: String,
     pub status: String,
     pub row_count: i32,
-    pub site_id: String,
+    pub channel_id: String,
     pub created_at: String,
 }
 
 /// multipart/form-data body for document upload.
 ///
 /// NOTE: 此 struct 仅用于 OpenAPI schema 生成（utoipa），handler 不会反序列化它。
-/// 实际 multipart 字段解析见 `upload_document`（按字段名 "file" / "siteId" / "refresh_embed"
+/// 实际 multipart 字段解析见 `upload_document`（按字段名 "file" / "channelId" / "refresh_embed"
 /// 读取，`refresh_embed` 以 `text == "true"` 判定，与 Option<bool> 语义略有出入）。
 /// 新增/重命名字段时，此处 schema 与 handler 解析必须同步，否则生成的客户端与
 /// 服务器契约会静默偏离。
@@ -51,8 +51,8 @@ pub struct UploadDocumentRequest {
     pub file: Vec<u8>,
     /// Whether to re-embed if the content already exists. Optional, defaults false.
     pub refresh_embed: Option<bool>,
-    /// The site this document belongs to. Required.
-    pub site_id: String,
+    /// The channel this document belongs to. Required.
+    pub channel_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -62,18 +62,18 @@ pub struct DocumentListItem {
     pub file_name: String,
     pub status: String,
     pub row_count: i32,
-    pub site_id: String,
+    pub channel_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub created_at: String,
 }
 
-/// Query parameters for site-scoped document lifecycle operations.
+/// Query parameters for channel-scoped document lifecycle operations.
 #[derive(Debug, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
-pub struct DocumentSiteQuery {
-    /// The site ID that owns the document.
-    pub site_id: String,
+pub struct DocumentChannelQuery {
+    /// The channel ID that owns the document.
+    pub channel_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -93,8 +93,8 @@ pub struct PublishDocumentResponse {
 pub struct BatchStatusRequest {
     pub publish: Vec<Uuid>,
     pub unpublish: Vec<Uuid>,
-    /// The site ID that owns the documents.
-    pub site_id: String,
+    /// The channel ID that owns the documents.
+    pub channel_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy)]
@@ -127,7 +127,7 @@ pub struct BatchStatusResponse {
 ///
 /// Accepts a multipart file upload, validates format and size (<= 50 MB),
 /// parses into chunks, embeds them via VectorStoreManager, and persists
-/// metadata to SQLite. The document is associated with the provided `siteId`.
+/// metadata to SQLite. The document is associated with the provided `channelId`.
 #[utoipa::path(
     post,
     path = "/api/documents/upload",
@@ -136,7 +136,7 @@ pub struct BatchStatusResponse {
     request_body(content = inline(UploadDocumentRequest), content_type = "multipart/form-data"),
     responses(
         (status = 200, description = "Document uploaded successfully as draft", body = UploadDocumentResponse),
-        (status = 400, description = "Invalid file or missing/invalid siteId (unsupported format, empty, encoding error, or frontmatter error)", body = ErrorResponse),
+        (status = 400, description = "Invalid file or missing/invalid channelId (unsupported format, empty, encoding error, or frontmatter error)", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 413, description = "File exceeds 50MB limit", body = ErrorResponse),
         (status = 500, description = "Processing failed", body = ErrorResponse)
@@ -146,11 +146,11 @@ pub async fn upload_document(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<UploadDocumentResponse>, ApiError> {
-    // Extract the `file`, optional `refresh_embed`, and required `siteId` fields from multipart
+    // Extract the `file`, optional `refresh_embed`, and required `channelId` fields from multipart
     let mut refresh_embed = false;
     let mut file_name = None;
     let mut file_bytes = None;
-    let mut site_id = None;
+    let mut channel_id = None;
 
     loop {
         let field = multipart
@@ -171,12 +171,12 @@ pub async fn upload_document(
                     .map_err(|e| ApiError::bad_request(format!("读取 refresh_embed 失败: {e}")))?;
                 refresh_embed = text == "true";
             }
-            Some("siteId") => {
+            Some("channelId") => {
                 let text = field
                     .text()
                     .await
-                    .map_err(|e| ApiError::bad_request(format!("读取 siteId 失败: {e}")))?;
-                site_id = Some(text);
+                    .map_err(|e| ApiError::bad_request(format!("读取 channelId 失败: {e}")))?;
+                channel_id = Some(text);
             }
             Some("file") => {
                 let name = field.file_name().unwrap_or("unknown.xlsx").to_string();
@@ -191,14 +191,14 @@ pub async fn upload_document(
         }
     }
 
-    let site_id = site_id.ok_or_else(|| ApiError::bad_request("缺少 siteId 字段"))?;
-    let site_id = state
-        .sites_config
-        .require_configured(&site_id)
+    let channel_id = channel_id.ok_or_else(|| ApiError::bad_request("缺少 channelId 字段"))?;
+    let channel_id = state
+        .channels_config
+        .require_configured(&channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -296,13 +296,13 @@ pub async fn upload_document(
     // Insert document record with status `processing`
     let doc_id_str = document_id.to_string();
     let file_name_clone = file_name.clone();
-    let site_id_for_insert = site_id.clone();
+    let channel_id_for_insert = channel_id.clone();
     state
         .sqlite
         .call(move |conn| {
             conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count, site_id) VALUES (?, ?, 'processing', ?, ?)",
-                rusqlite::params![doc_id_str, file_name_clone, row_count, site_id_for_insert],
+                "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, ?, 'processing', ?, ?)",
+                rusqlite::params![doc_id_str, file_name_clone, row_count, channel_id_for_insert],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
@@ -366,7 +366,7 @@ pub async fn upload_document(
                 file_name,
                 status: "draft".to_string(),
                 row_count,
-                site_id,
+                channel_id,
                 created_at,
             }))
         }
@@ -390,31 +390,31 @@ pub async fn upload_document(
     }
 }
 
-/// List uploaded documents for a specific site.
+/// List uploaded documents for a specific channel.
 #[utoipa::path(
     get,
     path = "/api/documents",
     tag = "documents",
     security(("bearer_auth" = [])),
-    params(DocumentSiteQuery),
+    params(DocumentChannelQuery),
     responses(
         (status = 200, description = "Document list", body = DocumentListResponse),
-        (status = 400, description = "Missing or invalid siteId", body = ErrorResponse),
+        (status = 400, description = "Missing or invalid channelId", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<DocumentSiteQuery>,
+    Query(query): Query<DocumentChannelQuery>,
 ) -> Result<Json<DocumentListResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&query.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&query.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -423,16 +423,16 @@ pub async fn list_documents(
         .sqlite
         .call(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, file_name, status, row_count, site_id, error_message, created_at FROM documents WHERE site_id = ? ORDER BY created_at DESC",
+                "SELECT id, file_name, status, row_count, channel_id, error_message, created_at FROM documents WHERE channel_id = ? ORDER BY created_at DESC",
             )?;
             let rows = stmt
-                .query_map(rusqlite::params![site_id], |row| {
+                .query_map(rusqlite::params![channel_id], |row| {
                     Ok(DocumentRow {
                         id: row.get(0)?,
                         file_name: row.get(1)?,
                         status: row.get(2)?,
                         row_count: row.get(3)?,
-                        site_id: row.get(4)?,
+                        channel_id: row.get(4)?,
                         error_message: row.get(5)?,
                         created_at: row.get(6)?,
                     })
@@ -452,7 +452,7 @@ pub async fn list_documents(
                 file_name: row.file_name,
                 status: row.status,
                 row_count: row.row_count,
-                site_id: row.site_id,
+                channel_id: row.channel_id,
                 error_message: row.error_message,
                 created_at: row.created_at,
             })
@@ -463,7 +463,7 @@ pub async fn list_documents(
     Ok(Json(DocumentListResponse { documents }))
 }
 
-/// Delete a document by ID within a site.
+/// Delete a document by ID within a channel.
 #[utoipa::path(
     delete,
     path = "/api/documents/{documentId}",
@@ -471,11 +471,11 @@ pub async fn list_documents(
     security(("bearer_auth" = [])),
     params(
         ("documentId" = Uuid, Path, description = "Document ID"),
-        DocumentSiteQuery
+        DocumentChannelQuery
     ),
     responses(
         (status = 204, description = "Document deleted"),
-        (status = 400, description = "Missing or invalid siteId", body = ErrorResponse),
+        (status = 400, description = "Missing or invalid channelId", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Document not found", body = ErrorResponse),
         (status = 500, description = "Vector store removal failed", body = ErrorResponse)
@@ -484,28 +484,28 @@ pub async fn list_documents(
 pub async fn delete_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
-    Query(query): Query<DocumentSiteQuery>,
+    Query(query): Query<DocumentChannelQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&query.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&query.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
 
     let doc_id_str = document_id.to_string();
 
-    // Verify the document exists and belongs to the requested site
+    // Verify the document exists and belongs to the requested channel
     let exists: bool = state
         .sqlite
         .call(move |conn| {
             conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND site_id = ?)",
-                rusqlite::params![doc_id_str, site_id],
+                "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
+                rusqlite::params![doc_id_str, channel_id],
                 |row| row.get(0),
             )
         })
@@ -525,13 +525,13 @@ pub async fn delete_document(
 
     // Now safe to delete from DB
     let doc_id_str = document_id.to_string();
-    let site_id = query.site_id.trim().to_string();
+    let channel_id = query.channel_id.trim().to_string();
     state
         .sqlite
         .call(move |conn| {
             conn.execute(
-                "DELETE FROM documents WHERE id = ? AND site_id = ?",
-                rusqlite::params![doc_id_str, site_id],
+                "DELETE FROM documents WHERE id = ? AND channel_id = ?",
+                rusqlite::params![doc_id_str, channel_id],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
@@ -541,11 +541,11 @@ pub async fn delete_document(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Publish a draft document within a site.
+/// Publish a draft document within a channel.
 ///
 /// Changes document status from "draft" to "published", making its content
 /// available for RAG search. Only draft documents belonging to the requested
-/// site can be published.
+/// channel can be published.
 #[utoipa::path(
     patch,
     path = "/api/documents/{documentId}/publish",
@@ -553,11 +553,11 @@ pub async fn delete_document(
     security(("bearer_auth" = [])),
     params(
         ("documentId" = Uuid, Path, description = "Document ID"),
-        DocumentSiteQuery
+        DocumentChannelQuery
     ),
     responses(
         (status = 200, description = "Document published", body = PublishDocumentResponse),
-        (status = 400, description = "Missing or invalid siteId", body = ErrorResponse),
+        (status = 400, description = "Missing or invalid channelId", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Document not found", body = ErrorResponse),
         (status = 409, description = "Only draft documents can be published", body = ErrorResponse)
@@ -566,15 +566,15 @@ pub async fn delete_document(
 pub async fn publish_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
-    Query(query): Query<DocumentSiteQuery>,
+    Query(query): Query<DocumentChannelQuery>,
 ) -> Result<Json<PublishDocumentResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&query.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&query.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -584,8 +584,8 @@ pub async fn publish_document(
         .sqlite
         .call(move |conn| {
             conn.execute(
-                "UPDATE documents SET status = 'published' WHERE id = ? AND site_id = ? AND status = 'draft'",
-                rusqlite::params![doc_id_str, site_id],
+                "UPDATE documents SET status = 'published' WHERE id = ? AND channel_id = ? AND status = 'draft'",
+                rusqlite::params![doc_id_str, channel_id],
             )
         })
         .await
@@ -593,13 +593,13 @@ pub async fn publish_document(
 
     if rows_affected == 0 {
         let doc_id_str = document_id.to_string();
-        let site_id = query.site_id.trim().to_string();
+        let channel_id = query.channel_id.trim().to_string();
         let exists: bool = state
             .sqlite
             .call(move |conn| {
                 conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND site_id = ?)",
-                    rusqlite::params![doc_id_str, site_id],
+                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
+                    rusqlite::params![doc_id_str, channel_id],
                     |row| row.get(0),
                 )
             })
@@ -618,11 +618,11 @@ pub async fn publish_document(
     }))
 }
 
-/// Unpublish a published document within a site.
+/// Unpublish a published document within a channel.
 ///
 /// Changes document status from "published" back to "draft", removing its
 /// content from RAG search results. Only published documents belonging to the
-/// requested site can be unpublished.
+/// requested channel can be unpublished.
 #[utoipa::path(
     patch,
     path = "/api/documents/{documentId}/unpublish",
@@ -630,11 +630,11 @@ pub async fn publish_document(
     security(("bearer_auth" = [])),
     params(
         ("documentId" = Uuid, Path, description = "Document ID"),
-        DocumentSiteQuery
+        DocumentChannelQuery
     ),
     responses(
         (status = 200, description = "Document unpublished", body = PublishDocumentResponse),
-        (status = 400, description = "Missing or invalid siteId", body = ErrorResponse),
+        (status = 400, description = "Missing or invalid channelId", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Document not found", body = ErrorResponse),
         (status = 409, description = "Only published documents can be unpublished", body = ErrorResponse)
@@ -643,15 +643,15 @@ pub async fn publish_document(
 pub async fn unpublish_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
-    Query(query): Query<DocumentSiteQuery>,
+    Query(query): Query<DocumentChannelQuery>,
 ) -> Result<Json<PublishDocumentResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&query.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&query.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -661,8 +661,8 @@ pub async fn unpublish_document(
         .sqlite
         .call(move |conn| {
             conn.execute(
-                "UPDATE documents SET status = 'draft' WHERE id = ? AND site_id = ? AND status = 'published'",
-                rusqlite::params![doc_id_str, site_id],
+                "UPDATE documents SET status = 'draft' WHERE id = ? AND channel_id = ? AND status = 'published'",
+                rusqlite::params![doc_id_str, channel_id],
             )
         })
         .await
@@ -670,13 +670,13 @@ pub async fn unpublish_document(
 
     if rows_affected == 0 {
         let doc_id_str = document_id.to_string();
-        let site_id = query.site_id.trim().to_string();
+        let channel_id = query.channel_id.trim().to_string();
         let exists: bool = state
             .sqlite
             .call(move |conn| {
                 conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND site_id = ?)",
-                    rusqlite::params![doc_id_str, site_id],
+                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
+                    rusqlite::params![doc_id_str, channel_id],
                     |row| row.get(0),
                 )
             })
@@ -695,11 +695,11 @@ pub async fn unpublish_document(
     }))
 }
 
-/// Batch update document status (publish/unpublish multiple documents) within a site.
+/// Batch update document status (publish/unpublish multiple documents) within a channel.
 ///
 /// Atomically updates multiple document statuses in a single transaction.
 /// Only valid status transitions are applied (draft→published, published→draft)
-/// for documents belonging to the requested site.
+/// for documents belonging to the requested channel.
 /// Invalid transitions or missing documents are reported in the response without blocking valid operations.
 #[utoipa::path(
     post,
@@ -709,7 +709,7 @@ pub async fn unpublish_document(
     request_body = BatchStatusRequest,
     responses(
         (status = 200, description = "Batch status update completed", body = BatchStatusResponse),
-        (status = 400, description = "Missing/invalid siteId or both arrays empty", body = ErrorResponse),
+        (status = 400, description = "Missing/invalid channelId or both arrays empty", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
@@ -718,15 +718,15 @@ pub async fn batch_update_status(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BatchStatusRequest>,
 ) -> Result<Json<BatchStatusResponse>, ApiError> {
-    // Validate site_id before the empty-arrays check so an unknown site
+    // Validate channel_id before the empty-arrays check so an unknown channel
     // surfaces instead of the misleading "publish 和 unpublish 不能同时为空".
-    let site_id = state
-        .sites_config
-        .require_configured(&req.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&req.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -753,7 +753,7 @@ pub async fn batch_update_status(
         .call(move |conn| {
             let tx = conn.transaction()?;
 
-            // 1. Fetch current status for all requested IDs belonging to the site
+            // 1. Fetch current status for all requested IDs belonging to the channel
             let mut current_statuses = HashMap::new();
             if !all_ids.is_empty() {
                 // Build parameterized query with proper rusqlite params handling
@@ -764,14 +764,14 @@ pub async fn batch_update_status(
                         .collect::<Vec<_>>()
                         .join(",");
                     let sql = format!(
-                        "SELECT id, status FROM documents WHERE site_id = ? AND id IN ({})",
+                        "SELECT id, status FROM documents WHERE channel_id = ? AND id IN ({})",
                         placeholders
                     );
 
                     let ids_as_strings: Vec<String> =
                         all_ids.iter().map(|u| u.to_string()).collect();
                     let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                        Box::new(site_id.clone()) as Box<dyn rusqlite::ToSql>,
+                        Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
                     )
                     .chain(
                         ids_as_strings
@@ -797,8 +797,8 @@ pub async fn batch_update_status(
                         .iter()
                         .filter_map(|id| {
                             tx.query_row(
-                                "SELECT id, status FROM documents WHERE site_id = ? AND id = ?",
-                                rusqlite::params![site_id.clone(), id.to_string()],
+                                "SELECT id, status FROM documents WHERE channel_id = ? AND id = ?",
+                                rusqlite::params![channel_id.clone(), id.to_string()],
                                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                             )
                             .ok()
@@ -871,11 +871,11 @@ pub async fn batch_update_status(
                 let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
                 let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
-                    "UPDATE documents SET status='published' WHERE site_id = ? AND id IN ({}) AND status='draft'",
+                    "UPDATE documents SET status='published' WHERE channel_id = ? AND id IN ({}) AND status='draft'",
                     placeholders
                 );
                 let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                    Box::new(site_id.clone()) as Box<dyn rusqlite::ToSql>,
+                    Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
                 )
                 .chain(ids.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>))
                 .collect();
@@ -886,11 +886,11 @@ pub async fn batch_update_status(
                 let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
                 let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
-                    "UPDATE documents SET status='draft' WHERE site_id = ? AND id IN ({}) AND status='published'",
+                    "UPDATE documents SET status='draft' WHERE channel_id = ? AND id IN ({}) AND status='published'",
                     placeholders
                 );
                 let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                    Box::new(site_id.clone()) as Box<dyn rusqlite::ToSql>,
+                    Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
                 )
                 .chain(ids.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>))
                 .collect();

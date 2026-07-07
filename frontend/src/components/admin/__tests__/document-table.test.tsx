@@ -31,7 +31,7 @@ function makeDoc(overrides: Partial<DocumentListItem> = {}): DocumentListItem {
     rowCount: 10,
     createdAt: '2026-01-01T00:00:00.000Z',
     errorMessage: null,
-    siteId: 'site-a',
+    channelId: 'channel-a',
     ...overrides,
   }
 }

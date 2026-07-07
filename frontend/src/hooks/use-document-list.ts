@@ -12,17 +12,17 @@ import { listDocuments } from '@/lib/api-generated/sdk.gen'
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 
 /**
- * @param siteId 当前管理后台站点。为 null 时跳过请求（列表保持空、loading=false），
- *   避免向必填 siteId 的端点发送非法载荷。非 null 时按该 siteId 拉取，切换站点自动重取。
+ * @param channelId 当前管理后台频道。为 null 时跳过请求（列表保持空、loading=false），
+ *   避免向必填 channelId 的端点发送非法载荷。非 null 时按该 channelId 拉取，切换频道自动重取。
  */
-export function useDocumentList(siteId: string | null) {
+export function useDocumentList(channelId: string | null) {
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const refreshList = useCallback(async () => {
-    // siteId 为 null（尚未选定/无可用站点）时不发请求。
-    if (siteId === null) {
+    // channelId 为 null（尚未选定/无可用频道）时不发请求。
+    if (channelId === null) {
       setDocuments([])
       setLoading(false)
       setError(null)
@@ -31,7 +31,7 @@ export function useDocumentList(siteId: string | null) {
     setLoading(true)
     setError(null)
     try {
-      const result = await listDocuments({ query: { siteId } })
+      const result = await listDocuments({ query: { channelId } })
       if (result.error) {
         setError('Failed to load')
       } else if (result.data) {
@@ -42,7 +42,7 @@ export function useDocumentList(siteId: string | null) {
     } finally {
       setLoading(false)
     }
-  }, [siteId])
+  }, [channelId])
 
   useEffect(() => {
     void refreshList()

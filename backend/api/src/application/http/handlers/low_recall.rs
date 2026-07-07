@@ -8,18 +8,18 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
-use rwiki_core::config::SiteValidationError;
+use rwiki_core::config::ChannelValidationError;
 
 // ---------------------------------------------------------------------------
 // DTOs
 // ---------------------------------------------------------------------------
 
-/// 查询参数（siteId 必填，其余可选）
+/// 查询参数（channelId 必填，其余可选）
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LowRecallQueryParams {
-    /// 站点标识；必填
-    pub site_id: String,
+    /// 频道标识；必填
+    pub channel_id: String,
     /// 仅返回 topScore >= minScore 的记录
     pub min_score: Option<f64>,
     /// 仅返回 topScore <= maxScore 的记录
@@ -49,8 +49,8 @@ pub struct LowRecallSource {
 #[serde(rename_all = "camelCase")]
 pub struct LowRecallRecord {
     pub id: i64,
-    /// 记录所属站点
-    pub site_id: String,
+    /// 记录所属频道
+    pub channel_id: String,
     pub session_id: Option<String>,
     pub query: String,
     /// top-1 相关度分数；None 表示完全未命中
@@ -91,13 +91,13 @@ pub async fn list_low_recall_records(
     State(state): State<Arc<AppState>>,
     Query(params): Query<LowRecallQueryParams>,
 ) -> Result<Json<LowRecallListResponse>, ApiError> {
-    let site_id = state
-        .sites_config
-        .require_configured(&params.site_id)
+    let channel_id = state
+        .channels_config
+        .require_configured(&params.channel_id)
         .map_err(|e| match e {
-            SiteValidationError::Empty => ApiError::bad_request("siteId 不能为空"),
-            SiteValidationError::NotConfigured(id) => {
-                ApiError::bad_request(format!("站点 {id} 未配置"))
+            ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
+            ChannelValidationError::NotConfigured(id) => {
+                ApiError::bad_request(format!("频道 {id} 未配置"))
             }
         })?
         .to_string();
@@ -148,13 +148,13 @@ pub async fn list_low_recall_records(
     state
         .sqlite
         .call(move |conn| {
-            // 动态拼 WHERE 与参数；site_id 必须放在最前，作为首条过滤条件
+            // 动态拼 WHERE 与参数；channel_id 必须放在最前，作为首条过滤条件
             let mut where_clauses: Vec<String> = Vec::new();
             let mut sql_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
             let mut idx = 1usize;
 
-            where_clauses.push(format!("site_id = ?{}", idx));
-            sql_params.push(Box::new(site_id));
+            where_clauses.push(format!("channel_id = ?{}", idx));
+            sql_params.push(Box::new(channel_id));
             idx += 1;
 
             if let Some(min) = min_score {
@@ -196,7 +196,7 @@ pub async fn list_low_recall_records(
             let limit_idx = idx;
             let offset_idx = idx + 1;
             let data_sql = format!(
-                "SELECT id, site_id, session_id, query, top_score, result_count, sources, created_at \
+                "SELECT id, channel_id, session_id, query, top_score, result_count, sources, created_at \
                  FROM low_recall_records {} \
                  ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
                 where_sql, limit_idx, offset_idx
@@ -223,7 +223,7 @@ pub async fn list_low_recall_records(
                         });
                     Ok(LowRecallRecord {
                         id: row.get(0)?,
-                        site_id: row.get(1)?,
+                        channel_id: row.get(1)?,
                         session_id: row.get(2)?,
                         query: row.get(3)?,
                         top_score: row.get(4)?,

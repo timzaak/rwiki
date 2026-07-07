@@ -9,17 +9,17 @@ import { useChatStore } from '@/stores/chat-store'
 import type { ChatMessage } from '@/stores/chat-store'
 import { FeedbackSubmitFnContext } from '@/hooks/feedback-context'
 import { client } from '@/lib/api-generated/client.gen'
-import { SiteIdProvider } from '@/components/chat/site-id-context'
+import { ChannelIdProvider } from '@/components/chat/channel-id-context'
 
 /**
- * FE-D02 regression: `useFeedback` now reads `useSiteId()` at the top, so every
- * hook render must be wrapped in `SiteIdProvider` or it throws. The wrapper
- * injects the main-site siteId that flows into the feedback request body
- * (`siteId` alongside sessionId/messageId/feedback).
+ * FE-D02 regression: `useFeedback` now reads `useChannelId()` at the top, so every
+ * hook render must be wrapped in `ChannelIdProvider` or it throws. The wrapper
+ * injects the main-site channelId that flows into the feedback request body
+ * (`channelId` alongside sessionId/messageId/feedback).
  */
-function makeWrapper(siteId = 'site-a') {
+function makeWrapper(channelId = 'channel-a') {
   return ({ children }: { children: React.ReactNode }) => (
-    <SiteIdProvider siteId={siteId}>{children}</SiteIdProvider>
+    <ChannelIdProvider channelId={channelId}>{children}</ChannelIdProvider>
   )
 }
 
@@ -143,9 +143,9 @@ describe('useFeedback submitFeedback', () => {
       feedback: 'like',
       userMessage: 'user question',
       assistantMessage: 'AI response',
-      // FE-T02 load-bearing contract: siteId from SiteIdProvider is transmitted
+      // FE-T02 load-bearing contract: channelId from ChannelIdProvider is transmitted
       // in the feedback request body alongside the feedback fields.
-      siteId: 'site-a',
+      channelId: 'channel-a',
     })
 
     // isSubmitting back to false after completion
@@ -176,9 +176,9 @@ describe('useFeedback submitFeedback', () => {
     expect((capturedBody as { feedback: string }).feedback).toBe('dislike')
   })
 
-  it('includes siteId in the feedback request body (dislike path)', async () => {
+  it('includes channelId in the feedback request body (dislike path)', async () => {
     // FE-T02 load-bearing contract: triggering like/dislike on the main-site
-    // path (no contextSubmitFn → SDK branch) must carry siteId in the body,
+    // path (no contextSubmitFn → SDK branch) must carry channelId in the body,
     // not just the feedback fields.
     seedStore([makeMessage({ feedback: undefined })])
 
@@ -191,16 +191,16 @@ describe('useFeedback submitFeedback', () => {
     )
 
     const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
-      wrapper: makeWrapper('site-a'),
+      wrapper: makeWrapper('channel-a'),
     })
 
     await act(async () => {
       await result.current.submitFeedback('dislike')
     })
 
-    const body = capturedBody as { siteId?: string; feedback?: string } | null
+    const body = capturedBody as { channelId?: string; feedback?: string } | null
     expect(body).not.toBeNull()
-    expect(body!.siteId).toBe('site-a')
+    expect(body!.channelId).toBe('channel-a')
     expect(body!.feedback).toBe('dislike')
   })
 
@@ -328,11 +328,11 @@ describe('useFeedback context resolution', () => {
     const contextSubmitFn = vi.fn().mockResolvedValue(undefined)
 
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <SiteIdProvider siteId="site-a">
+      <ChannelIdProvider channelId="channel-a">
         <FeedbackSubmitFnContext.Provider value={contextSubmitFn}>
           {children}
         </FeedbackSubmitFnContext.Provider>
-      </SiteIdProvider>
+      </ChannelIdProvider>
     )
 
     const { result } = renderHook(
@@ -350,9 +350,9 @@ describe('useFeedback context resolution', () => {
       feedback: 'like',
       userMessage: 'user question',
       assistantMessage: 'AI response',
-      // siteId from the wrapping SiteIdProvider is forwarded to the context
+      // channelId from the wrapping ChannelIdProvider is forwarded to the context
       // submitFn (Widget path); main-site path forwards it to the SDK body.
-      siteId: 'site-a',
+      channelId: 'channel-a',
     })
 
     const msg = useChatStore.getState().messages[0]

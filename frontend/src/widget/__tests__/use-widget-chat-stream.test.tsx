@@ -61,7 +61,7 @@ function resetStore() {
 }
 
 const API_URL = 'http://localhost:3000'
-const SITE_ID = 'site-a'
+const CHANNEL_ID = 'channel-a'
 
 describe('useWidgetChatStream', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
@@ -87,7 +87,7 @@ describe('useWidgetChatStream', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -104,7 +104,7 @@ describe('useWidgetChatStream', () => {
   it('sets error in store on network failure during fetch', async () => {
     fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'))
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -116,7 +116,7 @@ describe('useWidgetChatStream', () => {
   it('sets error with status code on non-OK HTTP response', async () => {
     fetchSpy.mockResolvedValue(new Response('Service Unavailable', { status: 503 }))
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -137,7 +137,7 @@ describe('useWidgetChatStream', () => {
       })
     })
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     // Start sending, then abort
     const sendPromise = result.current.sendMessage('Hi')
@@ -176,7 +176,7 @@ describe('useWidgetChatStream', () => {
 
     fetchSpy.mockImplementationOnce(firstFetch).mockImplementationOnce(secondFetch)
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     // Start first message (stream stays open)
     const firstPromise = result.current.sendMessage('First')
@@ -228,7 +228,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -255,7 +255,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -284,7 +284,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -300,7 +300,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
   })
 })
 
-describe('useWidgetChatStream siteId passthrough (request body contract)', () => {
+describe('useWidgetChatStream channelId passthrough (request body contract)', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -320,12 +320,12 @@ describe('useWidgetChatStream siteId passthrough (request body contract)', () =>
     return JSON.parse(init.body as string)
   }
 
-  it('sends siteId in the /api/chat POST body alongside message + sessionId', async () => {
+  it('sends channelId in the /api/chat POST body alongside message + sessionId', async () => {
     fetchSpy.mockResolvedValue(
       createSseResponse([sseData({ sessionId: 'sess-body' }), sseData({})]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, CHANNEL_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -333,33 +333,33 @@ describe('useWidgetChatStream siteId passthrough (request body contract)', () =>
     const url = fetchSpy.mock.calls[0]![0] as string
     expect(url).toBe(`${API_URL}/api/chat`)
 
-    // ... and its JSON body carries siteId at the same level as message/sessionId
+    // ... and its JSON body carries channelId at the same level as message/sessionId
     const body = readBody(0)
     expect(body).toEqual(
       expect.objectContaining({
         message: 'Hi',
         sessionId: null, // no prior session
-        siteId: SITE_ID,
+        channelId: CHANNEL_ID,
       }),
     )
   })
 
-  it('uses the current siteId when re-rendered with a different siteId', async () => {
-    // Guards against siteId being hoisted/omitted in the sendMessage closure.
-    const OTHER_SITE = 'site-b'
+  it('uses the current channelId when re-rendered with a different channelId', async () => {
+    // Guards against channelId being hoisted/omitted in the sendMessage closure.
+    const OTHER_CHANNEL = 'channel-b'
     fetchSpy.mockResolvedValue(
       createSseResponse([sseData({ sessionId: 'sess-a' }), sseData({})]),
     )
 
     const { result, rerender } = renderHook(
-      ({ siteId }) => useWidgetChatStream(API_URL, siteId),
-      { initialProps: { siteId: SITE_ID } },
+      ({ channelId }) => useWidgetChatStream(API_URL, channelId),
+      { initialProps: { channelId: CHANNEL_ID } },
     )
 
     await result.current.sendMessage('first')
 
-    // Re-render with a different siteId; the memoized sendMessage must pick it up
-    rerender({ siteId: OTHER_SITE })
+    // Re-render with a different channelId; the memoized sendMessage must pick it up
+    rerender({ channelId: OTHER_CHANNEL })
     fetchSpy.mockClear()
     fetchSpy.mockResolvedValue(
       createSseResponse([sseData({ sessionId: 'sess-b' }), sseData({})]),
@@ -368,7 +368,7 @@ describe('useWidgetChatStream siteId passthrough (request body contract)', () =>
     await result.current.sendMessage('second')
 
     const body = readBody(0)
-    expect(body.siteId).toBe(OTHER_SITE)
-    expect(body).not.toHaveProperty('siteId', SITE_ID)
+    expect(body.channelId).toBe(OTHER_CHANNEL)
+    expect(body).not.toHaveProperty('channelId', CHANNEL_ID)
   })
 })

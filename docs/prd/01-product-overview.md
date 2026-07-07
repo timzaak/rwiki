@@ -28,12 +28,12 @@
 | 检索与引用 | 分块、窗口扩展、metadata 和来源引用 | `document/document-retrieval-and-citations.md` |
 | 聊天体验 | RAG 问答、多轮对话、流式回答、聊天页面和弹窗 | `chat/chat-assistant.md`、`chat/multi-turn-conversation-hybrid-memory.md` |
 | 外部集成 | 可嵌入 Chat Widget 的加载、生命周期和集成契约 | `integration/chat-widget-embeddable-js.md` |
+| 多频道 | 按 `channelId` 的多频道数据隔离、频道静态定义与双入口传递 | `integration/support-multiple-website.md` |
 | 基础设施 | SQLite 存储、Embedding Provider、LLM Provider、鉴权、可观测性 | `infrastructure/**` |
 | 核心配置 | 系统提示词等跨能力行为配置 | `core/configurable-system-prompt.md` |
 
 ## 4. 全局非目标
 
-- 多租户和多知识库隔离。
 - 复杂角色权限、审批流和团队协作。
 - 生产级跨数据库数据迁移工具。
 - 文件版本管理、增量更新和内容 diff。

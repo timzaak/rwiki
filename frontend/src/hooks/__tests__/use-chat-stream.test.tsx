@@ -7,17 +7,17 @@ import { createSseResponse } from '@/test/helpers/sse'
 import { useChatStream } from '@/hooks/use-chat-stream'
 import { useChatStore } from '@/stores/chat-store'
 import { client } from '@/lib/api-generated/client.gen'
-import { SiteIdProvider } from '@/components/chat/site-id-context'
+import { ChannelIdProvider } from '@/components/chat/channel-id-context'
 
 /**
- * FE-D02 regression: `useChatStream` now reads `useSiteId()` at the top, so
- * every hook render must be wrapped in `SiteIdProvider` or it throws. The
- * wrappers below inject the main-site siteId that flows into the chat request
- * body (`siteId` alongside `message`/`sessionId`).
+ * FE-D02 regression: `useChatStream` now reads `useChannelId()` at the top, so
+ * every hook render must be wrapped in `ChannelIdProvider` or it throws. The
+ * wrappers below inject the main-site channelId that flows into the chat request
+ * body (`channelId` alongside `message`/`sessionId`).
  */
-function makeWrapper(siteId = 'site-a') {
+function makeWrapper(channelId = 'channel-a') {
   return ({ children }: { children: React.ReactNode }) => (
-    <SiteIdProvider siteId={siteId}>{children}</SiteIdProvider>
+    <ChannelIdProvider channelId={channelId}>{children}</ChannelIdProvider>
   )
 }
 
@@ -165,8 +165,7 @@ describe('useChatStream sending a message', () => {
   it('stopStreaming aborts the stream', async () => {
     const encoder = new TextEncoder()
 
-    // A stream that emits a session event then stays open —
-    // the abort will cut it off before a done event arrives.
+    // A stream that emits a session event then stays open until aborted.
     const delayedStream = new ReadableStream({
       start(controller) {
         controller.enqueue(
@@ -233,19 +232,19 @@ describe('useChatStream request body validation', () => {
     expect(capturedBody).toEqual({
       message: 'test question',
       sessionId: null,
-      // FE-T02 load-bearing contract: siteId from SiteIdProvider is transmitted
+      // FE-T02 load-bearing contract: channelId from ChannelIdProvider is transmitted
       // in the chat request body alongside message/sessionId.
-      siteId: 'site-a',
+      channelId: 'channel-a',
     })
   })
 
-  it('changes body.siteId when the provider siteId changes on rerender', async () => {
-    // Guards against siteId being hoisted out of the sendMessage dependency
-    // array: if the hook closed over a stale siteId, the rerendered send would
+  it('changes body.channelId when the provider channelId changes on rerender', async () => {
+    // Guards against channelId being hoisted out of the sendMessage dependency
+    // array: if the hook closed over a stale channelId, the rerendered send would
     // still carry the old value. The wrapper reads a mutable ref so the same
-    // wrapper instance can supply a different siteId after `rerender`.
+    // wrapper instance can supply a different channelId after `rerender`.
     let capturedBody: unknown = null
-    let currentSiteId = 'site-a'
+    let currentChannelId = 'channel-a'
 
     server.use(
       http.post('/api/chat', async ({ request }) => {
@@ -258,20 +257,20 @@ describe('useChatStream request body validation', () => {
     )
 
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <SiteIdProvider siteId={currentSiteId}>{children}</SiteIdProvider>
+      <ChannelIdProvider channelId={currentChannelId}>{children}</ChannelIdProvider>
     )
 
     const { result, rerender } = renderHook(() => useChatStream(), { wrapper })
 
-    // Flip the provider siteId, then re-render so the hook re-reads context.
-    currentSiteId = 'site-b'
+    // Flip the provider channelId, then re-render so the hook re-reads context.
+    currentChannelId = 'channel-b'
     rerender()
 
     await result.current.sendMessage('after rerender')
 
-    const body = capturedBody as { siteId?: string } | null
+    const body = capturedBody as { channelId?: string } | null
     expect(body).not.toBeNull()
-    expect(body!.siteId).toBe('site-b')
+    expect(body!.channelId).toBe('channel-b')
   })
 
   it('sends sessionId in request when store has one', async () => {
@@ -299,8 +298,8 @@ describe('useChatStream request body validation', () => {
     expect(capturedBody).toEqual({
       message: 'follow-up question',
       sessionId: 'existing-session-123',
-      // FE-T02: siteId is transmitted on follow-up messages too.
-      siteId: 'site-a',
+      // FE-T02: channelId is transmitted on follow-up messages too.
+      channelId: 'channel-a',
     })
   })
 })

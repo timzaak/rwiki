@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { ChatStreamProvider } from '@/components/chat/chat-stream-context';
 import { FloatingButton } from '@/components/chat/floating-button';
 import { ChatModal } from '@/components/chat/chat-modal';
-import { SiteIdProvider } from '@/components/chat/site-id-context';
+import { ChannelIdProvider } from '@/components/chat/channel-id-context';
 import { WidgetI18nProvider } from '@/components/chat/widget-i18n';
 import { WIDGET_MESSAGES, resolveWidgetMessages } from '@/components/chat/messages';
 import { FeedbackSubmitFnContext } from '@/hooks/feedback-context';
@@ -20,22 +20,22 @@ interface WidgetAppProps {
 }
 
 function WidgetAppContent({ config }: WidgetAppProps) {
-  const streamValue = useWidgetChatStream(config.apiUrl, config.siteId);
-  const suggestedQuestions = useWidgetSuggestions(config.apiUrl, config.locale, config.siteId, config.suggestedQuestions);
+  const streamValue = useWidgetChatStream(config.apiUrl, config.channelId);
+  const suggestedQuestions = useWidgetSuggestions(config.apiUrl, config.locale, config.channelId, config.suggestedQuestions);
   const t = resolveWidgetMessages(config.locale, config.messages);
   const effectiveTitle = config.title ?? t.titleDefault;
 
   const feedbackSubmitFn = useCallback(
     async (body: FeedbackRequest) => {
       client.setConfig({ baseUrl: config.apiUrl })
-      await submitFeedback<true>({ body: { ...body, siteId: config.siteId }, throwOnError: true })
+      await submitFeedback<true>({ body: { ...body, channelId: config.channelId }, throwOnError: true })
     },
-    [config.apiUrl, config.siteId],
+    [config.apiUrl, config.channelId],
   )
 
   return (
     <WidgetI18nProvider messages={t}>
-      <SiteIdProvider siteId={config.siteId}>
+      <ChannelIdProvider channelId={config.channelId}>
         <FeedbackSubmitFnContext.Provider value={feedbackSubmitFn}>
           <ChatStreamProvider value={streamValue}>
             <FloatingButton position={config.position} />
@@ -47,7 +47,7 @@ function WidgetAppContent({ config }: WidgetAppProps) {
             />
           </ChatStreamProvider>
         </FeedbackSubmitFnContext.Provider>
-      </SiteIdProvider>
+      </ChannelIdProvider>
     </WidgetI18nProvider>
   );
 }

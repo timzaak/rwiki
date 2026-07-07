@@ -4,7 +4,7 @@ description: RWiki 支持的上传文件格式与解析规则
 icon: FileText
 ---
 
-RWiki 用同一个上传接口 `POST /api/documents/upload` 处理所有格式，文件扩展名决定走哪个解析器。所有格式解析完都进同一条分块、embedding、检索管道。
+RWiki 用同一个上传接口 `POST /api/documents/upload` 处理所有格式，文件扩展名决定走哪个解析器。所有格式解析完都进同一条分块、embedding、检索管道。上传需要 `channelId` 字段（multipart），把文档归属到某个已配置频道，并携带 Bearer token——见[多频道](/zh/docs/multi-channel)与[配置 → API Token](/zh/docs/configuration#api-token)。
 
 ## 支持的格式
 

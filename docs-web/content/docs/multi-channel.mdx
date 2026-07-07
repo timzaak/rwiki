@@ -1,0 +1,109 @@
+---
+title: Multi-Channel
+description: Serve multiple isolated knowledge bases from one backend
+icon: Globe
+---
+
+A single RWiki backend can serve several independent channels at once. Each channel gets its own knowledge base — documents, chat sessions, feedback, low-recall records, system prompt, and suggested questions — fully isolated by a `channelId`. There is no shared default pool: every request must target a specific channel.
+
+This is a **breaking change** from single-channel deployments. Requests that carry no `channelId`, or an unknown one, are rejected. See [Upgrading](#upgrading-from-a-single-channel-setup).
+
+## How isolation works
+
+A `channelId` is the scope key for nearly everything:
+
+| Data | Scoped by channel |
+|------|-------------------|
+| Documents & chunks | Upload, list, publish/unpublish, delete, and retrieval all filter by `channelId` |
+| Chat sessions | Session keys are prefixed `channel:{channelId}:`, so the same `sessionId` on two channels holds separate history |
+| Feedback | `channelId` is part of the natural key `(channel_id, session_id, message_id)`; queries return only the current channel |
+| Low-recall records | Recorded and queried per channel |
+| System prompt & suggested questions | Per-channel config overrides the global `[chat]` defaults |
+
+Cross-channel management operations are not possible through the public surface: a document ID that exists on another channel is treated as not found, so IDs can't be used to enumerate or reach another channel's content.
+
+## Configure channels
+
+Sites are declared statically in `config.toml`. At least one `[channels.<channelId>]` section is **required** — the backend refuses to start otherwise.
+
+```toml
+[channels.help_center]
+name = "Help Center"
+# Optional: overrides the global [chat].system_prompt for this channel
+system_prompt = """
+You are the Help Center assistant. Answer product-usage questions, keep it concise.
+"""
+# Optional: locale-keyed suggested questions
+[channels.help_center.suggested_questions]
+default = ["How to get started", "What file formats are supported"]
+zh-CN = ["如何快速上手", "系统支持哪些文件格式"]
+en = ["How to get started", "What file formats are supported"]
+
+[channels.developer_docs]
+name = "Developer Docs"
+# A channel with no suggested_questions returns an empty list
+```
+
+Rules, verified at startup:
+
+- **At least one channel** — empty `[channels]` fails to start.
+- **Unique `channelId`** — duplicates fail to start.
+- **No null `channel_id` rows** — if historical rows in `documents`, `chat_feedback`, or `low_recall_records` have a null `channel_id`, startup fails and tells you to backfill first.
+- **`channelId` format** — URL-safe string (letters, digits, hyphen, underscore), defined by the operator in config.
+
+Each channel optionally sets its own `system_prompt` and `suggested_questions`. When a channel doesn't configure them, the global `[chat]` values apply. See [Configuration → Chat](/en/docs/configuration#chat).
+
+## Three ways to target a channel
+
+### 1. Widget embed
+
+The widget requires `channelId` at init — it is no longer optional alongside `apiUrl`:
+
+```html
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
+  });
+</script>
+```
+
+Without a valid `channelId`, the widget logs `channelId is required` to the console and does not render. See [Configuration → Widget](/en/docs/configuration#widget).
+
+### 2. Main channel URL
+
+The main frontend exposes each channel at `/c/<channelId>`. The home page lists all configured channels as entry links; the root path is no longer a chat entry by itself.
+
+- `/c/help_center` → loads the help_center chat
+- `/c/unknown` → shows "channel not available" and fires **no** chat, suggestions, or feedback request
+
+All chat, suggestions, and feedback requests from a channel page carry that channel's `channelId`.
+
+### 3. Admin console
+
+The admin console has a single global channel selector in the header (not a per-upload selector). Pick a channel, and document list, upload, batch publish/unpublish, and low-recall records are all scoped to it. The selection is remembered across reloads. See [Admin Console](/en/docs/admin).
+
+## CORS is global, not per-channel
+
+All channels share one CORS allowlist (`[server].allowed_origins`). Empty means allow all origins (`*`); set specific origins to restrict which domains may embed the widget or call the API. This is unchanged from single-channel — see [Configuration → Server](/en/docs/configuration#server).
+
+## Suggested questions are channel-controlled
+
+Once a channel configures `suggested_questions`, the widget's local `suggestedQuestions` init option is **ignored**. The server is the single source of truth. A channel with no configured suggestions returns an empty list (the widget shows only the welcome message).
+
+## Upgrading from a single-channel setup
+
+This is a breaking change. Before upgrading an existing deployment:
+
+1. **Configure at least one channel** in `config.toml` (e.g. `[channels.default]` with `name = "Default"`).
+2. **Backfill historical data** — every existing row needs a `channel_id`. The backend rejects startup while any tracked row has a null `channel_id`:
+   ```sql
+   UPDATE documents SET channel_id = 'default' WHERE channel_id IS NULL;
+   UPDATE chat_feedback SET channel_id = 'default' WHERE channel_id IS NULL;
+   UPDATE low_recall_records SET channel_id = 'default' WHERE channel_id IS NULL;
+   ```
+   (Chat sessions are in-memory, so no backfill is needed there.)
+3. **Update widget embeds** — every `RWikiChat.init({ apiUrl, ... })` call must add `channelId`. Old snippets without it stop rendering.
+4. **Update API clients** — `/api/chat`, `/api/chat/suggestions`, `/api/documents/*`, `/api/chat/feedback`, and `/api/low-recall/records` now require a `channelId`. Requests without one get a `400`.
+
+After backfill and config, the backend starts normally and the configured channel behaves like the old single knowledge base.

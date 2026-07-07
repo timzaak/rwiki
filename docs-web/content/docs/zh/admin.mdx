@@ -10,6 +10,10 @@ icon: LayoutDashboard
 
 后台跑在前端项目（默认 `http://localhost:3000/admin`），不是 docs-web。它复用后端现有的文档管理接口和鉴权，没有单独的账户体系。
 
+## 频道选择器
+
+后台顶部的全局频道选择器决定你操作哪个频道。下方所有功能——文档列表、上传、批量上线/下线、低相关召回记录——都限定在所选频道。选择是单一全局控件（不是每次上传单独选择），刷新后保留。频道来自后端的 `[channels.*]` 配置，见[多频道](/zh/docs/multi-channel)。未配置频道或列表加载失败时，管理操作会被禁用。
+
 ## 登录
 
 访问 `/admin`，未登录会跳到 `/auth/login`。输入 API Key——就是配置文件里的 `[api] token`，见[配置 → API Token](/zh/docs/configuration#api-token)。
@@ -40,10 +44,11 @@ Key 失效后（比如后端换了 token），下一次请求会被 401 拦截�
 2. 勾选新批次，点 Batch Publish。
 3. 勾选要下线的老批次，点 Batch Unpublish。
 
-Batch Publish 和 Batch Unpublish 是同一个请求：前端把上线集合和下线集合打包成一次 `POST /api/documents/batch-status`，两组状态变更在同一请求内一起生效。
+Batch Publish 和 Batch Unpublish 是同一个请求：前端把上线集合和下线集合打包成一次 `POST /api/documents/batch-status`，两组状态变更在同一请求内一起生效。请求体携带当前选中的 `channelId`，两个集合都限定在该频道。
 
 ```json
 {
+  "channelId": "help_center",
   "publish": ["0196a1b2-...", "0196a1b3-..."],
   "unpublish": ["0196a0ff-...", "0196a100-..."]
 }
@@ -55,7 +60,7 @@ Batch Publish 和 Batch Unpublish 是同一个请求：前端把上线集合和�
 curl -X POST http://localhost:8080/api/documents/batch-status \
   -H "Authorization: Bearer dev-test" \
   -H "Content-Type: application/json" \
-  -d '{"publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
+  -d '{"channelId":"help_center","publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
 ```
 
 接口逐条返回结果，每项带 `applied` 和 `reason`：

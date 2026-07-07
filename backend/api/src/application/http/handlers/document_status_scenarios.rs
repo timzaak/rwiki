@@ -28,8 +28,8 @@ use crate::application::http::state::AppState;
 // ---------------------------------------------------------------------------
 
 const TEST_API_TOKEN: &str = "test-api-token-12345";
-const SITE_A: &str = "site-a";
-const SITE_B: &str = "site-b";
+const CHANNEL_A: &str = "channel-a";
+const CHANNEL_B: &str = "channel-b";
 const EMBEDDING_DIMS: usize = 1536;
 
 /// Ensure the sqlite-vec extension is registered globally so that the
@@ -109,26 +109,26 @@ async fn mock_embeddings_handler(
     }))
 }
 
-/// Build a `SitesConfig` with two sites for cross-site isolation tests.
-fn sites_config_with_a_and_b() -> rwiki_core::config::SitesConfig {
-    let mut sites = HashMap::new();
-    sites.insert(
-        SITE_A.to_string(),
-        rwiki_core::config::SiteConfig {
+/// Build a `ChannelsConfig` with two channels for cross-channel isolation tests.
+fn channels_config_with_a_and_b() -> rwiki_core::config::ChannelsConfig {
+    let mut channels = HashMap::new();
+    channels.insert(
+        CHANNEL_A.to_string(),
+        rwiki_core::config::ChannelConfig {
             name: "Site A".to_string(),
             system_prompt: None,
             suggested_questions: None,
         },
     );
-    sites.insert(
-        SITE_B.to_string(),
-        rwiki_core::config::SiteConfig {
+    channels.insert(
+        CHANNEL_B.to_string(),
+        rwiki_core::config::ChannelConfig {
             name: "Site B".to_string(),
             system_prompt: None,
             suggested_questions: None,
         },
     );
-    rwiki_core::config::SitesConfig { sites }
+    rwiki_core::config::ChannelsConfig { channels }
 }
 
 /// Build a minimal `AppState` suitable for document status tests.
@@ -183,29 +183,29 @@ async fn test_app_state() -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
-        sites_config: sites_config_with_a_and_b(),
+        channels_config: channels_config_with_a_and_b(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
 
-/// Insert a test document row owned by `site_id` with the given status and return its UUID.
-async fn insert_test_document_with_site(
+/// Insert a test document row owned by `channel_id` with the given status and return its UUID.
+async fn insert_test_document_with_channel(
     state: &Arc<AppState>,
     status: &str,
-    site_id: &str,
+    channel_id: &str,
 ) -> Uuid {
     let doc_id = Uuid::now_v7();
     let doc_id_str = doc_id.to_string();
     let file_name = "test.xlsx".to_string();
     let status_val = status.to_string();
-    let site_id_val = site_id.to_string();
+    let channel_id_val = channel_id.to_string();
     state
         .sqlite
         .call(move |conn| {
             conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count, site_id) VALUES (?, ?, ?, 0, ?)",
-                rusqlite::params![doc_id_str, file_name, status_val, site_id_val],
+                "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, ?, ?, 0, ?)",
+                rusqlite::params![doc_id_str, file_name, status_val, channel_id_val],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
@@ -214,32 +214,35 @@ async fn insert_test_document_with_site(
     doc_id
 }
 
-/// Insert a test document row owned by site-a with the given status and return its UUID.
+/// Insert a test document row owned by channel-a with the given status and return its UUID.
 async fn insert_test_document(state: &Arc<AppState>, status: &str) -> Uuid {
-    insert_test_document_with_site(state, status, SITE_A).await
+    insert_test_document_with_channel(state, status, CHANNEL_A).await
 }
 
-/// Query the current status and owning site of a document from the database.
-async fn document_status_and_site(state: &Arc<AppState>, doc_id: Uuid) -> Option<(String, String)> {
+/// Query the current status and owning channel of a document from the database.
+async fn document_status_and_channel(
+    state: &Arc<AppState>,
+    doc_id: Uuid,
+) -> Option<(String, String)> {
     let doc_id_str = doc_id.to_string();
     state
         .sqlite
         .call(move |conn| {
             let result = conn
                 .query_row(
-                    "SELECT status, site_id FROM documents WHERE id = ?",
+                    "SELECT status, channel_id FROM documents WHERE id = ?",
                     rusqlite::params![doc_id_str],
                     |row| {
                         let status: String = row.get(0)?;
-                        let site_id: String = row.get(1)?;
-                        Ok((status, site_id))
+                        let channel_id: String = row.get(1)?;
+                        Ok((status, channel_id))
                     },
                 )
                 .ok();
             Ok::<_, rusqlite::Error>(result)
         })
         .await
-        .expect("query document status and site")
+        .expect("query document status and channel")
 }
 
 /// Helper to parse the JSON response body into a serde_json::Value.
@@ -260,17 +263,17 @@ fn auth_request(method: Method, uri: String) -> Request<Body> {
         .expect("build request")
 }
 
-/// Build a multipart upload request with the given file name, content, and siteId.
-fn upload_request_with_site(
+/// Build a multipart upload request with the given file name, content, and channelId.
+fn upload_request_with_channel(
     file_name: &str,
     content: &[u8],
     boundary: &str,
-    site_id: &str,
+    channel_id: &str,
 ) -> Request<Body> {
     let mut body_bytes = Vec::new();
     body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"siteId\"\r\n\r\n");
-    body_bytes.extend_from_slice(site_id.as_bytes());
+    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"channelId\"\r\n\r\n");
+    body_bytes.extend_from_slice(channel_id.as_bytes());
     body_bytes.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
     body_bytes.extend_from_slice(
         format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
@@ -292,8 +295,12 @@ fn upload_request_with_site(
         .expect("build upload request")
 }
 
-/// Build a multipart upload request without a siteId field.
-fn upload_request_without_site(file_name: &str, content: &[u8], boundary: &str) -> Request<Body> {
+/// Build a multipart upload request without a channelId field.
+fn upload_request_without_channel(
+    file_name: &str,
+    content: &[u8],
+    boundary: &str,
+) -> Request<Body> {
     let mut body_bytes = Vec::new();
     body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body_bytes.extend_from_slice(
@@ -332,7 +339,7 @@ async fn publish_draft_document_returns_200_published() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/publish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/publish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -361,7 +368,7 @@ async fn unpublish_published_document_returns_200_draft() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/unpublish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/unpublish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -392,7 +399,7 @@ async fn publish_already_published_returns_409() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/publish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/publish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -415,7 +422,7 @@ async fn publish_processing_document_returns_409() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/publish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/publish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -437,7 +444,7 @@ async fn unpublish_draft_document_returns_409() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/unpublish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/unpublish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -460,7 +467,7 @@ async fn unpublish_failed_document_returns_409() {
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/unpublish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/unpublish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -486,7 +493,7 @@ async fn publish_nonexistent_document_returns_404() {
     let phantom_id = Uuid::now_v7();
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{phantom_id}/publish?siteId={SITE_A}"),
+        format!("/api/documents/{phantom_id}/publish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -508,7 +515,7 @@ async fn unpublish_nonexistent_document_returns_404() {
     let phantom_id = Uuid::now_v7();
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{phantom_id}/unpublish?siteId={SITE_A}"),
+        format!("/api/documents/{phantom_id}/unpublish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -535,7 +542,7 @@ async fn publish_without_token_returns_401() {
     let req = Request::builder()
         .method(Method::PATCH)
         .uri(format!(
-            "/api/documents/{phantom_id}/publish?siteId={SITE_A}"
+            "/api/documents/{phantom_id}/publish?channelId={CHANNEL_A}"
         ))
         .body(Body::empty())
         .expect("build request");
@@ -562,7 +569,7 @@ async fn unpublish_without_token_returns_401() {
     let req = Request::builder()
         .method(Method::PATCH)
         .uri(format!(
-            "/api/documents/{phantom_id}/unpublish?siteId={SITE_A}"
+            "/api/documents/{phantom_id}/unpublish?channelId={CHANNEL_A}"
         ))
         .body(Body::empty())
         .expect("build request");
@@ -590,13 +597,18 @@ async fn upload_sets_initial_status_to_draft() {
     let app = create_api_routes(state);
 
     let content = "# Upload Test\n\nDraft status body.";
-    let req = upload_request_with_site("draft.md", content.as_bytes(), "----BoundaryDraft", SITE_A);
+    let req = upload_request_with_channel(
+        "draft.md",
+        content.as_bytes(),
+        "----BoundaryDraft",
+        CHANNEL_A,
+    );
 
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "upload with siteId must succeed"
+        "upload with channelId must succeed"
     );
 
     let body = parse_json_body(resp.into_body()).await;
@@ -624,14 +636,14 @@ async fn publish_then_list_shows_published_status() {
     // Publish the draft document
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/publish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/publish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK, "publish must succeed");
 
     // List documents and find our document
     let app = create_api_routes(state);
-    let req = auth_request(Method::GET, format!("/api/documents?siteId={SITE_A}"));
+    let req = auth_request(Method::GET, format!("/api/documents?channelId={CHANNEL_A}"));
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK, "list must return 200");
 
@@ -661,14 +673,14 @@ async fn unpublish_then_list_shows_draft_status() {
     // Unpublish the document
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/unpublish?siteId={SITE_A}"),
+        format!("/api/documents/{doc_id}/unpublish?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK, "unpublish must succeed");
 
     // List documents and find our document
     let app = create_api_routes(state);
-    let req = auth_request(Method::GET, format!("/api/documents?siteId={SITE_A}"));
+    let req = auth_request(Method::GET, format!("/api/documents?channelId={CHANNEL_A}"));
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK, "list must return 200");
 
@@ -685,73 +697,76 @@ async fn unpublish_then_list_shows_draft_status() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Site-scoped upload and lifecycle isolation (BE-T02)
+// 7. Channel-scoped upload and lifecycle isolation (BE-T02)
 // ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As an API operator, I want upload
-// requests without a siteId to be rejected so documents always belong to a
-// configured site.
-// Covers: BE-D02 (upload requires siteId, returns 400 when missing).
+// requests without a channelId to be rejected so documents always belong to a
+// configured channel.
+// Covers: BE-D02 (upload requires channelId, returns 400 when missing).
 #[tokio::test]
-async fn upload_without_site_id_returns_400() {
+async fn upload_without_channel_id_returns_400() {
     let state = test_app_state().await;
     let app = create_api_routes(state);
 
     let content = "# Missing Site\n\nBody.";
-    let req =
-        upload_request_without_site("missing-site.md", content.as_bytes(), "----BoundaryNoSite");
+    let req = upload_request_without_channel(
+        "missing-channel.md",
+        content.as_bytes(),
+        "----BoundaryNoSite",
+    );
 
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
-        "upload without siteId must return 400"
+        "upload without channelId must return 400"
     );
 }
 
 // User Story: support-multiple-website — As a knowledge base editor, I want
-// uploaded documents to carry the siteId I provided so they can be managed and
-// retrieved within that site.
-// Covers: BE-D02 (upload persists documents.site_id and returns it in response).
+// uploaded documents to carry the channelId I provided so they can be managed and
+// retrieved within that channel.
+// Covers: BE-D02 (upload persists documents.channel_id and returns it in response).
 #[tokio::test]
-async fn upload_with_site_id_persists_site_id() {
+async fn upload_with_channel_id_persists_channel_id() {
     let state = test_app_state().await;
     let app = create_api_routes(state);
 
     let content = "# Site Scoped\n\nBody.";
-    let req = upload_request_with_site(
+    let req = upload_request_with_channel(
         "scoped.md",
         content.as_bytes(),
         "----BoundaryScoped",
-        SITE_A,
+        CHANNEL_A,
     );
 
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "upload with siteId must return 200"
+        "upload with channelId must return 200"
     );
 
     let body = parse_json_body(resp.into_body()).await;
     assert_eq!(
-        body["siteId"], SITE_A,
-        "upload response must echo the provided siteId"
+        body["channelId"], CHANNEL_A,
+        "upload response must echo the provided channelId"
     );
     assert_eq!(body["status"], "draft", "uploaded document must be draft");
 }
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
-// document list to show only documents that belong to the site I am managing.
-// Covers: BE-D02 (list filters by siteId, response items include siteId).
+// document list to show only documents that belong to the channel I am managing.
+// Covers: BE-D02 (list filters by channelId, response items include channelId).
 #[tokio::test]
-async fn list_with_site_id_returns_only_that_sites_documents() {
+async fn list_with_channel_id_returns_only_that_channels_documents() {
     let state = test_app_state().await;
-    let site_a_doc = insert_test_document_with_site(&state, "draft", SITE_A).await;
-    let site_b_doc = insert_test_document_with_site(&state, "draft", SITE_B).await;
+    let channel_a_doc = insert_test_document_with_channel(&state, "draft", CHANNEL_A).await;
+    let channel_b_doc = insert_test_document_with_channel(&state, "draft", CHANNEL_B).await;
     let app = create_api_routes(state);
 
-    let req = auth_request(Method::GET, format!("/api/documents?siteId={SITE_A}"));
+    let req = auth_request(Method::GET, format!("/api/documents?channelId={CHANNEL_A}"));
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK, "list must return 200");
 
@@ -760,108 +775,116 @@ async fn list_with_site_id_returns_only_that_sites_documents() {
     assert_eq!(
         documents.len(),
         1,
-        "listing site A must return exactly one document"
+        "listing channel A must return exactly one document"
     );
-    assert_eq!(documents[0]["id"], site_a_doc.to_string());
-    assert_eq!(documents[0]["siteId"], SITE_A);
+    assert_eq!(documents[0]["id"], channel_a_doc.to_string());
+    assert_eq!(documents[0]["channelId"], CHANNEL_A);
     assert!(
-        documents.iter().all(|d| d["siteId"] == SITE_A),
-        "list must not include documents from other sites"
+        documents.iter().all(|d| d["channelId"] == CHANNEL_A),
+        "list must not include documents from other channels"
     );
 
-    // The other-site document must still exist but not be returned.
+    // The other-channel document must still exist but not be returned.
     assert!(
-        !documents.iter().any(|d| d["id"] == site_b_doc.to_string()),
-        "site B document must not appear in site A list"
+        !documents
+            .iter()
+            .any(|d| d["id"] == channel_b_doc.to_string()),
+        "channel B document must not appear in channel A list"
     );
 }
 
 // User Story: support-multiple-website — As a knowledge base editor, I want a
-// 404 when I try to publish another site's document, and that document must not
+// 404 when I try to publish another channel's document, and that document must not
 // be mutated.
-// Covers: BE-D02 (cross-site publish returns 404 and leaves the target doc alone).
+// Covers: BE-D02 (cross-channel publish returns 404 and leaves the target doc alone).
 #[tokio::test]
-async fn publish_with_mismatched_site_id_returns_404_and_does_not_mutate() {
+async fn publish_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;
-    let doc_id = insert_test_document_with_site(&state, "draft", SITE_A).await;
+    let doc_id = insert_test_document_with_channel(&state, "draft", CHANNEL_A).await;
     let app = create_api_routes(state.clone());
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/publish?siteId={SITE_B}"),
+        format!("/api/documents/{doc_id}/publish?channelId={CHANNEL_B}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::NOT_FOUND,
-        "publishing with mismatched siteId must return 404"
+        "publishing with mismatched channelId must return 404"
     );
 
-    let (status, site_id) = document_status_and_site(&state, doc_id)
+    let (status, channel_id) = document_status_and_channel(&state, doc_id)
         .await
         .expect("document should still exist");
     assert_eq!(
         status, "draft",
         "document must remain draft after failed publish"
     );
-    assert_eq!(site_id, SITE_A, "document must remain owned by site A");
+    assert_eq!(
+        channel_id, CHANNEL_A,
+        "document must remain owned by channel A"
+    );
 }
 
 // User Story: support-multiple-website — As a knowledge base editor, I want a
-// 404 when I try to unpublish another site's document, and that document must
+// 404 when I try to unpublish another channel's document, and that document must
 // not be mutated.
-// Covers: BE-D02 (cross-site unpublish returns 404 and leaves the target doc alone).
+// Covers: BE-D02 (cross-channel unpublish returns 404 and leaves the target doc alone).
 #[tokio::test]
-async fn unpublish_with_mismatched_site_id_returns_404_and_does_not_mutate() {
+async fn unpublish_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;
-    let doc_id = insert_test_document_with_site(&state, "published", SITE_A).await;
+    let doc_id = insert_test_document_with_channel(&state, "published", CHANNEL_A).await;
     let app = create_api_routes(state.clone());
 
     let req = auth_request(
         Method::PATCH,
-        format!("/api/documents/{doc_id}/unpublish?siteId={SITE_B}"),
+        format!("/api/documents/{doc_id}/unpublish?channelId={CHANNEL_B}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::NOT_FOUND,
-        "unpublishing with mismatched siteId must return 404"
+        "unpublishing with mismatched channelId must return 404"
     );
 
-    let (status, site_id) = document_status_and_site(&state, doc_id)
+    let (status, channel_id) = document_status_and_channel(&state, doc_id)
         .await
         .expect("document should still exist");
     assert_eq!(
         status, "published",
         "document must remain published after failed unpublish"
     );
-    assert_eq!(site_id, SITE_A, "document must remain owned by site A");
+    assert_eq!(
+        channel_id, CHANNEL_A,
+        "document must remain owned by channel A"
+    );
 }
 
 // User Story: support-multiple-website — As a knowledge base editor, I want a
-// 404 when I try to delete another site's document, and that document must not
+// 404 when I try to delete another channel's document, and that document must not
 // be removed.
-// Covers: BE-D02 (cross-site delete returns 404 and leaves the target doc alone).
+// Covers: BE-D02 (cross-channel delete returns 404 and leaves the target doc alone).
 #[tokio::test]
-async fn delete_with_mismatched_site_id_returns_404_and_does_not_mutate() {
+async fn delete_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;
-    let doc_id = insert_test_document_with_site(&state, "draft", SITE_A).await;
+    let doc_id = insert_test_document_with_channel(&state, "draft", CHANNEL_A).await;
     let app = create_api_routes(state.clone());
 
     let req = auth_request(
         Method::DELETE,
-        format!("/api/documents/{doc_id}?siteId={SITE_B}"),
+        format!("/api/documents/{doc_id}?channelId={CHANNEL_B}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::NOT_FOUND,
-        "deleting with mismatched siteId must return 404"
+        "deleting with mismatched channelId must return 404"
     );
 
-    let still_exists = document_status_and_site(&state, doc_id).await.is_some();
+    let still_exists = document_status_and_channel(&state, doc_id).await.is_some();
     assert!(
         still_exists,
-        "document must not be deleted by cross-site request"
+        "document must not be deleted by cross-channel request"
     );
 }

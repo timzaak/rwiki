@@ -90,7 +90,7 @@ export function ChatPanel({
       <MessageList onRetry={handleRetry} />
 
       {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
-        <div className="px-4">
+        <div className="px-4" data-testid="chat-empty-suggestions">
           <SuggestedQuestions
             questions={suggestedQuestions}
             onSelect={sendMessage}

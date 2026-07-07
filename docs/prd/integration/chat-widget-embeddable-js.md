@@ -59,6 +59,7 @@
 ### 2.3 依赖项
 
 - **后端 CORS 支持**：第三方网站跨域调用 `/api/chat` 的前置条件，需在后端配置允许的域名
+- **多频道支持**：Widget 必须在初始化时声明目标频道，频道定义与数据隔离规则见 `docs/prd/integration/support-multiple-website.md`
 - **API Token 鉴权**（生产环境推荐）：防止未授权的 API 访问，依赖 `api-token-auth` PRD
 - **现有聊天组件**：复用 `frontend/src/components/chat/` 下的组件和 `chat-store`
 - **构建工具**：Vite library mode（已有 Vite 依赖，无需新增）
@@ -84,7 +85,8 @@
 
 ### 4.1 业务规则
 
-- **必填配置**：`apiUrl` 为唯一必填项，未提供时 Widget 不渲染并在控制台报错
+- **必填配置**：`apiUrl` 与目标频道标识（`channelId`）均为必填项，任一缺失时 Widget 不渲染并在控制台报错
+- **频道绑定**：Widget 的聊天、推荐问题、反馈请求均绑定到初始化时声明的频道；详见 `docs/prd/integration/support-multiple-website.md`
 - **样式隔离**：所有 Widget 样式限定在 Shadow DOM 内，不泄漏到宿主页面
 - **依赖内联**：React、ReactDOM、Zustand、react-markdown 等全部打包到单文件中，不依赖宿主页面的任何全局库
 - **浏览器兼容**：Chrome 53+, Firefox 63+, Safari 10+（Shadow DOM 最低版本），不支持 IE11
@@ -92,7 +94,8 @@
 
 ### 4.2 关键状态与异常
 
-- **初始化失败**：`apiUrl` 缺失或格式错误 → 控制台报错，不渲染 Widget
+- **初始化失败**：`apiUrl` 或 `channelId` 缺失/格式错误 → 控制台报错，不渲染 Widget
+- **频道不可用**：`channelId` 未在后端配置中定义 → 访客发送问题后提示"频道不存在或不可用"（详见多频道 PRD）
 - **后端不可达**：发送消息时连接失败 → 聊天窗口显示"无法连接服务"提示
 - **SSE 中断**：流式响应中断 → 已显示内容保留，提示"回答生成中断"
 - **宿主页面 React 冲突**：不冲突，因为 Widget 自带完整 React 实例
@@ -116,6 +119,7 @@
 
 3. **配置接口**
    - `apiUrl`（必填）：后端 API 地址
+   - `channelId`（必填）：目标频道标识，必须为后端已配置的频道；缺失或为空时不渲染 Widget
    - `primaryColor`（可选）：主题强调色，默认 `#3b82f6`
    - `title`（可选）：对话框标题，默认"Chat Assistant"
    - `position`（可选）：浮动按钮位置，`right`（默认）或 `left`
@@ -137,7 +141,7 @@
 - 第三方网站通过以下代码即可获得可用的聊天 Widget：
   ```html
   <script src="rwiki-chat.js"></script>
-  <script>RWikiChat.init({ apiUrl: 'https://rwiki.example.com' })</script>
+  <script>RWikiChat.init({ apiUrl: 'https://rwiki.example.com', channelId: 'help-center' })</script>
   ```
 - Widget 在包含 Bootstrap、Tailwind、Ant Design 等常见 UI 框架的页面中无样式冲突
 - SSE 流式响应在跨域场景正常工作
@@ -193,6 +197,7 @@
 - **鉴权方式**：生产环境推荐 API Token，开发环境可免鉴权
 - **不支持 IE11**：Shadow DOM 在 IE11 不可用
 - **不支持多实例**：同一页面仅支持一个 Widget 实例
+- **频道必填**：`channelId` 与 `apiUrl` 同为必填初始化项；推荐问题采用频道强控——频道已配置推荐问题时，Widget 本地推荐问题配置被忽略（见多频道 PRD）
 
 ---
 
@@ -203,4 +208,4 @@
 - 角色定义：`docs/user-stories/_roles.md`
 - 技术预研：`.ai/tech-research/chat-widget-embeddable-js.md`
 - 相关 PRD：`docs/prd/chat/chat-assistant.md`
-- 依赖 PRD：`docs/prd/infrastructure/api-token-auth.md`
+- 依赖 PRD：`docs/prd/infrastructure/api-token-auth.md`、`docs/prd/integration/support-multiple-website.md`

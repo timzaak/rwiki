@@ -9,11 +9,11 @@ import { FeedbackSubmitFnContext } from '@/hooks/feedback-context'
 import type { FeedbackSubmitFn } from '@/hooks/feedback-context'
 
 /**
- * FE-T01 — Widget feedback submitFn siteId contract test.
+ * FE-T01 — Widget feedback submitFn channelId contract test.
  *
  * Guards the FE-D01 invariant (widget-app.tsx feedbackSubmitFn): when a
  * feedback submission is triggered, the request body POSTed to
- * `/api/chat/feedback` MUST carry `siteId === config.siteId`, injected by the
+ * `/api/chat/feedback` MUST carry `channelId === config.channelId`, injected by the
  * widget before calling the generated `submitFeedback` SDK call.
  *
  * Mount strategy: STRATEGY C (probe via mocked child). `WidgetApp` is the only
@@ -24,7 +24,7 @@ import type { FeedbackSubmitFn } from '@/hooks/feedback-context'
  * mock into a probe that captures the real submitFn from
  * `FeedbackSubmitFnContext`. The probe therefore sits exactly where the real
  * feedback UI lives: inside the provider, capturing the real closure with
- * siteId injected. The test then invokes that captured submitFn directly.
+ * channelId injected. The test then invokes that captured submitFn directly.
  *
  * The generated SDK issues a real `fetch` (after `client.setConfig`) which MSW
  * intercepts; the load-bearing assertion reads the captured request body — we
@@ -39,7 +39,7 @@ import type { FeedbackSubmitFn } from '@/hooks/feedback-context'
  */
 
 const API_URL = 'http://localhost:3000'
-const SITE_ID = 'help-center'
+const CHANNEL_ID = 'help-center'
 
 /** A minimal valid config exercising the widget's real content component. */
 function makeConfig(
@@ -47,7 +47,7 @@ function makeConfig(
 ): ValidatedWidgetConfig {
   return {
     apiUrl: API_URL,
-    siteId: SITE_ID,
+    channelId: CHANNEL_ID,
     primaryColor: '#3b82f6',
     position: 'right',
     locale: 'en',
@@ -57,7 +57,7 @@ function makeConfig(
 
 /**
  * The body the real ChatModal would assemble for a "like" action. Only the
- * fields the widget forwards matter here; siteId is what the widget injects.
+ * fields the widget forwards matter here; channelId is what the widget injects.
  */
 const sampleFeedbackBody = {
   messageId: 'msg-1',
@@ -67,7 +67,7 @@ const sampleFeedbackBody = {
   feedback: 'like',
 }
 
-describe('WidgetApp feedback submitFn (siteId in request body)', () => {
+describe('WidgetApp feedback submitFn (channelId in request body)', () => {
   let capturedBody: Record<string, unknown> | undefined
   // The probe writes the real widget-created submitFn here; the test reads
   // and invokes it directly (cleaner than driving a synthetic click through
@@ -123,8 +123,8 @@ describe('WidgetApp feedback submitFn (siteId in request body)', () => {
     return render(<WidgetApp config={config} />)
   }
 
-  it('POST /api/chat/feedback body contains siteId === config.siteId', async () => {
-    await renderWidgetWithProbe(makeConfig({ siteId: SITE_ID }))
+  it('POST /api/chat/feedback body contains channelId === config.channelId', async () => {
+    await renderWidgetWithProbe(makeConfig({ channelId: CHANNEL_ID }))
 
     // Wait for the probe to have captured the real widget submitFn.
     await waitFor(() => expect(capturedSubmitFn).toBeDefined())
@@ -134,32 +134,32 @@ describe('WidgetApp feedback submitFn (siteId in request body)', () => {
       expect(capturedBody).toBeDefined()
     })
 
-    // LOAD-BEARING: the widget must inject siteId into the feedback body.
+    // LOAD-BEARING: the widget must inject channelId into the feedback body.
     expect(capturedBody).toMatchObject({
       ...sampleFeedbackBody,
-      siteId: SITE_ID,
+      channelId: CHANNEL_ID,
     })
   })
 
-  it('uses the current config.siteId after re-render with a different site', async () => {
-    const OTHER_SITE = 'docs-site'
-    const rendered = await renderWidgetWithProbe(makeConfig({ siteId: SITE_ID }))
+  it('uses the current config.channelId after re-render with a different channel', async () => {
+    const OTHER_CHANNEL = 'docs-channel'
+    const rendered = await renderWidgetWithProbe(makeConfig({ channelId: CHANNEL_ID }))
 
     await waitFor(() => expect(capturedSubmitFn).toBeDefined())
     await capturedSubmitFn!(sampleFeedbackBody as any)
     await waitFor(() => expect(capturedBody).toBeDefined())
-    expect(capturedBody).toHaveProperty('siteId', SITE_ID)
+    expect(capturedBody).toHaveProperty('channelId', CHANNEL_ID)
 
-    // Re-render with a different siteId; the memoized submitFn must adopt it.
+    // Re-render with a different channelId; the memoized submitFn must adopt it.
     capturedBody = undefined
     capturedSubmitFn = undefined
     const { WidgetApp } = await import('../widget-app')
-    rendered.rerender(<WidgetApp config={makeConfig({ siteId: OTHER_SITE })} />)
+    rendered.rerender(<WidgetApp config={makeConfig({ channelId: OTHER_CHANNEL })} />)
 
     await waitFor(() => expect(capturedSubmitFn).toBeDefined())
     await capturedSubmitFn!(sampleFeedbackBody as any)
     await waitFor(() => expect(capturedBody).toBeDefined())
-    expect(capturedBody).toHaveProperty('siteId', OTHER_SITE)
+    expect(capturedBody).toHaveProperty('channelId', OTHER_CHANNEL)
   })
 
   /** Captures the latest submitFn into the test closure on every render. */

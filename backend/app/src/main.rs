@@ -317,15 +317,15 @@ async fn main() -> Result<()> {
     // 包装为 tokio-rusqlite 异步连接
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
-    // 校验至少存在一个已配置站点
-    if config.sites.is_empty() {
+    // 校验至少存在一个已配置频道
+    if config.channels.is_empty() {
         return Err(anyhow::anyhow!(
-            "At least one [sites.<siteId>] section must be configured."
+            "At least one [channels.<channelId>] section must be configured."
         ));
     }
 
-    // 校验历史数据中不存在 site_id 为空的行（documents / chat_feedback / low_recall_records）
-    rwiki_core::config::validate_historical_rows_have_site_id(
+    // 校验历史数据中不存在 channel_id 为空的行（documents / chat_feedback / low_recall_records）
+    rwiki_core::config::validate_historical_rows_have_channel_id(
         &sqlite,
         &["documents", "chat_feedback", "low_recall_records"],
     )
@@ -511,7 +511,7 @@ async fn main() -> Result<()> {
         reranker,
         rerank_config: config.rerank.clone().unwrap_or_default(),
         low_recall_config: config.low_recall.clone(),
-        sites_config: config.sites.clone(),
+        channels_config: config.channels.clone(),
         metrics: metrics.clone(),
         session_count: session_count.clone(),
     });

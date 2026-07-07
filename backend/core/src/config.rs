@@ -29,10 +29,10 @@ pub struct AppConfig {
     /// 存在段即启用，参照 rerank 惯例。
     #[serde(default)]
     pub low_recall: Option<LowRecallConfig>,
-    /// 多站点配置；省略 `[sites]` 段 → 空站点列表。
-    /// 系统启动时校验至少存在一个已配置站点。
+    /// 多频道配置；省略 `[channels]` 段 → 空频道列表。
+    /// 系统启动时校验至少存在一个已配置频道。
     #[serde(default)]
-    pub sites: SitesConfig,
+    pub channels: ChannelsConfig,
 }
 
 impl AppConfig {
@@ -351,71 +351,71 @@ impl Default for LowRecallConfig {
     }
 }
 
-/// 单个站点配置。
+/// 单个频道配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SiteConfig {
-    /// 人类可读站点名称（用于管理后台下拉框、站点列表）。
+pub struct ChannelConfig {
+    /// 人类可读频道名称（用于管理后台下拉框、频道列表）。
     pub name: String,
-    /// 站点级系统提示词；省略时使用全局 `[chat].system_prompt`。
+    /// 频道级系统提示词；省略时使用全局 `[chat].system_prompt`。
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// 站点级推荐问题；省略时该站点返回空数组。
+    /// 频道级推荐问题；省略时该频道返回空数组。
     /// Key 为语言标签（如 "default"、"zh-CN"、"en"），Value 为该语言的推荐问题列表。
     #[serde(default)]
     pub suggested_questions: Option<HashMap<String, Vec<String>>>,
 }
 
-/// 多站点配置集合。
+/// 多频道配置集合。
 ///
-/// TOML 中以 `[sites.<siteId>]` 形式定义，透传为内部 `HashMap`。
+/// TOML 中以 `[channels.<channelId>]` 形式定义，透传为内部 `HashMap`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct SitesConfig {
-    /// 站点 ID 到站点配置的映射。
-    pub sites: HashMap<String, SiteConfig>,
+pub struct ChannelsConfig {
+    /// 频道 ID 到频道配置的映射。
+    pub channels: HashMap<String, ChannelConfig>,
 }
 
-/// 对外暴露的站点元数据（ID 与显示名称）。
+/// 对外暴露的频道元数据（ID 与显示名称）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SiteMetadata {
+pub struct ChannelMetadata {
     pub id: String,
     pub name: String,
 }
 
-/// 站点 ID 校验错误。
+/// 频道 ID 校验错误。
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SiteValidationError {
-    #[error("siteId cannot be empty")]
+pub enum ChannelValidationError {
+    #[error("channelId cannot be empty")]
     Empty,
-    #[error("site {0} is not configured")]
+    #[error("channel {0} is not configured")]
     NotConfigured(String),
 }
 
-impl SitesConfig {
-    /// 查找已配置站点。
-    pub fn get(&self, site_id: &str) -> Option<&SiteConfig> {
-        self.sites.get(site_id)
+impl ChannelsConfig {
+    /// 查找已配置频道。
+    pub fn get(&self, channel_id: &str) -> Option<&ChannelConfig> {
+        self.channels.get(channel_id)
     }
 
-    /// 是否未配置任何站点。
+    /// 是否未配置任何频道。
     pub fn is_empty(&self) -> bool {
-        self.sites.is_empty()
+        self.channels.is_empty()
     }
 
-    /// 返回所有已配置站点的公开元数据列表（仅 ID 与名称）。
-    pub fn list_metadata(&self) -> Vec<SiteMetadata> {
-        self.sites
+    /// 返回所有已配置频道的公开元数据列表（仅 ID 与名称）。
+    pub fn list_metadata(&self) -> Vec<ChannelMetadata> {
+        self.channels
             .iter()
-            .map(|(id, cfg)| SiteMetadata {
+            .map(|(id, cfg)| ChannelMetadata {
                 id: id.clone(),
                 name: cfg.name.clone(),
             })
             .collect()
     }
 
-    /// 去除首尾空白并校验 site_id 非空。
-    pub fn normalize_site_id(site_id: &str) -> Option<&str> {
-        let trimmed = site_id.trim();
+    /// 去除首尾空白并校验 channel_id 非空。
+    pub fn normalize_channel_id(channel_id: &str) -> Option<&str> {
+        let trimmed = channel_id.trim();
         if trimmed.is_empty() {
             None
         } else {
@@ -423,63 +423,74 @@ impl SitesConfig {
         }
     }
 
-    /// 校验并返回去除空白后的 site_id，同时确认该站点已配置。
-    pub fn require_configured<'a>(&self, site_id: &'a str) -> Result<&'a str, SiteValidationError> {
-        let normalized = Self::normalize_site_id(site_id).ok_or(SiteValidationError::Empty)?;
-        if self.sites.contains_key(normalized) {
+    /// 校验并返回去除空白后的 channel_id，同时确认该频道已配置。
+    pub fn require_configured<'a>(
+        &self,
+        channel_id: &'a str,
+    ) -> Result<&'a str, ChannelValidationError> {
+        let normalized =
+            Self::normalize_channel_id(channel_id).ok_or(ChannelValidationError::Empty)?;
+        if self.channels.contains_key(normalized) {
             Ok(normalized)
         } else {
-            Err(SiteValidationError::NotConfigured(normalized.to_string()))
+            Err(ChannelValidationError::NotConfigured(
+                normalized.to_string(),
+            ))
         }
     }
 
-    /// 解析站点系统提示词：站点级配置存在且非空时优先，否则回退到全局提示词。
-    pub fn resolved_system_prompt<'a>(&'a self, site_id: Option<&str>, global: &'a str) -> &'a str {
-        site_id
-            .and_then(|id| self.sites.get(id))
+    /// 解析频道系统提示词：频道级配置存在且非空时优先，否则回退到全局提示词。
+    pub fn resolved_system_prompt<'a>(
+        &'a self,
+        channel_id: Option<&str>,
+        global: &'a str,
+    ) -> &'a str {
+        channel_id
+            .and_then(|id| self.channels.get(id))
             .and_then(|s| s.system_prompt.as_deref())
             .filter(|s| !s.is_empty())
             .unwrap_or(global)
     }
 }
 
-/// 启动校验：拒绝存在 `site_id IS NULL` 历史行的表。
+/// 启动校验：拒绝存在 `channel_id IS NULL` 历史行的表。
 ///
 /// `tables` 传入需要检查的表名；后续 item 可扩展此列表而不新增校验入口点。
-/// 若表尚未包含 `site_id` 列（例如 migration 尚未执行），则跳过该校验，
+/// 若表尚未包含 `channel_id` 列（例如 migration 尚未执行），则跳过该校验，
 /// 避免在逐步演进的 schema 上误报。
 ///
 /// 注意：表名来自代码内部常量，不要传入用户输入。
-pub async fn validate_historical_rows_have_site_id(
+pub async fn validate_historical_rows_have_channel_id(
     sqlite: &tokio_rusqlite::Connection,
     tables: &[&str],
 ) -> Result<(), anyhow::Error> {
     for table in tables {
         let table_name = table.to_string();
         let table_name_for_info = table_name.clone();
-        let has_site_id: bool = sqlite
+        let has_channel_id: bool = sqlite
             .call(move |conn| {
-                let mut stmt = conn
-                    .prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'site_id'")?;
+                let mut stmt = conn.prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'channel_id'",
+                )?;
                 let count: i64 = stmt.query_row([&table_name_for_info], |row| row.get(0))?;
                 Ok::<_, rusqlite::Error>(count > 0)
             })
             .await?;
 
-        if !has_site_id {
+        if !has_channel_id {
             continue;
         }
 
         let count: i64 = sqlite
             .call(move |conn| {
-                let sql = format!("SELECT COUNT(*) FROM {table_name} WHERE site_id IS NULL");
+                let sql = format!("SELECT COUNT(*) FROM {table_name} WHERE channel_id IS NULL");
                 conn.query_row(&sql, [], |row| row.get(0))
             })
             .await?;
         if count > 0 {
             return Err(anyhow::anyhow!(
-                "Found {count} historical row(s) in `{table}` with missing site_id. \
-                 Please backfill site_id before starting the service."
+                "Found {count} historical row(s) in `{table}` with missing channel_id. \
+                 Please backfill channel_id before starting the service."
             ));
         }
     }
@@ -1139,24 +1150,24 @@ mod tests {
         );
     }
 
-    // --- SiteConfig / SitesConfig tests (BE-D01) ---
+    // --- ChannelConfig / ChannelsConfig tests (BE-D01) ---
 
-    // Covers: Design 5.1 — missing [sites] section defaults to empty.
+    // Covers: Design 5.1 — missing [channels] section defaults to empty.
     #[test]
-    fn sites_config_defaults_to_empty() {
-        let config = SitesConfig::default();
+    fn channels_config_defaults_to_empty() {
+        let config = ChannelsConfig::default();
         assert!(
             config.is_empty(),
-            "default SitesConfig should have no sites"
+            "default ChannelsConfig should have no channels"
         );
         assert!(config.list_metadata().is_empty());
     }
 
-    // Covers: Design 5.1 — [sites.<id>] parses name, system_prompt and suggested_questions.
+    // Covers: Design 5.1 — [channels.<id>] parses name, system_prompt and suggested_questions.
     #[test]
-    fn sites_config_parses_from_toml() {
-        // When parsed standalone, SitesConfig is transparent and expects
-        // top-level keys to be site ids.
+    fn channels_config_parses_from_toml() {
+        // When parsed standalone, ChannelsConfig is transparent and expects
+        // top-level keys to be channel ids.
         let toml_str = r#"
             [help_center]
             name = "Help Center"
@@ -1168,8 +1179,9 @@ mod tests {
             [dev_docs]
             name = "Developer Docs"
         "#;
-        let config: SitesConfig = toml::from_str(toml_str).expect("sites config should parse");
-        assert_eq!(config.sites.len(), 2);
+        let config: ChannelsConfig =
+            toml::from_str(toml_str).expect("channels config should parse");
+        assert_eq!(config.channels.len(), 2);
 
         let help = config.get("help_center").expect("help_center should exist");
         assert_eq!(help.name, "Help Center");
@@ -1186,51 +1198,54 @@ mod tests {
 
     // Covers: Design 5.1 — list_metadata returns only id + name in deterministic order.
     #[test]
-    fn sites_config_list_metadata_includes_id_and_name() {
-        let mut sites = SitesConfig::default();
-        sites.sites.insert(
+    fn channels_config_list_metadata_includes_id_and_name() {
+        let mut channels = ChannelsConfig::default();
+        channels.channels.insert(
             "b".to_string(),
-            SiteConfig {
-                name: "B Site".to_string(),
+            ChannelConfig {
+                name: "B Channel".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
             },
         );
-        sites.sites.insert(
+        channels.channels.insert(
             "a".to_string(),
-            SiteConfig {
-                name: "A Site".to_string(),
+            ChannelConfig {
+                name: "A Channel".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
             },
         );
-        let metadata = sites.list_metadata();
+        let metadata = channels.list_metadata();
         assert_eq!(metadata.len(), 2);
         // HashMap iteration order is not guaranteed; sort by id for assertion.
         let mut sorted = metadata;
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
         assert_eq!(sorted[0].id, "a");
-        assert_eq!(sorted[0].name, "A Site");
+        assert_eq!(sorted[0].name, "A Channel");
         assert_eq!(sorted[1].id, "b");
-        assert_eq!(sorted[1].name, "B Site");
+        assert_eq!(sorted[1].name, "B Channel");
     }
 
-    // Covers: BE-D01 helper — empty/whitespace site ids are rejected.
+    // Covers: BE-D01 helper — empty/whitespace channel ids are rejected.
     #[test]
-    fn normalize_site_id_trims_and_rejects_empty() {
-        assert_eq!(SitesConfig::normalize_site_id("  help  "), Some("help"));
-        assert_eq!(SitesConfig::normalize_site_id("help"), Some("help"));
-        assert_eq!(SitesConfig::normalize_site_id(""), None);
-        assert_eq!(SitesConfig::normalize_site_id("   "), None);
+    fn normalize_channel_id_trims_and_rejects_empty() {
+        assert_eq!(
+            ChannelsConfig::normalize_channel_id("  help  "),
+            Some("help")
+        );
+        assert_eq!(ChannelsConfig::normalize_channel_id("help"), Some("help"));
+        assert_eq!(ChannelsConfig::normalize_channel_id(""), None);
+        assert_eq!(ChannelsConfig::normalize_channel_id("   "), None);
     }
 
-    // Covers: BE-D01 helper — require_configured enforces non-empty and configured site.
+    // Covers: BE-D01 helper — require_configured enforces non-empty and configured channel.
     #[test]
     fn require_configured_rejects_empty_and_unknown() {
-        let mut sites = SitesConfig::default();
-        sites.sites.insert(
+        let mut channels = ChannelsConfig::default();
+        channels.channels.insert(
             "help".to_string(),
-            SiteConfig {
+            ChannelConfig {
                 name: "Help".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
@@ -1238,43 +1253,43 @@ mod tests {
         );
 
         assert_eq!(
-            sites.require_configured("help"),
+            channels.require_configured("help"),
             Ok("help"),
-            "configured site should resolve"
+            "configured channel should resolve"
         );
         assert_eq!(
-            sites.require_configured("  help  "),
+            channels.require_configured("  help  "),
             Ok("help"),
             "whitespace should be normalized"
         );
         assert_eq!(
-            sites.require_configured(""),
-            Err(SiteValidationError::Empty),
-            "empty site id should fail"
+            channels.require_configured(""),
+            Err(ChannelValidationError::Empty),
+            "empty channel id should fail"
         );
         assert_eq!(
-            sites.require_configured("unknown"),
-            Err(SiteValidationError::NotConfigured("unknown".to_string())),
-            "unknown site should fail"
+            channels.require_configured("unknown"),
+            Err(ChannelValidationError::NotConfigured("unknown".to_string())),
+            "unknown channel should fail"
         );
     }
 
-    // Covers: Design 5.1 — resolved_system_prompt falls back to global when site missing
-    // or site-level prompt is empty/unset.
+    // Covers: Design 5.1 — resolved_system_prompt falls back to global when channel missing
+    // or channel-level prompt is empty/unset.
     #[test]
-    fn resolved_system_prompt_uses_site_or_global_fallback() {
-        let mut sites = SitesConfig::default();
-        sites.sites.insert(
+    fn resolved_system_prompt_uses_channel_or_global_fallback() {
+        let mut channels = ChannelsConfig::default();
+        channels.channels.insert(
             "help".to_string(),
-            SiteConfig {
+            ChannelConfig {
                 name: "Help".to_string(),
-                system_prompt: Some("Site prompt.".to_string()),
+                system_prompt: Some("Channel prompt.".to_string()),
                 suggested_questions: None,
             },
         );
-        sites.sites.insert(
+        channels.channels.insert(
             "empty".to_string(),
-            SiteConfig {
+            ChannelConfig {
                 name: "Empty".to_string(),
                 system_prompt: Some("".to_string()),
                 suggested_questions: None,
@@ -1283,20 +1298,23 @@ mod tests {
 
         let global = "Global prompt.";
         assert_eq!(
-            sites.resolved_system_prompt(Some("help"), global),
-            "Site prompt."
+            channels.resolved_system_prompt(Some("help"), global),
+            "Channel prompt."
         );
-        assert_eq!(sites.resolved_system_prompt(Some("empty"), global), global);
         assert_eq!(
-            sites.resolved_system_prompt(Some("missing"), global),
+            channels.resolved_system_prompt(Some("empty"), global),
             global
         );
-        assert_eq!(sites.resolved_system_prompt(None, global), global);
+        assert_eq!(
+            channels.resolved_system_prompt(Some("missing"), global),
+            global
+        );
+        assert_eq!(channels.resolved_system_prompt(None, global), global);
     }
 
-    // Covers: BE-D01 — [sites.<id>] section parses within full AppConfig.
+    // Covers: BE-D01 — [channels.<id>] section parses within full AppConfig.
     #[test]
-    fn app_config_parses_sites_section() {
+    fn app_config_parses_channels_section() {
         let toml_str = r#"
             [server]
             bind_address = "0.0.0.0:8080"
@@ -1316,29 +1334,33 @@ mod tests {
 
             [api]
 
-            [sites.help_center]
+            [channels.help_center]
             name = "Help Center"
-            system_prompt = "Site prompt."
-            [sites.help_center.suggested_questions]
+            system_prompt = "Channel prompt."
+            [channels.help_center.suggested_questions]
             default = ["如何快速上手"]
 
-            [sites.dev_docs]
+            [channels.dev_docs]
             name = "Developer Docs"
         "#;
-        let config: AppConfig = toml::from_str(toml_str).expect("config with sites should parse");
-        assert_eq!(config.sites.sites.len(), 2);
-        assert_eq!(config.sites.get("help_center").unwrap().name, "Help Center");
-        assert_eq!(config.sites.get("dev_docs").unwrap().system_prompt, None);
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config with channels should parse");
+        assert_eq!(config.channels.channels.len(), 2);
+        assert_eq!(
+            config.channels.get("help_center").unwrap().name,
+            "Help Center"
+        );
+        assert_eq!(config.channels.get("dev_docs").unwrap().system_prompt, None);
     }
 
-    // Covers: BE-D01 startup validation — tolerate tables without site_id column,
-    // and fail loudly when site_id IS NULL rows exist after the column is added.
+    // Covers: BE-D01 startup validation — tolerate tables without channel_id column,
+    // and fail loudly when channel_id IS NULL rows exist after the column is added.
     #[tokio::test]
-    async fn validate_historical_rows_detects_null_site_id() {
+    async fn validate_historical_rows_detects_null_channel_id() {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
         let sqlite = tokio_rusqlite::Connection::from(conn);
 
-        // Create a documents table without site_id column; validation should pass.
+        // Create a documents table without channel_id column; validation should pass.
         sqlite
             .call(|conn| {
                 conn.execute(
@@ -1349,14 +1371,14 @@ mod tests {
             })
             .await
             .expect("create documents table");
-        validate_historical_rows_have_site_id(&sqlite, &["documents"])
+        validate_historical_rows_have_channel_id(&sqlite, &["documents"])
             .await
-            .expect("validation should pass when site_id column is absent");
+            .expect("validation should pass when channel_id column is absent");
 
-        // Add site_id column and a NULL row; validation should now fail.
+        // Add channel_id column and a NULL row; validation should now fail.
         sqlite
             .call(|conn| {
-                conn.execute("ALTER TABLE documents ADD COLUMN site_id TEXT", [])?;
+                conn.execute("ALTER TABLE documents ADD COLUMN channel_id TEXT", [])?;
                 conn.execute(
                     "INSERT INTO documents (id, file_name) VALUES (?1, ?2)",
                     rusqlite::params!["doc-1", "test.txt"],
@@ -1364,28 +1386,28 @@ mod tests {
                 Ok::<(), rusqlite::Error>(())
             })
             .await
-            .expect("seed null site_id row");
+            .expect("seed null channel_id row");
 
-        let err = validate_historical_rows_have_site_id(&sqlite, &["documents"])
+        let err = validate_historical_rows_have_channel_id(&sqlite, &["documents"])
             .await
-            .expect_err("validation should fail with null site_id rows");
+            .expect_err("validation should fail with null channel_id rows");
         assert!(
-            err.to_string().contains("missing site_id"),
-            "error should mention missing site_id: {err}"
+            err.to_string().contains("missing channel_id"),
+            "error should mention missing channel_id: {err}"
         );
 
         // Backfill and re-validate; should pass again.
         sqlite
             .call(|conn| {
                 conn.execute(
-                    "UPDATE documents SET site_id = 'help_center' WHERE site_id IS NULL",
+                    "UPDATE documents SET channel_id = 'help_center' WHERE channel_id IS NULL",
                     [],
                 )?;
                 Ok::<(), rusqlite::Error>(())
             })
             .await
-            .expect("backfill site_id");
-        validate_historical_rows_have_site_id(&sqlite, &["documents"])
+            .expect("backfill channel_id");
+        validate_historical_rows_have_channel_id(&sqlite, &["documents"])
             .await
             .expect("validation should pass after backfill");
     }

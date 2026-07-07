@@ -10,6 +10,10 @@ The console has two pages that share the same sign-in: **Document Management** (
 
 The console runs in the frontend app (default `http://localhost:3000/admin`), not docs-web. It reuses the backend's existing document management endpoints and auth — there is no separate account system.
 
+## Channel selector
+
+A global channel selector in the console header picks which channel you operate on. Everything below — document list, upload, batch publish/unpublish, low-recall records — is scoped to the selected channel. The choice is a single global control (not a per-upload selector) and is remembered across reloads. Channels come from the backend's `[channels.*]` config; see [Multi-Channel](/en/docs/multi-channel). When no channel is configured or the list fails to load, management actions are disabled.
+
 ## Sign in
 
 Visit `/admin`; if you're not signed in, it redirects to `/auth/login`. Enter the API key — this is the `[api] token` from the config file, see [Configuration → API Token](/en/docs/configuration#api-token).
@@ -40,10 +44,11 @@ This is the console's main job. The typical refresh flow:
 2. Select the new batch, click Batch Publish.
 3. Select the old batch you want to retire, click Batch Unpublish.
 
-Batch Publish and Batch Unpublish are the same request: the frontend packs the publish set and unpublish set into a single `POST /api/documents/batch-status`, and both status changes take effect in that one request.
+Batch Publish and Batch Unpublish are the same request: the frontend packs the publish set and unpublish set into a single `POST /api/documents/batch-status`, and both status changes take effect in that one request. The request body carries the selected `channelId`, and both sets are scoped to it.
 
 ```json
 {
+  "channelId": "help_center",
   "publish": ["0196a1b2-...", "0196a1b3-..."],
   "unpublish": ["0196a0ff-...", "0196a100-..."]
 }
@@ -55,7 +60,7 @@ Why one request: if you publish the new batch first and unpublish the old one se
 curl -X POST http://localhost:8080/api/documents/batch-status \
   -H "Authorization: Bearer dev-test" \
   -H "Content-Type: application/json" \
-  -d '{"publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
+  -d '{"channelId":"help_center","publish":["0196a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b"],"unpublish":["0196a0ff-..."]}'
 ```
 
 The endpoint returns a per-item result, each with `applied` and `reason`:

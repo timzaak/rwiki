@@ -13,10 +13,10 @@ import type {
 /**
  * FE-T01 / FE-T03 — useLowRecallRecords hook tests
  *
- * Covers FE-D02/FE-D03's `useLowRecallRecords({ siteId, minScore?, maxScore?,
+ * Covers FE-D02/FE-D03's `useLowRecallRecords({ channelId, minScore?, maxScore?,
  * from?, to?, limit?, offset? })` (`src/hooks/use-low-recall-records.ts`):
  *  - on mount calls `listLowRecallRecords` (GET /api/low-recall/records) once,
- *    carrying the required `siteId` as the FIRST query param (FE-D03 contract).
+ *    carrying the required `channelId` as the FIRST query param (FE-D03 contract).
  *  - success → `items`/`total` populated, `loading` false, `error` null
  *  - query params (minScore/maxScore/from/to) passed through and re-fetched
  *    on change; `null` params omitted (null → undefined)
@@ -25,7 +25,7 @@ import type {
  *  - failure (non-2xx / network) → `error` set to `'Failed to load'`,
  *    `loading` false. 401 is NOT handled by the hook (global interceptor
  *    owns redirect / Key cleanup); this hook only sets `error='Failed to load'`.
- *  - `siteId === null` → skips the fetch entirely (zero requests).
+ *  - `channelId === null` → skips the fetch entirely (zero requests).
  *
  * Strategy mirrors `use-document-list.test.tsx`: `renderHook` + MSW +
  * `client.setConfig({ baseUrl })` so the generated SDK's fetch reaches MSW.
@@ -55,7 +55,7 @@ function makeRecord(overrides?: Partial<LowRecallRecord>): LowRecallRecord {
     sources: [],
     topScore: null,
     sessionId: null,
-    siteId: 'site-a',
+    channelId: 'channel-a',
     ...overrides,
   }
 }
@@ -106,7 +106,7 @@ describe('useLowRecallRecords — initial load', () => {
       }),
     ])
 
-    const { result } = renderHook(() => useLowRecallRecords({ siteId: 'site-a' }))
+    const { result } = renderHook(() => useLowRecallRecords({ channelId: 'channel-a' }))
 
     await waitFor(() => {
       expect(result.current.items).toHaveLength(2)
@@ -124,7 +124,7 @@ describe('useLowRecallRecords — initial load', () => {
     // Synchronous assertion before any await — the hook's initial state.
     installCountingHandler([])
 
-    const { result } = renderHook(() => useLowRecallRecords({ siteId: 'site-a' }))
+    const { result } = renderHook(() => useLowRecallRecords({ channelId: 'channel-a' }))
 
     expect(result.current.loading).toBe(true)
     expect(result.current.items).toEqual([])
@@ -139,7 +139,7 @@ describe('useLowRecallRecords — query params', () => {
 
     const { result } = renderHook(() =>
       useLowRecallRecords({
-        siteId: 'site-a',
+        channelId: 'channel-a',
         minScore: 0.1,
         maxScore: 0.3,
         from: '2026-01-01T00:00:00.000Z',
@@ -152,8 +152,8 @@ describe('useLowRecallRecords — query params', () => {
     })
 
     expect(listCallCount).toBe(1)
-    // FE-T03: siteId is carried alongside the other query params.
-    expect(lastSearchParams.get('siteId')).toBe('site-a')
+    // FE-T03: channelId is carried alongside the other query params.
+    expect(lastSearchParams.get('channelId')).toBe('channel-a')
     // Query params observed through the MSW handler (NOT via mocking the SDK).
     expect(lastSearchParams.get('minScore')).toBe('0.1')
     expect(lastSearchParams.get('maxScore')).toBe('0.3')
@@ -166,7 +166,7 @@ describe('useLowRecallRecords — query params', () => {
 
     const { result } = renderHook(() =>
       useLowRecallRecords({
-        siteId: 'site-a',
+        channelId: 'channel-a',
         minScore: null,
         maxScore: null,
         from: null,
@@ -189,8 +189,8 @@ describe('useLowRecallRecords — query params', () => {
   it('re-fetches when filter params change', async () => {
     installCountingHandler([makeRecord()])
 
-    let filters: { siteId: string | null; minScore?: number } = {
-      siteId: 'site-a',
+    let filters: { channelId: string | null; minScore?: number } = {
+      channelId: 'channel-a',
     }
     const { result, rerender } = renderHook(() =>
       useLowRecallRecords(filters),
@@ -203,7 +203,7 @@ describe('useLowRecallRecords — query params', () => {
     expect(lastSearchParams.has('minScore')).toBe(false)
 
     // Drive a filter change → effect re-runs (dep array includes minScore).
-    filters = { siteId: 'site-a', minScore: 0.2 }
+    filters = { channelId: 'channel-a', minScore: 0.2 }
     rerender()
 
     await waitFor(() => {
@@ -218,8 +218,8 @@ describe('useLowRecallRecords — pagination', () => {
   it('passes limit/offset as query params and re-fetches on change', async () => {
     installCountingHandler([makeRecord()], 50)
 
-    let pagination: { siteId: string | null; limit: number; offset: number } = {
-      siteId: 'site-a',
+    let pagination: { channelId: string | null; limit: number; offset: number } = {
+      channelId: 'channel-a',
       limit: 10,
       offset: 0,
     }
@@ -234,7 +234,7 @@ describe('useLowRecallRecords — pagination', () => {
     expect(lastSearchParams.get('offset')).toBe('0')
 
     // Advance to the next page → effect re-runs (dep array includes offset).
-    pagination = { siteId: 'site-a', limit: 10, offset: 10 }
+    pagination = { channelId: 'channel-a', limit: 10, offset: 10 }
     rerender()
 
     await waitFor(() => {
@@ -254,7 +254,7 @@ describe('useLowRecallRecords — empty result', () => {
       }),
     )
 
-    const { result } = renderHook(() => useLowRecallRecords({ siteId: 'site-a' }))
+    const { result } = renderHook(() => useLowRecallRecords({ channelId: 'channel-a' }))
 
     // Gate on loading=false: total starts at 0 and items at [] (initial state),
     // so only the post-fetch loading flip proves the empty response was applied.
@@ -287,7 +287,7 @@ describe('useLowRecallRecords — failure path', () => {
         http.get(LIST_URL, () => HttpResponse.json(body, { status })),
       )
 
-      const { result } = renderHook(() => useLowRecallRecords({ siteId: 'site-a' }))
+      const { result } = renderHook(() => useLowRecallRecords({ channelId: 'channel-a' }))
 
       await waitFor(() => {
         expect(result.current.error).toBe('Failed to load')
@@ -303,7 +303,7 @@ describe('useLowRecallRecords — failure path', () => {
   it('sets error on a network failure (fetch rejects)', async () => {
     server.use(http.get(LIST_URL, () => HttpResponse.error()))
 
-    const { result } = renderHook(() => useLowRecallRecords({ siteId: 'site-a' }))
+    const { result } = renderHook(() => useLowRecallRecords({ channelId: 'channel-a' }))
 
     await waitFor(() => {
       expect(result.current.error).toBe('Failed to load')
@@ -312,19 +312,19 @@ describe('useLowRecallRecords — failure path', () => {
   })
 })
 
-describe('useLowRecallRecords — siteId contract (FE-D03)', () => {
-  it('skips the fetch when siteId is null', async () => {
+describe('useLowRecallRecords — channelId contract (FE-D03)', () => {
+  it('skips the fetch when channelId is null', async () => {
     installCountingHandler([makeRecord()])
 
     const { result } = renderHook(() =>
-      useLowRecallRecords({ siteId: null }),
+      useLowRecallRecords({ channelId: null }),
     )
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false)
     })
 
-    // siteId null → no request to the required-siteId endpoint.
+    // channelId null → no request to the required-channelId endpoint.
     expect(listCallCount).toBe(0)
     expect(result.current.items).toEqual([])
     expect(result.current.total).toBe(0)

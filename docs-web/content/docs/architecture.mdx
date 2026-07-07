@@ -73,7 +73,7 @@ The draft state exists because data quality is unpredictable — a manual review
 
 ### Retrieval & Chat
 
-Users chat via `POST /api/chat` (no auth required):
+Users chat via `POST /api/chat` (no auth required). The request carries a required `channelId`; retrieval is scoped to that channel's published documents (`RetrievalScope::Channel`), and the session key is prefixed with the `channelId` so history never crosses channels. See [Multi-Channel](/en/docs/multi-channel).
 
 1. **Session management**: Request carries an optional `sessionId`. If absent, a new one is generated.
 2. **Query rewrite**: Every query (not just follow-ups) goes through rewrite. For first-turn queries, the LLM expands short or ambiguous inputs into more specific, searchable forms. For follow-ups, conversation history is used to resolve pronouns and context. When `content_language` is configured (e.g. `"English"`), the rewrite prompt instructs the LLM to translate queries into that language, enabling cross-language retrieval for both FTS5 keyword search and vector similarity search. The rewrite produces up to 2 query variants in JSON format, with an 8-second timeout — on failure, the original query is used as fallback.
@@ -132,7 +132,7 @@ Note: rerank uses a **custom** `rerank` operation name because the OTel GenAI se
 
 ### Suggested questions
 
-`GET /api/chat/suggestions?locale=en` returns a list of pre-configured questions for the chat empty state. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. This way the frontend doesn't need to bundle locale logic for the main chat view (though the widget supports client-side locale matching via its `suggestedQuestions` config).
+`GET /api/chat/suggestions?locale=en&channelId=help_center` returns a list of pre-configured questions for the chat empty state, scoped to the given channel. The locale matching logic runs server-side: exact match, longest prefix match, then `default` fallback. When the channel configures `[channels.<channelId>.suggested_questions]`, those win over the widget's client-side `suggestedQuestions` config; otherwise the widget's local config applies. See [Multi-Channel](/en/docs/multi-channel).
 
 ### Message feedback
 

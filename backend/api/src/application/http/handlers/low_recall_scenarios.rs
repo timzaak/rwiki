@@ -3,7 +3,7 @@
 //! Verifies the single read endpoint:
 //!
 //! - GET `/api/low-recall/records` (Bearer Token): list, score filter, time range
-//!   filter, pagination, auth, empty state, invalid-params rejection, and site
+//!   filter, pagination, auth, empty state, invalid-params rejection, and channel
 //!   isolation.
 //!
 //! Mirrors `feedback_scenarios.rs` structure (own `Once`, own helpers; no
@@ -20,16 +20,16 @@ use tower::ServiceExt;
 
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
-use rwiki_core::config::{SiteConfig, SitesConfig};
+use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 
 // ---------------------------------------------------------------------------
 // Test constants / helpers
 // ---------------------------------------------------------------------------
 
 const TEST_API_TOKEN: &str = "test-api-token-12345";
-const SITE_A: &str = "help_center";
-const SITE_B: &str = "dev_docs";
-const UNKNOWN_SITE: &str = "unknown_site";
+const CHANNEL_A: &str = "help_center";
+const CHANNEL_B: &str = "dev_docs";
+const UNKNOWN_SITE: &str = "unknown_channel";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -49,26 +49,26 @@ fn ensure_sqlite_vec_loaded() {
     });
 }
 
-/// Build a `SitesConfig` with two configured sites for isolation scenarios.
-fn test_sites_config() -> SitesConfig {
-    let mut sites = HashMap::new();
-    sites.insert(
-        SITE_A.to_string(),
-        SiteConfig {
+/// Build a `ChannelsConfig` with two configured channels for isolation scenarios.
+fn test_channels_config() -> ChannelsConfig {
+    let mut channels = HashMap::new();
+    channels.insert(
+        CHANNEL_A.to_string(),
+        ChannelConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
         },
     );
-    sites.insert(
-        SITE_B.to_string(),
-        SiteConfig {
+    channels.insert(
+        CHANNEL_B.to_string(),
+        ChannelConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
         },
     );
-    SitesConfig { sites }
+    ChannelsConfig { channels }
 }
 
 /// Build a minimal `AppState` suitable for low-recall tests.
@@ -122,7 +122,7 @@ async fn test_app_state() -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
-        sites_config: test_sites_config(),
+        channels_config: test_channels_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -153,7 +153,7 @@ fn auth_request(method: Method, uri: String) -> Request<Body> {
 #[allow(clippy::too_many_arguments)]
 async fn insert_test_record(
     state: &Arc<AppState>,
-    site_id: &str,
+    channel_id: &str,
     session_id: Option<&str>,
     query: &str,
     top_score: Option<f64>,
@@ -161,7 +161,7 @@ async fn insert_test_record(
     sources_json: &str,
     created_at: Option<&str>,
 ) {
-    let sid = site_id.to_string();
+    let sid = channel_id.to_string();
     let sess = session_id.map(|s| s.to_string());
     let q = query.to_string();
     let rc = result_count;
@@ -174,14 +174,14 @@ async fn insert_test_record(
             if let Some(ref ts) = ca {
                 conn.execute(
                     "INSERT INTO low_recall_records \
-                     (site_id, session_id, query, top_score, result_count, sources, created_at) \
+                     (channel_id, session_id, query, top_score, result_count, sources, created_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     rusqlite::params![sid, sess, q, top_score, rc, sj, ts],
                 )?;
             } else {
                 conn.execute(
                     "INSERT INTO low_recall_records \
-                     (site_id, session_id, query, top_score, result_count, sources) \
+                     (channel_id, session_id, query, top_score, result_count, sources) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     rusqlite::params![sid, sess, q, top_score, rc, sj],
                 )?;
@@ -205,10 +205,10 @@ async fn insert_test_record(
 async fn list_returns_only_low_score_records() {
     let state = test_app_state().await;
 
-    // SITE_A: three records spanning low / mid / high scores.
+    // CHANNEL_A: three records spanning low / mid / high scores.
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-low"),
         "low-score query",
         Some(0.1),
@@ -219,7 +219,7 @@ async fn list_returns_only_low_score_records() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-mid"),
         "mid-score query",
         Some(0.5),
@@ -230,7 +230,7 @@ async fn list_returns_only_low_score_records() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-high"),
         "high-score query",
         Some(0.9),
@@ -239,12 +239,12 @@ async fn list_returns_only_low_score_records() {
         Some("2025-01-01T00:00:00Z"),
     )
     .await;
-    // SITE_B: a low-score record that must be excluded when querying SITE_A.
+    // CHANNEL_B: a low-score record that must be excluded when querying CHANNEL_A.
     insert_test_record(
         &state,
-        SITE_B,
+        CHANNEL_B,
         Some("sess-b-low"),
-        "site-b low-score query",
+        "channel-b low-score query",
         Some(0.1),
         2,
         "[]",
@@ -255,7 +255,7 @@ async fn list_returns_only_low_score_records() {
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&maxScore=0.4"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&maxScore=0.4"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -269,7 +269,7 @@ async fn list_returns_only_low_score_records() {
     assert_eq!(
         items.len(),
         1,
-        "maxScore=0.4 must return only the SITE_A 0.1 record"
+        "maxScore=0.4 must return only the CHANNEL_A 0.1 record"
     );
     assert_eq!(body["total"], 1, "total must reflect the filtered count");
 
@@ -279,8 +279,8 @@ async fn list_returns_only_low_score_records() {
         "returned record must be the 0.1 one, got {top_score}"
     );
     assert_eq!(
-        items[0]["siteId"], SITE_A,
-        "returned record must belong to SITE_A"
+        items[0]["channelId"], CHANNEL_A,
+        "returned record must belong to CHANNEL_A"
     );
 }
 
@@ -295,7 +295,7 @@ async fn list_filters_by_time_range() {
 
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-d1"),
         "day 1 query",
         Some(0.2),
@@ -306,7 +306,7 @@ async fn list_filters_by_time_range() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-d2"),
         "day 2 query",
         Some(0.2),
@@ -317,7 +317,7 @@ async fn list_filters_by_time_range() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-d3"),
         "day 3 query",
         Some(0.2),
@@ -326,12 +326,12 @@ async fn list_filters_by_time_range() {
         Some("2025-01-03T12:00:00Z"),
     )
     .await;
-    // Same-day record for SITE_B must not be returned for SITE_A.
+    // Same-day record for CHANNEL_B must not be returned for CHANNEL_A.
     insert_test_record(
         &state,
-        SITE_B,
+        CHANNEL_B,
         Some("sess-b-d2"),
-        "site-b day 2 query",
+        "channel-b day 2 query",
         Some(0.2),
         2,
         "[]",
@@ -342,7 +342,7 @@ async fn list_filters_by_time_range() {
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&from=2025-01-02T00:00:00Z&to=2025-01-02T23:59:59Z"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&from=2025-01-02T00:00:00Z&to=2025-01-02T23:59:59Z"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -356,16 +356,16 @@ async fn list_filters_by_time_range() {
     assert_eq!(
         items.len(),
         1,
-        "only the SITE_A 01-02 record must be returned"
+        "only the CHANNEL_A 01-02 record must be returned"
     );
     assert_eq!(body["total"], 1, "total must be 1");
     assert_eq!(
         items[0]["sessionId"], "sess-d2",
-        "the returned record must be the SITE_A day-2 one"
+        "the returned record must be the CHANNEL_A day-2 one"
     );
     assert_eq!(
-        items[0]["siteId"], SITE_A,
-        "returned record must belong to SITE_A"
+        items[0]["channelId"], CHANNEL_A,
+        "returned record must belong to CHANNEL_A"
     );
 }
 
@@ -381,7 +381,7 @@ async fn list_pagination_total() {
 
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-pg1"),
         "page-1 query",
         Some(0.15),
@@ -392,7 +392,7 @@ async fn list_pagination_total() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-pg2"),
         "page-2 query",
         Some(0.15),
@@ -403,7 +403,7 @@ async fn list_pagination_total() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-pg3"),
         "page-3 query",
         Some(0.15),
@@ -412,12 +412,12 @@ async fn list_pagination_total() {
         Some("2025-01-03T00:00:00Z"),
     )
     .await;
-    // SITE_B records must not affect SITE_A pagination totals.
+    // CHANNEL_B records must not affect CHANNEL_A pagination totals.
     insert_test_record(
         &state,
-        SITE_B,
+        CHANNEL_B,
         Some("sess-b-pg"),
-        "site-b query",
+        "channel-b query",
         Some(0.15),
         1,
         "[]",
@@ -428,7 +428,7 @@ async fn list_pagination_total() {
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&limit=2&offset=0"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&limit=2&offset=0"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -440,7 +440,10 @@ async fn list_pagination_total() {
     let body = parse_json_body(resp.into_body()).await;
     let items = body["items"].as_array().expect("items array");
     assert_eq!(items.len(), 2, "limit=2 must return 2 items");
-    assert_eq!(body["total"], 3, "total must reflect only SITE_A records");
+    assert_eq!(
+        body["total"], 3,
+        "total must reflect only CHANNEL_A records"
+    );
 
     // Order: createdAt DESC (newest first)
     assert_eq!(
@@ -454,11 +457,11 @@ async fn list_pagination_total() {
 }
 
 // User Story: support-multiple-website -- Low-recall queries must require a
-// siteId and reject requests without one.
-// Covers: BE-D04; GET /api/low-recall/records without siteId returns 400.
+// channelId and reject requests without one.
+// Covers: BE-D04; GET /api/low-recall/records without channelId returns 400.
 
 #[tokio::test]
-async fn list_missing_site_id_returns_400() {
+async fn list_missing_channel_id_returns_400() {
     let state = test_app_state().await;
     let app = create_api_routes(state);
 
@@ -467,44 +470,44 @@ async fn list_missing_site_id_returns_400() {
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
-        "GET without siteId must return 400"
+        "GET without channelId must return 400"
     );
 }
 
-// User Story: support-multiple-website -- Only configured sites may be queried.
-// Covers: BE-D04; GET /api/low-recall/records with unconfigured siteId returns 400.
+// User Story: support-multiple-website -- Only configured channels may be queried.
+// Covers: BE-D04; GET /api/low-recall/records with unconfigured channelId returns 400.
 
 #[tokio::test]
-async fn list_unconfigured_site_id_returns_400() {
+async fn list_unconfigured_channel_id_returns_400() {
     let state = test_app_state().await;
     let app = create_api_routes(state);
 
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={UNKNOWN_SITE}"),
+        format!("/api/low-recall/records?channelId={UNKNOWN_SITE}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
-        "GET with unconfigured siteId must return 400"
+        "GET with unconfigured channelId must return 400"
     );
 }
 
 // User Story: support-multiple-website -- Querying low-recall records for one
-// site must not return records belonging to another site.
-// Covers: BE-D04; GET with siteId returns only that site's records while
+// channel must not return records belonging to another channel.
+// Covers: BE-D04; GET with channelId returns only that channel's records while
 // preserving default sort order.
 
 #[tokio::test]
-async fn list_returns_only_requested_site_records() {
+async fn list_returns_only_requested_channel_records() {
     let state = test_app_state().await;
 
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-iso-a1"),
-        "site-a query 1",
+        "channel-a query 1",
         Some(0.1),
         1,
         "[]",
@@ -513,9 +516,9 @@ async fn list_returns_only_requested_site_records() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-iso-a2"),
-        "site-a query 2",
+        "channel-a query 2",
         Some(0.2),
         1,
         "[]",
@@ -524,9 +527,9 @@ async fn list_returns_only_requested_site_records() {
     .await;
     insert_test_record(
         &state,
-        SITE_B,
+        CHANNEL_B,
         Some("sess-iso-b1"),
-        "site-b query 1",
+        "channel-b query 1",
         Some(0.1),
         1,
         "[]",
@@ -536,10 +539,10 @@ async fn list_returns_only_requested_site_records() {
 
     let app = create_api_routes(state);
 
-    // Query SITE_A
+    // Query CHANNEL_A
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}"),
     );
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -548,20 +551,20 @@ async fn list_returns_only_requested_site_records() {
     assert_eq!(
         items.len(),
         2,
-        "SITE_A query must return only SITE_A records"
+        "CHANNEL_A query must return only CHANNEL_A records"
     );
-    assert_eq!(body["total"], 2, "total must count only SITE_A records");
+    assert_eq!(body["total"], 2, "total must count only CHANNEL_A records");
     for item in items {
         assert_eq!(
-            item["siteId"], SITE_A,
-            "returned record must belong to SITE_A"
+            item["channelId"], CHANNEL_A,
+            "returned record must belong to CHANNEL_A"
         );
     }
 
-    // Query SITE_B
+    // Query CHANNEL_B
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_B}"),
+        format!("/api/low-recall/records?channelId={CHANNEL_B}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -570,30 +573,30 @@ async fn list_returns_only_requested_site_records() {
     assert_eq!(
         items.len(),
         1,
-        "SITE_B query must return only SITE_B records"
+        "CHANNEL_B query must return only CHANNEL_B records"
     );
-    assert_eq!(body["total"], 1, "total must count only SITE_B records");
+    assert_eq!(body["total"], 1, "total must count only CHANNEL_B records");
     assert_eq!(
-        items[0]["siteId"], SITE_B,
-        "returned record must belong to SITE_B"
+        items[0]["channelId"], CHANNEL_B,
+        "returned record must belong to CHANNEL_B"
     );
 }
 
 // User Story: support-multiple-website -- Score filtering must be scoped by
-// siteId; a filter should not include low-score records from other sites.
-// Covers: BE-D04; ?maxScore combined with siteId returns only matching records
-// for the requested site.
+// channelId; a filter should not include low-score records from other channels.
+// Covers: BE-D04; ?maxScore combined with channelId returns only matching records
+// for the requested channel.
 
 #[tokio::test]
-async fn list_site_isolation_preserves_score_filter() {
+async fn list_channel_isolation_preserves_score_filter() {
     let state = test_app_state().await;
 
-    // SITE_A: one low, one high.
+    // CHANNEL_A: one low, one high.
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-filter-a-low"),
-        "site-a low",
+        "channel-a low",
         Some(0.1),
         1,
         "[]",
@@ -602,21 +605,21 @@ async fn list_site_isolation_preserves_score_filter() {
     .await;
     insert_test_record(
         &state,
-        SITE_A,
+        CHANNEL_A,
         Some("sess-filter-a-high"),
-        "site-a high",
+        "channel-a high",
         Some(0.9),
         1,
         "[]",
         Some("2025-01-01T00:00:00Z"),
     )
     .await;
-    // SITE_B: one low that must not leak into SITE_A results.
+    // CHANNEL_B: one low that must not leak into CHANNEL_A results.
     insert_test_record(
         &state,
-        SITE_B,
+        CHANNEL_B,
         Some("sess-filter-b-low"),
-        "site-b low",
+        "channel-b low",
         Some(0.1),
         1,
         "[]",
@@ -626,10 +629,10 @@ async fn list_site_isolation_preserves_score_filter() {
 
     let app = create_api_routes(state);
 
-    // SITE_A maxScore=0.4 -> only SITE_A low record
+    // CHANNEL_A maxScore=0.4 -> only CHANNEL_A low record
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&maxScore=0.4"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&maxScore=0.4"),
     );
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -638,16 +641,16 @@ async fn list_site_isolation_preserves_score_filter() {
     assert_eq!(
         items.len(),
         1,
-        "SITE_A maxScore filter must return 1 record"
+        "CHANNEL_A maxScore filter must return 1 record"
     );
     assert_eq!(body["total"], 1);
     assert_eq!(items[0]["sessionId"], "sess-filter-a-low");
-    assert_eq!(items[0]["siteId"], SITE_A);
+    assert_eq!(items[0]["channelId"], CHANNEL_A);
 
-    // SITE_B maxScore=0.4 -> only SITE_B low record
+    // CHANNEL_B maxScore=0.4 -> only CHANNEL_B low record
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_B}&maxScore=0.4"),
+        format!("/api/low-recall/records?channelId={CHANNEL_B}&maxScore=0.4"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -656,11 +659,11 @@ async fn list_site_isolation_preserves_score_filter() {
     assert_eq!(
         items.len(),
         1,
-        "SITE_B maxScore filter must return 1 record"
+        "CHANNEL_B maxScore filter must return 1 record"
     );
     assert_eq!(body["total"], 1);
     assert_eq!(items[0]["sessionId"], "sess-filter-b-low");
-    assert_eq!(items[0]["siteId"], SITE_B);
+    assert_eq!(items[0]["channelId"], CHANNEL_B);
 }
 
 // User Story: US-CORE-038 -- As an operator, I want unauthorized access rejected
@@ -677,7 +680,7 @@ async fn list_requires_auth() {
     // No Authorization header at all
     let req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/low-recall/records?siteId={SITE_A}"))
+        .uri(format!("/api/low-recall/records?channelId={CHANNEL_A}"))
         .body(Body::empty())
         .expect("build request");
     let resp = app.oneshot(req).await.expect("send request");
@@ -691,7 +694,7 @@ async fn list_requires_auth() {
     let app = create_api_routes(state);
     let req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/low-recall/records?siteId={SITE_A}"))
+        .uri(format!("/api/low-recall/records?channelId={CHANNEL_A}"))
         .header(header::AUTHORIZATION, "Bearer wrong")
         .body(Body::empty())
         .expect("build request");
@@ -707,17 +710,17 @@ async fn list_requires_auth() {
 // records I want an empty list (not an error) so the UI can show the empty
 // state (US-CORE-038 scenario 4).
 // Covers: Design §6.1 scenario 4 empty state / §4.2 200 with items=[] total=0
-//          when the table has no rows for the requested site.
+//          when the table has no rows for the requested channel.
 
 #[tokio::test]
 async fn list_empty_returns_empty() {
     let state = test_app_state().await;
 
-    // No records inserted for SITE_A
+    // No records inserted for CHANNEL_A
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -748,7 +751,7 @@ async fn list_invalid_params_400() {
     let app = create_api_routes(state.clone());
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&minScore=0.8&maxScore=0.2"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&minScore=0.8&maxScore=0.2"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(
@@ -761,7 +764,7 @@ async fn list_invalid_params_400() {
     let app = create_api_routes(state);
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?siteId={SITE_A}&from=not-a-date"),
+        format!("/api/low-recall/records?channelId={CHANNEL_A}&from=not-a-date"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(

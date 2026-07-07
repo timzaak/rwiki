@@ -17,7 +17,7 @@ import { server } from '@/test/mocks/server'
 import { client } from '@/lib/api-generated/client.gen'
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 import { AdminLayout } from '@/components/admin/admin-layout'
-import { AdminSiteProvider } from '@/lib/admin-site-context'
+import { AdminChannelProvider } from '@/lib/admin-channel-context'
 
 /**
  * FE-T03 — admin multi-page route guard migration regression.
@@ -72,19 +72,19 @@ import { AdminSiteProvider } from '@/lib/admin-site-context'
 
 const BASE_URL = 'http://localhost:3000'
 const LIST_URL = `${BASE_URL}/api/documents`
-const SITES_URL = `${BASE_URL}/api/sites`
+const CHANNELS_URL = `${BASE_URL}/api/channels`
 const UPLOAD_URL = `${BASE_URL}/api/documents/upload`
 const BATCH_STATUS_URL = `${BASE_URL}/api/documents/batch-status`
 const KEY_STORAGE = 'rwiki_api_key'
 
-// FE-D03: AdminLayout (and AdminComponent via context) call useAdminSite(),
-// which fetches /api/sites on mount. The provider auto-selects the first site
-// ('site-a'), so useDocumentList's fetch carries siteId=site-a. The /api/sites
+// FE-D03: AdminLayout (and AdminComponent via context) call useAdminChannel(),
+// which fetches /api/channels on mount. The provider auto-selects the first channel
+// ('channel-a'), so useDocumentList's fetch carries channelId=channel-a. The /api/channels
 // handler is installed in beforeEach; the /api/documents handler does NOT
-// validate siteId (the dedicated use-document-list suite owns that assertion).
-const SITES = [
-  { id: 'site-a', name: 'A' },
-  { id: 'site-b', name: 'B' },
+// validate channelId (the dedicated use-document-list suite owns that assertion).
+const CHANNELS = [
+  { id: 'channel-a', name: 'A' },
+  { id: 'channel-b', name: 'B' },
 ]
 
 function makeDoc(
@@ -98,7 +98,7 @@ function makeDoc(
     rowCount: 3,
     createdAt: '2026-01-01T00:00:00.000Z',
     errorMessage: null,
-    siteId: 'site-a',
+    channelId: 'channel-a',
   }
 }
 
@@ -116,16 +116,16 @@ const { Route: AdminIndexRoute } = await import('@/routes/admin/index')
 AdminComponent = AdminIndexRoute.options.component as ComponentType
 beforeLoad = AdminLayoutRoute.options.beforeLoad as BeforeLoadFn | undefined
 
-// FE-D03: AdminComponent consumes useAdminSite() (the page-body fetches
-// documents for the context's siteId). In the real app it renders inside
-// AdminLayout, which is wrapped in AdminSiteProvider by routes/admin/route.tsx.
+// FE-D03: AdminComponent consumes useAdminChannel() (the page-body fetches
+// documents for the context's channelId). In the real app it renders inside
+// AdminLayout, which is wrapped in AdminChannelProvider by routes/admin/route.tsx.
 // The page-body cases render it standalone, so wrap it here to satisfy the
-// context requirement and let useDocumentList(siteId) carry site-a.
+// context requirement and let useDocumentList(channelId) carry channel-a.
 function AdminPage() {
   return (
-    <AdminSiteProvider>
+    <AdminChannelProvider>
       <AdminComponent />
-    </AdminSiteProvider>
+    </AdminChannelProvider>
   )
 }
 
@@ -141,9 +141,9 @@ function installListHandler(docs: DocumentListItem[]) {
   )
 }
 
-function installSitesHandler() {
+function installChannelsHandler() {
   server.use(
-    http.get(SITES_URL, () => HttpResponse.json({ sites: SITES })),
+    http.get(CHANNELS_URL, () => HttpResponse.json({ channels: CHANNELS })),
   )
 }
 
@@ -151,10 +151,10 @@ beforeEach(() => {
   localStorage.clear()
   client.setConfig({ baseUrl: BASE_URL })
   listCallCount = 0
-  // FE-D03: AdminLayout + page-body components consume useAdminSite(), which
-  // fetches /api/sites on mount. Seed a default list so the provider selects
-  // site-a and the descendant list/upload/batch calls carry a valid siteId.
-  installSitesHandler()
+  // FE-D03: AdminLayout + page-body components consume useAdminChannel(), which
+  // fetches /api/channels on mount. Seed a default list so the provider selects
+  // channel-a and the descendant list/upload/batch calls carry a valid channelId.
+  installChannelsHandler()
   vi.clearAllMocks()
 })
 
@@ -207,12 +207,12 @@ describe('admin layout — navigation visibility', () => {
     const adminRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: '/admin',
-      // FE-D03: AdminLayout consumes useAdminSite(); wrap it in the provider
+      // FE-D03: AdminLayout consumes useAdminChannel(); wrap it in the provider
       // (mirrors routes/admin/route.tsx's inline wrapper component).
       component: () => (
-        <AdminSiteProvider>
+        <AdminChannelProvider>
           <AdminLayout />
-        </AdminSiteProvider>
+        </AdminChannelProvider>
       ),
     })
     const adminIndexRoute = createRoute({
@@ -260,15 +260,15 @@ describe('admin layout — navigation visibility', () => {
     expect(lowRecallLink.getAttribute('href')).toContain('/admin/low-recall')
   })
 
-  it('renders admin-site-select and defaults to the first site (site-a)', async () => {
+  it('renders admin-channel-select and defaults to the first channel (channel-a)', async () => {
     renderAdminLayoutInRouter()
 
-    // FE-D03 point a: the global site selector exists and auto-selects the
-    // first site from /api/sites (which beforeEach seeds with [site-a, site-b]).
-    const select = await screen.findByTestId('admin-site-select')
+    // FE-D03 point a: the global channel selector exists and auto-selects the
+    // first channel from /api/channels (which beforeEach seeds with [channel-a, channel-b]).
+    const select = await screen.findByTestId('admin-channel-select')
     expect(select).toBeInTheDocument()
     await waitFor(() => {
-      expect((select as HTMLSelectElement).value).toBe('site-a')
+      expect((select as HTMLSelectElement).value).toBe('channel-a')
     })
   })
 })
@@ -292,9 +292,9 @@ describe('admin page — list load assembly', () => {
   })
 
   it('shows the loading skeleton before the first fetch resolves', async () => {
-    // FE-D03: AdminPage now resolves the site context (async /api/sites) before
+    // FE-D03: AdminPage now resolves the channel context (async /api/channels) before
     // useDocumentList fires the document fetch. Stall the document response so
-    // the loading skeleton is observable once the provider selects site-a and
+    // the loading skeleton is observable once the provider selects channel-a and
     // the in-flight document request is pending.
     let resolveList: () => void
     const listPending = new Promise<void>((resolve) => {

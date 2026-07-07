@@ -12,8 +12,8 @@ import { listLowRecallRecords } from '@/lib/api-generated/sdk.gen'
 import type { LowRecallRecord } from '@/lib/api-generated/types.gen'
 
 export interface UseLowRecallRecordsParams {
-  /** 当前管理后台站点。为 null 时跳过请求，避免向必填 siteId 端点发非法载荷。 */
-  siteId: string | null
+  /** 当前管理后台频道。为 null 时跳过请求，避免向必填 channelId 端点发非法载荷。 */
+  channelId: string | null
   minScore?: number | null
   maxScore?: number | null
   from?: string | null
@@ -23,15 +23,15 @@ export interface UseLowRecallRecordsParams {
 }
 
 export function useLowRecallRecords(params: UseLowRecallRecordsParams) {
-  const { siteId, minScore, maxScore, from, to, limit, offset } = params
+  const { channelId, minScore, maxScore, from, to, limit, offset } = params
   const [items, setItems] = useState<LowRecallRecord[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // siteId 为 null（尚未选定/无可用站点）时不发请求。
-    if (siteId === null) {
+    // channelId 为 null（尚未选定/无可用频道）时不发请求。
+    if (channelId === null) {
       setItems([])
       setTotal(0)
       setLoading(false)
@@ -47,7 +47,7 @@ export function useLowRecallRecords(params: UseLowRecallRecordsParams) {
     setTotal(0)
     listLowRecallRecords({
       query: {
-        siteId,
+        channelId,
         minScore: minScore ?? undefined,
         maxScore: maxScore ?? undefined,
         // Normalize to RFC3339 (UTC with offset) — backend parses with
@@ -78,7 +78,7 @@ export function useLowRecallRecords(params: UseLowRecallRecordsParams) {
     return () => {
       cancelled = true
     }
-  }, [siteId, minScore, maxScore, from, to, limit, offset])
+  }, [channelId, minScore, maxScore, from, to, limit, offset])
 
   return { items, total, loading, error }
 }

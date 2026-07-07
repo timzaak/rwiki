@@ -45,6 +45,7 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 
 - **Streaming chat Q&A** — Ask questions, get answers with structured citations (title, section, link, tags) from your documents
 - **Hybrid search** — FTS5 full-text + vector similarity with RRF fusion for better recall
+- **Rerank (optional)** — Semantically re-scores retrieved chunks after hybrid search to sharpen precision. Supports OpenRouter, Zhipu BigModel, and Alibaba DashScope. Opt-in via a `[rerank]` section (zero overhead when omitted); auto-degrades to fusion results on failure.
 - **Query rewrite & expansion** — Automatic query rewriting with multi-query expansion to handle ambiguous questions
 - **Embeddable chat widget** — Single JS file, Shadow DOM, add to any site with two lines of HTML
 - **Multi-format ingestion** — Markdown files, XLSX spreadsheets, OpenAPI specifications

@@ -40,7 +40,7 @@ pub struct DocumentRow {
     pub file_name: String,
     pub status: String,
     pub row_count: i32,
-    pub site_id: String,
+    pub channel_id: String,
     pub error_message: Option<String>,
     pub created_at: String,
 }

@@ -22,7 +22,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `OPENAI_API_KEY` | `embedding.api_key` | Embedding API Key |
 | `API_TOKEN` | `api.token` | 文档管理接口的 Bearer Token |
 | `API_ALLOWED_IP_RANGES` | `api.allowed_ip_ranges` | 逗号分隔的 CIDR 列表，限制哪些客户端 IP 能访问受保护接口。覆盖配置文件中的值。为空时不限制来源 IP |
-| `CORS_ALLOWED_ORIGINS` | `server.allowed_origins` | 聊天 widget（嵌入第三方网站）的来源允许列表，逗号分隔。为空时允许所有来源（`*`，默认）。设置具体来源以限制哪些站点能调用 `/api/chat` |
+| `CORS_ALLOWED_ORIGINS` | `server.allowed_origins` | 聊天 widget（嵌入第三方网站）的来源允许列表，逗号分隔。为空时允许所有来源（`*`，默认）。设置具体来源以限制哪些网站能调用 `/api/chat` |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP 鉴权 Token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
 
@@ -36,7 +36,7 @@ cp backend/config/config.example.toml backend/config/config.toml
 | `log_level` | string | 是 | — | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
 | `app_env` | string | 是 | — | 运行环境：`development`、`demo`、`test` |
 | `static_dir` | string | 否 | — | 前端静态文件目录（生产模式使用），如 `"../frontend/dist"`。省略则不托管静态文件 |
-| `allowed_origins` | string[] | 否 | `[]`（`*`） | 聊天 widget 的 CORS 来源白名单。widget 嵌入第三方网站时会跨域调用 `/api/chat`。为空=允许所有来源（`*`），开箱即用但任何站点都能调用你的接口；设置具体来源以收紧访问。详见 [Widget](#widget) |
+| `allowed_origins` | string[] | 否 | `[]`（`*`） | 聊天 widget 的 CORS 来源白名单。widget 嵌入第三方网站时会跨域调用 `/api/chat`。为空=允许所有来源（`*`），开箱即用但任何网站都能调用你的接口；设置具体来源以收紧访问。详见 [Widget](#widget) |
 | `enable_openapi` | bool | 是 | — | 是否启用 Swagger 文档（`/swagger`） |
 
 ## SQLite
@@ -316,13 +316,14 @@ threshold = 0.3   # 上线后从首批记录校准
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `apiUrl` | string | 是 | — | 后端地址，需以 `http://` 或 `https://` 开头 |
+| `channelId` | string | 是 | — | 目标频道标识，必须为已配置的 `[channels.<channelId>]`。缺失时控制台输出 `channelId is required` 且不渲染。详见[多频道](/zh/docs/multi-channel)。 |
 | `locale` | string | 否 | `navigator.language` | 界面语言。接受 BCP-47 标签，解析为受支持的语言（`en`、`zh-CN`）。任意中文变体（`zh`、`zh-Hans`、`zh-TW` 等）均解析为 `zh-CN`，其余回退到 `en`。 |
 | `title` | string | 否 | 语言默认值 | 聊天窗口标题。不传时取语言默认值（`en`→`Rwiki Chat`，`zh-CN`→`Rwiki 助手`）。 |
 | `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
 | `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
 | `welcomeMessage` | string | 否 | — | 欢迎语 |
 | `messages` | object | 否 | — | 覆盖当前语言下的界面文案，可传任意子集：`titleDefault`、`inputPlaceholder`、`responseFailed`、`retry`、`a11yOpen`、`a11yClose`、`a11yClear`、`a11yLike`、`a11yDislike`、`errorBoundary`。 |
-| `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。 |
+| `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。当目标频道已配置 `[channels.<channelId>.suggested_questions]` 时，本字段被忽略，以服务端为唯一来源（见[多频道](/zh/docs/multi-channel)）。 |
 
 ### HTML 集成
 
@@ -331,6 +332,7 @@ threshold = 0.3   # 上线后从首批记录校准
 <script>
   RWikiChat.init({
     apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
     locale: 'zh-CN',
     title: '智能助手',
     primaryColor: '#6366f1',
@@ -363,7 +365,7 @@ Widget 通过 Shadow DOM 隔离样式，不会影响宿主页面 CSS。
 
 ### React 集成（docs-web 的方式）
 
-React 应用中可以动态加载 widget 脚本。后端地址通过 `VITE_RWIKI_API_URL` 环境变量传入（构建时确定，定义在 `docs-web/vite.config.ts`）。把应用当前的 locale 传给组件，让 widget 跟随它：`init` 时传入初始值，locale 变化时调用 `setLocale`。
+React 应用中可以动态加载 widget 脚本。后端地址通过 `VITE_RWIKI_API_URL` 环境变量传入（构建时确定，定义在 `docs-web/vite.config.ts`）。把目标 `channelId` 和应用当前的 locale 传给组件，让 widget 跟随它：`init` 时传入初始值，locale 变化时调用 `setLocale`。
 
 ```tsx
 // src/components/rwiki-chat-widget.tsx
@@ -371,7 +373,7 @@ import { useEffect, useRef } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget({ locale }: { locale: string }) {
+export default function RWikiChatWidget({ channelId, locale }: { channelId: string; locale: string }) {
   const firstRun = useRef(true);
   // 始终保存最新 locale：脚本异步加载时，onload 里的 init 读取此 ref，
   // 避免用到挂载时闭包捕获的过期 locale（修复 locale 在脚本加载期间变化的竞态）。
@@ -381,7 +383,7 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
   // 加载并初始化一次，传入初始 locale。
   useEffect(() => {
     const w = window as any;
-    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, locale: localeRef.current }); };
+    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, channelId, locale: localeRef.current }); };
     if (w.RWikiChat?.init) {
       initWidget();
     } else {
@@ -405,10 +407,10 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
 }
 ```
 
-在根布局中放置组件，并传入当前 locale（docs-web 从 URL 路径推导 locale）：
+在根布局中放置组件，并传入当前频道和 locale（docs-web 从 URL 路径推导 locale）：
 
 ```tsx
-<RWikiChatWidget locale={locale} />
+<RWikiChatWidget channelId="help_center" locale={locale} />
 ```
 
 启动 docs-web 前先构建并复制 widget：

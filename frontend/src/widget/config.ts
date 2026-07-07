@@ -3,7 +3,7 @@ import { resolveLocale } from '@/components/chat/messages';
 
 export interface WidgetConfig {
   apiUrl: string;
-  siteId: string;
+  channelId: string;
   primaryColor?: string;
   title?: string;
   position?: 'left' | 'right';
@@ -38,8 +38,8 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     return null;
   }
 
-  if (!config.siteId || typeof config.siteId !== 'string' || config.siteId.trim() === '') {
-    console.error('[RWikiChat] siteId is required');
+  if (!config.channelId || typeof config.channelId !== 'string' || config.channelId.trim() === '') {
+    console.error('[RWikiChat] channelId is required');
     return null;
   }
 
@@ -77,7 +77,7 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
 
   const validated: ValidatedWidgetConfig = {
     apiUrl,
-    siteId: config.siteId.trim(),
+    channelId: config.channelId.trim(),
     primaryColor: config.primaryColor ?? WIDGET_DEFAULTS.primaryColor,
     position: config.position ?? WIDGET_DEFAULTS.position,
     locale: resolveLocale(config.locale ?? navigator.language),

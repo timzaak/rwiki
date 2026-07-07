@@ -1,28 +1,42 @@
 /**
- * Suggested Questions E2E Tests
+ * 频道级推荐问题 E2E（support-multiple-website 迁移）
  *
- * Covers US-CORE-028: Through suggested question buttons quickly start conversation.
+ * The suggestions API now requires `channelId` (`GET /api/chat/suggestions?locale=&channelId=`)
+ * and returns per-channel questions; a channel with no configured `suggested_questions`
+ * returns an empty array (no fallback to global/widget). Main-channel chat lives under
+ * `/c/$channelId`, so the chat-UI scenarios navigate to `/c/help_center` (or
+ * `/c/developer_docs` for the empty-state case).
+ *
+ * US-story traceability:
+ * - US-INTG-005/006/007 (DRAFT, `.ai/user-stories/integration/support-multiple-website.md`):
+ *   per-channel suggestions are part of channel-scoped data isolation. The "configured"
+ *   cases target `help_center` (which has channel-level `suggested_questions`); the
+ *   "not configured" case targets `developer_docs` (intentionally empty) — a real
+ *   API call, not a route intercept.
  *
  * Scenarios:
- * 1. Empty state shows suggested question buttons when configured
- * 2. API locale matching contract (zh-CN / fallback)
+ * 1. help_center empty state shows suggestion buttons (configured)
+ * 2. API locale matching returns correct language (zh-CN exact / en-US prefix → en)
  * 3. No locale match falls back to default
  * 4. Click suggested question sends message and buttons disappear
- * 5. Not configured shows no suggestion buttons
+ * 5. developer_docs (not configured) shows no suggestion buttons (real empty API)
  * 6. Manual input makes suggested question buttons disappear
  *
- * Dependencies (from DE-D01):
- * - demo/e2e/fixtures/chat.fixtures.ts
- * - demo/e2e/pages/chat-page.ts
+ * Dependencies:
+ * - demo/e2e/fixtures/chat.fixtures.ts (demoLogger via fixture)
+ * - demo/e2e/pages/chat-page.ts (navigate('/c/$channelId'))
  * - demo/e2e/selectors.ts
  */
 
 import { test, expect } from './fixtures/chat.fixtures'
 import { ChatPage } from './pages/chat-page'
 
+// Demo backend (port 18080). NOT the old 8080.
 const BASE_URL = process.env.BASE_URL || 'http://localhost:18080'
+const HELP_CENTER = 'help_center'
+const DEVELOPER_DOCS = 'developer_docs'
 
-test.describe('US-CORE-028: Suggested questions', () => {
+test.describe('Channel-level suggested questions', () => {
   let chatPage: ChatPage
 
   test.beforeEach(async ({ page, demoLogger }) => {
@@ -30,13 +44,12 @@ test.describe('US-CORE-028: Suggested questions', () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Scenario 1: Empty state shows suggested question buttons when configured
+  // Scenario 1: help_center empty state shows suggestion buttons when configured
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 1 - empty state shows suggested question buttons when configured', async () => {
-    await chatPage.navigate()
-    await chatPage.waitForReady()
+  test('help_center empty state shows suggestion buttons when configured', async () => {
+    await chatPage.navigate(HELP_CENTER)
 
-    // Wait for suggested questions to load from API
+    // Wait for suggestions to load from the channel-scoped API
     await chatPage.waitForSuggestedQuestions()
 
     // Assert: suggestions container is visible
@@ -55,13 +68,15 @@ test.describe('US-CORE-028: Suggested questions', () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Scenario 2: API locale matching contract (zh-CN / fallback)
+  // Scenario 2: API locale matching (zh-CN exact / en-US prefix → en)
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 2 - API locale matching returns correct language questions', async ({
+  test('help_center API locale matching returns correct language questions', async ({
     page,
   }) => {
-    // Verify zh-CN returns Chinese questions
-    const zhResponse = await page.request.get(`${BASE_URL}/api/chat/suggestions?locale=zh-CN`)
+    // zh-CN returns the configured Chinese questions (exact match)
+    const zhResponse = await page.request.get(
+      `${BASE_URL}/api/chat/suggestions?locale=zh-CN&channelId=${HELP_CENTER}`,
+    )
     expect(zhResponse.status()).toBe(200)
     const zhBody = await zhResponse.json()
     expect(zhBody.questions).toBeInstanceOf(Array)
@@ -70,8 +85,10 @@ test.describe('US-CORE-028: Suggested questions', () => {
     const hasChinese = zhBody.questions.some((q: string) => /[一-鿿]/.test(q))
     expect(hasChinese).toBeTruthy()
 
-    // Verify en-US returns English questions
-    const enResponse = await page.request.get(`${BASE_URL}/api/chat/suggestions?locale=en-US`)
+    // en-US has no exact key, so it prefix-matches the "en" key → English questions
+    const enResponse = await page.request.get(
+      `${BASE_URL}/api/chat/suggestions?locale=en-US&channelId=${HELP_CENTER}`,
+    )
     expect(enResponse.status()).toBe(200)
     const enBody = await enResponse.json()
     expect(enBody.questions).toBeInstanceOf(Array)
@@ -81,24 +98,23 @@ test.describe('US-CORE-028: Suggested questions', () => {
   // ---------------------------------------------------------------------------
   // Scenario 3: No locale match falls back to default
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 3 - no locale match falls back to default questions', async ({
-    page,
-  }) => {
-    // French is not configured, should fall back to default group
-    const response = await page.request.get(`${BASE_URL}/api/chat/suggestions?locale=fr`)
+  test('help_center no locale match falls back to default questions', async ({ page }) => {
+    // French is not configured; falls back to the "default" group
+    const response = await page.request.get(
+      `${BASE_URL}/api/chat/suggestions?locale=fr&channelId=${HELP_CENTER}`,
+    )
     expect(response.status()).toBe(200)
     const body = await response.json()
     expect(body.questions).toBeInstanceOf(Array)
-    // Default group is configured, so questions should not be empty
+    // The "default" group is configured, so questions should not be empty
     expect(body.questions.length).toBeGreaterThan(0)
   })
 
   // ---------------------------------------------------------------------------
   // Scenario 4: Click suggested question sends message and buttons disappear
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 4 - click suggested question sends message and buttons disappear', async () => {
-    await chatPage.navigate()
-    await chatPage.waitForReady()
+  test('help_center click suggested question sends message and buttons disappear', async () => {
+    await chatPage.navigate(HELP_CENTER)
     await chatPage.waitForSuggestedQuestions()
 
     // Get the first suggested question text
@@ -126,24 +142,23 @@ test.describe('US-CORE-028: Suggested questions', () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Scenario 5: Not configured shows no suggestion buttons
+  // Scenario 5: developer_docs (not configured) shows no suggestion buttons
+  // Uses the real API (developer_docs has no suggested_questions → empty array),
+  // not a route intercept.
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 5 - not configured shows no suggestion buttons', async ({
-    page,
-  }) => {
-    // Intercept the suggestions API and return empty questions
-    await page.route('**/api/chat/suggestions**', (route) => {
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ questions: [] }),
-      })
-    })
+  test('developer_docs not configured shows no suggestion buttons', async ({ page }) => {
+    // Sanity: the developer_docs API genuinely returns an empty array.
+    const response = await page.request.get(
+      `${BASE_URL}/api/chat/suggestions?channelId=${DEVELOPER_DOCS}`,
+    )
+    expect(response.status()).toBe(200)
+    const body = await response.json()
+    expect(body.questions).toBeInstanceOf(Array)
+    expect(body.questions).toHaveLength(0)
 
-    await chatPage.navigate()
-    await chatPage.waitForReady()
+    await chatPage.navigate(DEVELOPER_DOCS)
 
-    // Assert: suggestions container is NOT visible (SuggestedQuestions returns null for empty array)
+    // Assert: suggestions container is NOT visible (empty array → component null)
     await chatPage.waitForNoSuggestions()
 
     // Assert: chat still works normally — panel, input, send button all visible
@@ -155,9 +170,8 @@ test.describe('US-CORE-028: Suggested questions', () => {
   // ---------------------------------------------------------------------------
   // Scenario 6: Manual input makes suggested question buttons disappear
   // ---------------------------------------------------------------------------
-  test('US-CORE-028 scenario 6 - manual input makes suggested question buttons disappear', async () => {
-    await chatPage.navigate()
-    await chatPage.waitForReady()
+  test('help_center manual input makes suggested question buttons disappear', async () => {
+    await chatPage.navigate(HELP_CENTER)
     await chatPage.waitForSuggestedQuestions()
 
     // Assert: suggestions are visible before manual input

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { ArrowRightIcon, LoaderCircleIcon } from 'lucide-react'
 
-import { listSites } from '@/lib/api-generated'
-import type { SiteItem } from '@/lib/api-generated/types.gen'
+import { listChannels } from '@/lib/api-generated'
+import type { ChannelItem } from '@/lib/api-generated/types.gen'
 
 export const Route = createFileRoute('/')({
   component: HomeRoute,
@@ -11,22 +11,22 @@ export const Route = createFileRoute('/')({
 
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; sites: SiteItem[] }
+  | { status: 'ready'; channels: ChannelItem[] }
   | { status: 'error' }
   | { status: 'empty' }
 
 function HomeRoute() {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
 
-  const loadSites = () => {
+  const loadChannels = () => {
     setState({ status: 'loading' })
     let cancelled = false
-    listSites()
+    listChannels()
       .then((result) => {
         if (cancelled) return
-        const sites = result.data?.sites ?? []
+        const channels = result.data?.channels ?? []
         setState(
-          sites.length === 0 ? { status: 'empty' } : { status: 'ready', sites },
+          channels.length === 0 ? { status: 'empty' } : { status: 'ready', channels },
         )
       })
       .catch(() => {
@@ -37,7 +37,7 @@ function HomeRoute() {
     }
   }
 
-  useEffect(() => loadSites(), [])
+  useEffect(() => loadChannels(), [])
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden">
@@ -72,13 +72,13 @@ function HomeRoute() {
           </h1>
 
           <p className="animate-slide-up mx-auto mt-6 max-w-lg text-base leading-relaxed text-muted-foreground md:text-lg [animation-delay:100ms]">
-            Choose a knowledge site to start asking. Rwiki combines
+            Choose a knowledge channel to start asking. Rwiki combines
             retrieval-augmented generation with intelligent agents to deliver
             precise, contextual answers.
           </p>
 
           <div className="animate-slide-up mt-10 [animation-delay:200ms]">
-            <SiteEntryList state={state} onRetry={loadSites} />
+            <ChannelEntryList state={state} onRetry={loadChannels} />
           </div>
         </div>
       </main>
@@ -90,7 +90,7 @@ function HomeRoute() {
   )
 }
 
-function SiteEntryList({
+function ChannelEntryList({
   state,
   onRetry,
 }: {
@@ -100,11 +100,11 @@ function SiteEntryList({
   if (state.status === 'loading') {
     return (
       <div
-        data-testid="site-list-loading"
+        data-testid="channel-list-loading"
         className="flex items-center justify-center gap-2 text-sm text-muted-foreground"
       >
         <LoaderCircleIcon className="size-4 animate-spin" />
-        Loading sites…
+        Loading channels…
       </div>
     )
   }
@@ -112,10 +112,10 @@ function SiteEntryList({
   if (state.status === 'error') {
     return (
       <div
-        data-testid="site-list-error"
+        data-testid="channel-list-error"
         className="flex flex-col items-center gap-3 text-sm text-muted-foreground"
       >
-        <span>无法加载站点列表</span>
+        <span>无法加载频道列表</span>
         <button
           onClick={onRetry}
           className="rounded-full border border-border bg-card/80 px-5 py-2 text-sm font-medium backdrop-blur-sm transition-all hover:border-primary/30 hover:bg-card hover:shadow-sm"
@@ -129,26 +129,26 @@ function SiteEntryList({
   if (state.status === 'empty') {
     return (
       <p
-        data-testid="site-list-empty"
+        data-testid="channel-list-empty"
         className="text-sm text-muted-foreground"
       >
-        暂无可用站点，请联系管理员。
+        暂无可用频道，请联系管理员。
       </p>
     )
   }
 
   return (
     <ul className="flex flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
-      {state.sites.map((site) => (
-        <li key={site.id}>
+      {state.channels.map((channel) => (
+        <li key={channel.id}>
           <Link
-            to="/s/$siteId"
-            params={{ siteId: site.id }}
-            data-testid={`site-entry-${site.id}`}
+            to="/c/$channelId"
+            params={{ channelId: channel.id }}
+            data-testid={`channel-entry-${channel.id}`}
             className="group inline-flex items-center gap-2 rounded-full border border-border bg-card/80 px-6 py-3 text-sm font-medium backdrop-blur-sm transition-all hover:border-primary/30 hover:bg-card hover:shadow-md hover:scale-[1.02] active:scale-[0.98]"
           >
-            <span data-testid="site-entry" className="relative z-10">
-              {site.name}
+            <span data-testid="channel-entry" className="relative z-10">
+              {channel.name}
             </span>
             <ArrowRightIcon className="relative z-10 size-4 transition-transform group-hover:translate-x-0.5" />
           </Link>
