@@ -15,7 +15,7 @@ import { ChannelIdProvider } from '@/components/chat/channel-id-context'
  * wrappers below inject the main-site channelId that flows into the chat request
  * body (`channelId` alongside `message`/`sessionId`).
  */
-function makeWrapper(channelId = 'channel-a') {
+function makeWrapper(channelId: string[] = ['channel-a']) {
   return ({ children }: { children: React.ReactNode }) => (
     <ChannelIdProvider channelId={channelId}>{children}</ChannelIdProvider>
   )
@@ -234,7 +234,7 @@ describe('useChatStream request body validation', () => {
       sessionId: null,
       // FE-T02 load-bearing contract: channelId from ChannelIdProvider is transmitted
       // in the chat request body alongside message/sessionId.
-      channelId: 'channel-a',
+      channelId: ['channel-a'],
     })
   })
 
@@ -244,7 +244,7 @@ describe('useChatStream request body validation', () => {
     // still carry the old value. The wrapper reads a mutable ref so the same
     // wrapper instance can supply a different channelId after `rerender`.
     let capturedBody: unknown = null
-    let currentChannelId = 'channel-a'
+    let currentChannelId: string[] = ['channel-a']
 
     server.use(
       http.post('/api/chat', async ({ request }) => {
@@ -263,14 +263,14 @@ describe('useChatStream request body validation', () => {
     const { result, rerender } = renderHook(() => useChatStream(), { wrapper })
 
     // Flip the provider channelId, then re-render so the hook re-reads context.
-    currentChannelId = 'channel-b'
+    currentChannelId = ['channel-b']
     rerender()
 
     await result.current.sendMessage('after rerender')
 
-    const body = capturedBody as { channelId?: string } | null
+    const body = capturedBody as { channelId?: string[] } | null
     expect(body).not.toBeNull()
-    expect(body!.channelId).toBe('channel-b')
+    expect(body!.channelId).toEqual(['channel-b'])
   })
 
   it('sends sessionId in request when store has one', async () => {
@@ -299,7 +299,7 @@ describe('useChatStream request body validation', () => {
       message: 'follow-up question',
       sessionId: 'existing-session-123',
       // FE-T02: channelId is transmitted on follow-up messages too.
-      channelId: 'channel-a',
+      channelId: ['channel-a'],
     })
   })
 })

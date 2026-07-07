@@ -40,7 +40,8 @@ export const EMPTY_WIDGET_CHANNEL_ID = 'developer_docs'
 
 export interface WidgetInitConfig {
   apiUrl: string
-  channelId?: string
+  /** 频道标识；可传单个字符串或字符串数组（多频道并集检索）。 */
+  channelId?: string | string[]
   [key: string]: unknown
 }
 

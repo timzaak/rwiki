@@ -29,7 +29,7 @@ use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
-const UNKNOWN_SITE: &str = "unknown_channel";
+const UNKNOWN_CHANNEL: &str = "unknown_channel";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -484,7 +484,7 @@ async fn list_unconfigured_channel_id_returns_400() {
 
     let req = auth_request(
         Method::GET,
-        format!("/api/low-recall/records?channelId={UNKNOWN_SITE}"),
+        format!("/api/low-recall/records?channelId={UNKNOWN_CHANNEL}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(

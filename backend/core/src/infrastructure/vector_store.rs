@@ -133,7 +133,7 @@ fn content_hash(text: &str) -> String {
 }
 
 /// 检索作用域：默认只命中已发布；集合模式限定到指定文档并放开发布限制；
-/// Channel 模式限定到指定频道的已发布文档。
+/// Channel 模式限定到指定频道（单个或多个）的已发布文档。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum RetrievalScope {
     /// 现有行为：d.status='published'
@@ -143,6 +143,9 @@ pub enum RetrievalScope {
     Collection(Vec<String>),
     /// 频道作用域：仅命中指定频道且 status='published' 的文档
     Channel(String),
+    /// 多频道作用域：命中任一指定频道的已发布文档。
+    /// 与 Channel 等价于"频道 = ?" 改为 "频道 IN (...)"；语义为跨频道并集检索。
+    Channels(Vec<String>),
 }
 
 impl RetrievalScope {
@@ -157,6 +160,7 @@ impl RetrievalScope {
 
     /// 返回 `(WHERE 片段, 绑定参数列表)`，供检索 SQL 拼接：
     /// - Channel → `AND d.channel_id = ? AND d.status = 'published'` + channel_id
+    /// - Channels → `AND d.channel_id IN (?,...) AND d.status = 'published'` + channel_ids
     /// - 非空 Collection → `AND cm.document_id IN (?, ...)` + 文档 id 列表
     /// - Published / 空 Collection → `AND d.status = 'published'`（无绑定参数）
     ///
@@ -168,6 +172,19 @@ impl RetrievalScope {
                 "AND d.channel_id = ? AND d.status = 'published'".to_string(),
                 vec![channel_id.clone()],
             ),
+            RetrievalScope::Channels(channel_ids) if !channel_ids.is_empty() => {
+                let placeholders = (0..channel_ids.len())
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (
+                    format!(
+                        "AND d.channel_id IN ({}) AND d.status = 'published'",
+                        placeholders
+                    ),
+                    channel_ids.clone(),
+                )
+            }
             RetrievalScope::Collection(ids) if !ids.is_empty() => {
                 let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
                 (
@@ -175,8 +192,10 @@ impl RetrievalScope {
                     ids.clone(),
                 )
             }
-            // Published 或空 Collection 都回退到"仅已发布"线上行为
-            RetrievalScope::Published | RetrievalScope::Collection(_) => {
+            // Published / 空 Channels / 空 Collection 都回退到"仅已发布"线上行为
+            RetrievalScope::Published
+            | RetrievalScope::Channels(_)
+            | RetrievalScope::Collection(_) => {
                 ("AND d.status = 'published'".to_string(), Vec::new())
             }
         }
@@ -1095,6 +1114,38 @@ impl VectorStoreManager {
                     rusqlite::params![channel_id],
                     |row| row.get(0),
                 )?;
+                Ok::<bool, rusqlite::Error>(count > 0)
+            })
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Check if the vector store has any published documents across the given channels.
+    ///
+    /// Multi-channel variant of `has_published_documents_for_channel`. Returns true if
+    /// **any** of the channels has at least one published document (union semantics,
+    /// matching `RetrievalScope::Channels`). Returns false for an empty channel list.
+    pub async fn has_published_documents_for_channels(&self, channel_ids: &[String]) -> bool {
+        if channel_ids.is_empty() {
+            return false;
+        }
+        let channel_ids = channel_ids.to_vec();
+        self.conn
+            .call(move |conn| {
+                let placeholders = (0..channel_ids.len())
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT COUNT(*) FROM documents \
+                     WHERE channel_id IN ({}) AND status = 'published'",
+                    placeholders
+                );
+                let params: Vec<&dyn rusqlite::ToSql> = channel_ids
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::ToSql)
+                    .collect();
+                let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
                 Ok::<bool, rusqlite::Error>(count > 0)
             })
             .await

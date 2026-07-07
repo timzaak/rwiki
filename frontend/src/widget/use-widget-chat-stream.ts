@@ -52,7 +52,7 @@ function processSseLines(
   return false
 }
 
-export function useWidgetChatStream(apiUrl: string, channelId: string): ChatStreamValue {
+export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatStreamValue {
   const abortRef = useRef<AbortController | null>(null)
   const storeRef = useRef(useChatStore.getState())
   storeRef.current = useChatStore.getState()

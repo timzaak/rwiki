@@ -34,7 +34,7 @@ function renderWithStream(
 ) {
   return render(
     <ChatStreamProvider value={value}>
-      <ChannelIdProvider channelId="test-channel">
+      <ChannelIdProvider channelId={['test-channel']}>
         <MessageItem message={message} onRetry={extra?.onRetry} />
       </ChannelIdProvider>
     </ChatStreamProvider>,

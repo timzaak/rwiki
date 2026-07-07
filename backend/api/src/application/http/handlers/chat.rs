@@ -42,15 +42,18 @@ const POST_ANSWER_MAX_QUESTIONS: usize = 3;
 // DTOs
 // ---------------------------------------------------------------------------
 
-/// 公共聊天请求体：按 channelId 限定检索范围，仅命中该频道的已发布文档。
+/// 公共聊天请求体：按 channelId 限定检索范围，仅命中指定频道的已发布文档。
+///
+/// `channel_id` 为频道标识数组，支持跨频道并集检索；后端会在 handler 中
+/// 逐个校验频道已配置（缺失或任一未配置返回 400）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
-    /// 频道标识；必填（在 handler 中二次校验以返回 400）
+    /// 频道标识数组；必填（在 handler 中二次校验以返回 400）。支持单频道或多频道并集检索。
     #[serde(rename = "channelId", default)]
-    pub channel_id: Option<String>,
+    pub channel_id: Option<Vec<String>>,
 }
 
 /// 认证端点 `/api/chat/scoped` 的请求体：允许通过 documentIds 指定文档集合，
@@ -65,12 +68,37 @@ pub struct ScopedChatRequest {
     pub document_ids: Option<Vec<String>>,
 }
 
+/// Deserialize a query field that may appear as a single value (`?channelId=a`)
+/// or repeated (`?channelId=a&channelId=b`) into a flat `Vec<String>`.
+///
+/// axum's `Query` extractor uses serde_urlencoded, which hands a `Vec<String>`-typed
+/// field a sequence only when the key repeats. A lone `?channelId=a` would fail to
+/// deserialize as `Vec<String>`. This helper accepts both shapes so the public
+/// suggestions endpoint stays backward-compatible with single-value callers (e.g.
+/// the main site `/c/$channelId` route) while supporting multi-channel queries.
+fn deserialize_channel_id_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrVec {
+        Single(String),
+        Multi(Vec<String>),
+    }
+
+    Ok(match StrOrVec::deserialize(deserializer)? {
+        StrOrVec::Single(s) => vec![s],
+        StrOrVec::Multi(v) => v,
+    })
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SuggestionsQuery {
     pub locale: Option<String>,
-    /// 频道标识；必填
-    #[serde(rename = "channelId")]
-    pub channel_id: String,
+    /// 频道标识数组；必填（支持 query 单值 `?channelId=a` 或多值 `?channelId=a&channelId=b`）
+    #[serde(rename = "channelId", deserialize_with = "deserialize_channel_id_vec")]
+    pub channel_id: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -205,10 +233,12 @@ pub(crate) fn match_locale(
     }
 }
 
-/// Get channel-level suggested questions for a given locale.
+/// Get channel-level suggested questions for a given locale across one or more channels.
 ///
-/// Returns the configured channel's suggested questions; an empty list when the channel
-/// has none. Does NOT fall back to global/widget suggestions.
+/// Returns the union of each configured channel's suggested questions for the locale,
+/// de-duplicated (preserving first-seen order) and truncated to MAX_SUGGESTIONS.
+/// Returns an empty list when none of the channels have configured questions.
+/// Does NOT fall back to global/widget suggestions.
 #[utoipa::path(
     get,
     path = "/api/chat/suggestions",
@@ -223,9 +253,9 @@ pub async fn suggestions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResponse>, ApiError> {
-    let channel_id = state
+    let channel_ids = state
         .channels_config
-        .require_configured(&params.channel_id)
+        .require_all_configured(&params.channel_id)
         .map_err(|e| match e {
             rwiki_core::config::ChannelValidationError::Empty => {
                 ApiError::bad_request("channelId 不能为空")
@@ -235,11 +265,22 @@ pub async fn suggestions(
             }
         })?;
 
-    let channel_questions: Option<HashMap<String, Vec<String>>> = state
-        .channels_config
-        .get(channel_id)
-        .and_then(|s| s.suggested_questions.clone());
-    let questions = match_locale(&channel_questions, params.locale.as_deref());
+    // 跨频道合并：逐个频道解析 locale 匹配的问题，按频道顺序累加、去重（保首见顺序），
+    // 最后截断到 MAX_SUGGESTIONS。
+    let mut seen = std::collections::HashSet::new();
+    let mut questions: Vec<String> = Vec::new();
+    for channel_id in &channel_ids {
+        let channel_questions: Option<HashMap<String, Vec<String>>> = state
+            .channels_config
+            .get(channel_id)
+            .and_then(|s| s.suggested_questions.clone());
+        for q in match_locale(&channel_questions, params.locale.as_deref()) {
+            if seen.insert(q.clone()) {
+                questions.push(q);
+            }
+        }
+    }
+    questions.truncate(MAX_SUGGESTIONS);
     Ok(Json(SuggestionsResponse { questions }))
 }
 
@@ -758,26 +799,33 @@ fn has_valid_rewrite_json(raw: &str) -> bool {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// Build a session storage key that scopes memory sessions by channel.
+/// Build a session storage key that scopes memory sessions by channel(s).
 ///
-/// Channel-scoped public chat uses `channel:{channel_id}:{session_id}` so old global
-/// sessions (plain `session_id`) can never leak into channel sessions.
+/// Channel-scoped public chat uses `channel:{sorted_channel_ids_joined}:{session_id}`,
+/// where the channel ids are joined by `,`. Multi-channel requests key on the
+/// **sorted, comma-joined** id list so the same set of channels (regardless of input
+/// order) maps to one session bucket — preventing cross-channel-combination cross-talk.
 /// Scoped/internal chat uses `scoped:{session_id}`.
-pub(crate) fn session_key(channel_id: Option<&str>, session_id: &str) -> String {
+pub(crate) fn session_key(channel_id: Option<&[String]>, session_id: &str) -> String {
     match channel_id {
-        Some(channel_id) => format!("channel:{channel_id}:{session_id}"),
-        None => format!("scoped:{session_id}"),
+        Some(ids) if !ids.is_empty() => {
+            format!("channel:{}:{session_id}", ids.join(","))
+        }
+        _ => format!("scoped:{session_id}"),
     }
 }
 
 /// 共享的 SSE 聊天主体：解析完请求、确定作用域之后的全部逻辑。
 /// public `/api/chat` 与认证的 `/api/chat/scoped` 均通过此函数复用，
-/// 仅检索作用域不同（前者恒为 Channel，后者可由 documentIds 构建 Collection）。
+/// 仅检索作用域不同（前者恒为 Channel(s)，后者可由 documentIds 构建 Collection）。
+///
+/// `channel_id` 为已排序（字典序）、去重的频道列表；用于派生 session_key、
+/// 系统 prompt 解析与低召回记录。单频道请求以单元素切片传入。
 async fn chat_inner(
     state: Arc<AppState>,
     message: String,
     session_id: Option<String>,
-    channel_id: Option<&str>,
+    channel_id: Option<&[String]>,
     scope: rwiki_core::infrastructure::vector_store::RetrievalScope,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Validate message is not empty
@@ -881,12 +929,18 @@ async fn chat_inner(
             );
         }
 
-        // 旁路：低相关召回记录（不阻塞回答；仅公开 Channel 作用域；仅功能启用时）
+        // 旁路：低相关召回记录（不阻塞回答；仅公开 Channel(s) 作用域；仅功能启用时）
         // 写入为 detached tokio::spawn，chat 不 join/不 await，与 SSE 流式回答并发；
         // 返回 Err 仅 warn、不传播；任务 panic 由 tokio 隔离——均不影响 chat 回答。
+        //
+        // 多频道场景下，low_recall_records.channel_id（单 TEXT 列）记录排序后的**首个**
+        // 频道 id，使 list 查询行为保持单频道筛选语义不变。
         let low_recall_channel_id: Option<String> = match &scope {
             rwiki_core::infrastructure::vector_store::RetrievalScope::Channel(channel_id) => {
                 Some(channel_id.clone())
+            }
+            rwiki_core::infrastructure::vector_store::RetrievalScope::Channels(channel_ids) => {
+                channel_ids.first().cloned()
             }
             _ => None,
         };
@@ -948,7 +1002,7 @@ async fn chat_inner(
 
         let system_prompt = state
             .channels_config
-            .resolved_system_prompt(channel_id, &state.chat_config.system_prompt);
+            .resolved_system_prompt_multi(channel_id, &state.chat_config.system_prompt);
         let preamble = build_preamble(system_prompt, summary.as_deref(), &context_text);
 
         // Build per-request agent with context in preamble
@@ -1228,9 +1282,10 @@ pub async fn chat(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let channel_id = state
+    // 批量校验：去重 + 字典序排序，保证同一组频道（不论输入顺序）映射到稳定的作用域与 session。
+    let channel_ids = state
         .channels_config
-        .require_configured(req.channel_id.as_deref().unwrap_or(""))
+        .require_all_configured(req.channel_id.as_deref().unwrap_or(&[]))
         .map_err(|e| match e {
             rwiki_core::config::ChannelValidationError::Empty => {
                 ApiError::bad_request("channelId 不能为空")
@@ -1242,7 +1297,7 @@ pub async fn chat(
 
     if !state
         .vector_store
-        .has_published_documents_for_channel(channel_id)
+        .has_published_documents_for_channels(&channel_ids)
         .await
     {
         return Err(ApiError::service_unavailable("当前频道没有可用文档"));
@@ -1252,8 +1307,8 @@ pub async fn chat(
         state,
         req.message,
         req.session_id,
-        Some(channel_id),
-        rwiki_core::infrastructure::vector_store::RetrievalScope::Channel(channel_id.to_string()),
+        Some(&channel_ids),
+        rwiki_core::infrastructure::vector_store::RetrievalScope::Channels(channel_ids.clone()),
     )
     .await
 }
@@ -2509,7 +2564,8 @@ mod tests {
     /// so they cannot collide with old global sessions that used plain session_id.
     #[test]
     fn session_key_scopes_public_chat_by_channel() {
-        let key = session_key(Some("help_center"), "sess-123");
+        let ch = ["help_center".to_string()];
+        let key = session_key(Some(&ch), "sess-123");
         assert_eq!(key, "channel:help_center:sess-123");
     }
 
@@ -2525,8 +2581,19 @@ mod tests {
     /// storage keys, ensuring cross-channel session isolation.
     #[test]
     fn session_key_same_session_id_differs_by_channel() {
-        let key_a = session_key(Some("channel_a"), "shared-session");
-        let key_b = session_key(Some("channel_b"), "shared-session");
+        let ch_a = ["channel_a".to_string()];
+        let ch_b = ["channel_b".to_string()];
+        let key_a = session_key(Some(&ch_a), "shared-session");
+        let key_b = session_key(Some(&ch_b), "shared-session");
         assert_ne!(key_a, key_b, "same session id must be isolated by channel");
+    }
+
+    /// Covers: multi-channel requests join the sorted channel ids with a comma, so the
+    /// same set of channels maps to one stable key regardless of input order.
+    #[test]
+    fn session_key_multi_channel_joins_sorted_ids() {
+        let ch = ["help_center".to_string(), "dev_docs".to_string()];
+        let key = session_key(Some(&ch), "sess-multi");
+        assert_eq!(key, "channel:help_center,dev_docs:sess-multi");
     }
 }

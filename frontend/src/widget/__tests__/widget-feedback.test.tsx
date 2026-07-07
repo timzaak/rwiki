@@ -39,7 +39,7 @@ import type { FeedbackSubmitFn } from '@/hooks/feedback-context'
  */
 
 const API_URL = 'http://localhost:3000'
-const CHANNEL_ID = 'help-center'
+const CHANNEL_ID = ['help-center']
 
 /** A minimal valid config exercising the widget's real content component. */
 function makeConfig(
@@ -142,7 +142,7 @@ describe('WidgetApp feedback submitFn (channelId in request body)', () => {
   })
 
   it('uses the current config.channelId after re-render with a different channel', async () => {
-    const OTHER_CHANNEL = 'docs-channel'
+    const OTHER_CHANNEL = ['docs-channel']
     const rendered = await renderWidgetWithProbe(makeConfig({ channelId: CHANNEL_ID }))
 
     await waitFor(() => expect(capturedSubmitFn).toBeDefined())

@@ -169,7 +169,7 @@ fn chat_request(message: &str, session_id: &str) -> Request<Body> {
     let body = serde_json::json!({
         "message": message,
         "sessionId": session_id,
-        "channelId": TEST_CHANNEL_ID,
+        "channelId": [TEST_CHANNEL_ID],
     });
     Request::builder()
         .method(Method::POST)

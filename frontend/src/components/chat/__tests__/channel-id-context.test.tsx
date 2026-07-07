@@ -17,12 +17,12 @@ import { ChannelIdProvider, useChannelId } from '@/components/chat/channel-id-co
 describe('useChannelId', () => {
   it('returns the channelId provided by ChannelIdProvider', () => {
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <ChannelIdProvider channelId="channel-a">{children}</ChannelIdProvider>
+      <ChannelIdProvider channelId={['channel-a']}>{children}</ChannelIdProvider>
     )
 
     const { result } = renderHook(() => useChannelId(), { wrapper })
 
-    expect(result.current).toBe('channel-a')
+    expect(result.current).toEqual(['channel-a'])
   })
 
   it('throws when called outside of a ChannelIdProvider', () => {
@@ -34,11 +34,11 @@ describe('useChannelId', () => {
 
   it('passes through a different channelId prop', () => {
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <ChannelIdProvider channelId="channel-b">{children}</ChannelIdProvider>
+      <ChannelIdProvider channelId={['channel-b']}>{children}</ChannelIdProvider>
     )
 
     const { result } = renderHook(() => useChannelId(), { wrapper })
 
-    expect(result.current).toBe('channel-b')
+    expect(result.current).toEqual(['channel-b'])
   })
 })

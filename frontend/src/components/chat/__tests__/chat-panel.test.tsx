@@ -32,7 +32,7 @@ beforeEach(() => {
 
 function renderPanel() {
   return render(
-    <ChannelIdProvider channelId="test-channel">
+    <ChannelIdProvider channelId={['test-channel']}>
       <ChatPanel />
     </ChannelIdProvider>,
   )

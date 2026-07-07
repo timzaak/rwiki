@@ -17,7 +17,7 @@ import { ChannelIdProvider } from '@/components/chat/channel-id-context'
  * injects the main-site channelId that flows into the feedback request body
  * (`channelId` alongside sessionId/messageId/feedback).
  */
-function makeWrapper(channelId = 'channel-a') {
+function makeWrapper(channelId: string[] = ['channel-a']) {
   return ({ children }: { children: React.ReactNode }) => (
     <ChannelIdProvider channelId={channelId}>{children}</ChannelIdProvider>
   )
@@ -145,7 +145,7 @@ describe('useFeedback submitFeedback', () => {
       assistantMessage: 'AI response',
       // FE-T02 load-bearing contract: channelId from ChannelIdProvider is transmitted
       // in the feedback request body alongside the feedback fields.
-      channelId: 'channel-a',
+      channelId: ['channel-a'],
     })
 
     // isSubmitting back to false after completion
@@ -191,16 +191,16 @@ describe('useFeedback submitFeedback', () => {
     )
 
     const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
-      wrapper: makeWrapper('channel-a'),
+      wrapper: makeWrapper(['channel-a']),
     })
 
     await act(async () => {
       await result.current.submitFeedback('dislike')
     })
 
-    const body = capturedBody as { channelId?: string; feedback?: string } | null
+    const body = capturedBody as { channelId?: string[]; feedback?: string } | null
     expect(body).not.toBeNull()
-    expect(body!.channelId).toBe('channel-a')
+    expect(body!.channelId).toEqual(['channel-a'])
     expect(body!.feedback).toBe('dislike')
   })
 
@@ -328,7 +328,7 @@ describe('useFeedback context resolution', () => {
     const contextSubmitFn = vi.fn().mockResolvedValue(undefined)
 
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <ChannelIdProvider channelId="channel-a">
+      <ChannelIdProvider channelId={['channel-a']}>
         <FeedbackSubmitFnContext.Provider value={contextSubmitFn}>
           {children}
         </FeedbackSubmitFnContext.Provider>
@@ -352,7 +352,7 @@ describe('useFeedback context resolution', () => {
       assistantMessage: 'AI response',
       // channelId from the wrapping ChannelIdProvider is forwarded to the context
       // submitFn (Widget path); main-site path forwards it to the SDK body.
-      channelId: 'channel-a',
+      channelId: ['channel-a'],
     })
 
     const msg = useChatStore.getState().messages[0]

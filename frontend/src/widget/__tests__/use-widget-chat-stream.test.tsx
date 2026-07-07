@@ -61,7 +61,7 @@ function resetStore() {
 }
 
 const API_URL = 'http://localhost:3000'
-const CHANNEL_ID = 'channel-a'
+const CHANNEL_ID = ['channel-a']
 
 describe('useWidgetChatStream', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
@@ -346,7 +346,7 @@ describe('useWidgetChatStream channelId passthrough (request body contract)', ()
 
   it('uses the current channelId when re-rendered with a different channelId', async () => {
     // Guards against channelId being hoisted/omitted in the sendMessage closure.
-    const OTHER_CHANNEL = 'channel-b'
+    const OTHER_CHANNEL = ['channel-b']
     fetchSpy.mockResolvedValue(
       createSseResponse([sseData({ sessionId: 'sess-a' }), sseData({})]),
     )
@@ -368,7 +368,7 @@ describe('useWidgetChatStream channelId passthrough (request body contract)', ()
     await result.current.sendMessage('second')
 
     const body = readBody(0)
-    expect(body.channelId).toBe(OTHER_CHANNEL)
+    expect(body.channelId).toEqual(OTHER_CHANNEL)
     expect(body).not.toHaveProperty('channelId', CHANNEL_ID)
   })
 })

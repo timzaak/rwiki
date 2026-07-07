@@ -3,7 +3,13 @@ import { resolveLocale } from '@/components/chat/messages';
 
 export interface WidgetConfig {
   apiUrl: string;
-  channelId: string;
+  /**
+   * 频道标识；可传单个字符串或字符串数组。
+   *
+   * 归一化后（`validateWidgetConfig`）始终变为去重的 `string[]`。
+   * 多频道时按"跨频道并集检索"语义命中任一频道的已发布文档。
+   */
+  channelId: string | string[];
   primaryColor?: string;
   title?: string;
   position?: 'left' | 'right';
@@ -18,8 +24,43 @@ export const WIDGET_DEFAULTS = {
   position: 'right' as const,
 };
 
+/**
+ * Normalize channelId input (string | string[]) into a deduped, order-preserving,
+ * non-empty string[].
+ *
+ * - 每个元素 trim；过滤掉空串
+ * - 去重（保留首次出现顺序）
+ * - 结果为空数组 → 返回 null（调用方据此报 "channelId is required"）
+ * - 非法类型（number、object 等）→ 返回 null
+ */
+function normalizeChannelIds(input: unknown): string[] | null {
+  let ids: unknown[]
+  if (Array.isArray(input)) {
+    ids = input
+  } else if (typeof input === 'string') {
+    ids = [input]
+  } else {
+    return null
+  }
+
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of ids) {
+    if (typeof item !== 'string') return null
+    const trimmed = item.trim()
+    if (trimmed === '') continue
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed)
+      result.push(trimmed)
+    }
+  }
+  return result.length > 0 ? result : null
+}
+
 export interface ValidatedWidgetConfig
-  extends Required<Omit<WidgetConfig, 'welcomeMessage' | 'suggestedQuestions' | 'title' | 'locale' | 'messages'>> {
+  extends Required<Omit<WidgetConfig, 'welcomeMessage' | 'suggestedQuestions' | 'title' | 'locale' | 'messages' | 'channelId'>> {
+  /** 归一化后的频道列表：去重、保序、非空元素。 */
+  channelId: string[];
   title?: string;
   welcomeMessage?: string;
   suggestedQuestions?: string[] | Record<string, string[]>;
@@ -38,7 +79,9 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     return null;
   }
 
-  if (!config.channelId || typeof config.channelId !== 'string' || config.channelId.trim() === '') {
+  // channelId: accept string | string[]; normalize to a deduped, ordered, non-empty string[].
+  const channelId = normalizeChannelIds(config.channelId);
+  if (channelId === null) {
     console.error('[RWikiChat] channelId is required');
     return null;
   }
@@ -77,7 +120,7 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
 
   const validated: ValidatedWidgetConfig = {
     apiUrl,
-    channelId: config.channelId.trim(),
+    channelId,
     primaryColor: config.primaryColor ?? WIDGET_DEFAULTS.primaryColor,
     position: config.position ?? WIDGET_DEFAULTS.position,
     locale: resolveLocale(config.locale ?? navigator.language),

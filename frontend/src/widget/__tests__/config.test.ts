@@ -76,7 +76,7 @@ describe('validateWidgetConfig', () => {
     })
     expect(result).toEqual({
       apiUrl: 'http://example.com',
-      channelId: 'help-center',
+      channelId: ['help-center'],
       primaryColor: '#ff5500',
       title: 'My Bot',
       position: 'left',
@@ -89,7 +89,7 @@ describe('validateWidgetConfig', () => {
     const result = validateWidgetConfig({ apiUrl: 'http://example.com', channelId: 'help-center' })
     expect(result).toEqual({
       apiUrl: 'http://example.com',
-      channelId: 'help-center',
+      channelId: ['help-center'],
       primaryColor: '#3b82f6',
       position: 'right',
       locale: 'en',
@@ -180,14 +180,16 @@ describe('validateWidgetConfig', () => {
     expect(result).toHaveProperty('welcomeMessage', 'How can I help?')
   })
 
-  // ── channelId validation (FE-D01: channelId is required + trimmed) ──
-  describe('channelId validation (required + trimmed)', () => {
+  // ── channelId validation (FE-D01: channelId is required + normalized to string[]) ──
+  describe('channelId validation (required + normalized to string[])', () => {
     // Boundary table: every invalid shape → null + console.error mentions
     // 'channelId is required'. Uses a VALID apiUrl so we reach the channelId check.
     it.each([
       ['missing (undefined)', { apiUrl: 'http://example.com' }],
       ['empty string', { apiUrl: 'http://example.com', channelId: '' }],
       ['whitespace-only', { apiUrl: 'http://example.com', channelId: '   ' }],
+      ['empty array', { apiUrl: 'http://example.com', channelId: [] }],
+      ['array of empty strings', { apiUrl: 'http://example.com', channelId: ['', '  '] }],
       ['non-string (number)', { apiUrl: 'http://example.com', channelId: 123 as any }],
     ])('returns null and logs channelId error when channelId is %s', (_label, config) => {
       const result = validateWidgetConfig(config)
@@ -195,23 +197,32 @@ describe('validateWidgetConfig', () => {
       expect(console.error).toHaveBeenCalledWith('[RWikiChat] channelId is required')
     })
 
-    it('trims surrounding whitespace from a valid channelId', () => {
+    it('normalizes a single string channelId into a one-element array (trimmed)', () => {
       const result = validateWidgetConfig({
         apiUrl: 'http://example.com',
         channelId: '  help-center  ',
       })
       expect(result).not.toBeNull()
-      expect(result!.channelId).toBe('help-center')
+      expect(result!.channelId).toEqual(['help-center'])
     })
 
-    it('includes a trimmed channelId alongside a valid apiUrl in the result', () => {
+    it('includes the normalized channelId[] alongside a valid apiUrl in the result', () => {
       const result = validateWidgetConfig({
         apiUrl: 'http://example.com/',
         channelId: 'help-center',
       })
       expect(result).not.toBeNull()
-      expect(result!.channelId).toBe('help-center')
+      expect(result!.channelId).toEqual(['help-center'])
       expect(result!.apiUrl).toBe('http://example.com')
+    })
+
+    it('normalizes an array channelId: trims, drops empties, dedupes (order-preserving)', () => {
+      const result = validateWidgetConfig({
+        apiUrl: 'http://example.com',
+        channelId: ['  help-center  ', '', 'docs', 'help-center', '  '],
+      })
+      expect(result).not.toBeNull()
+      expect(result!.channelId).toEqual(['help-center', 'docs'])
     })
   })
 })

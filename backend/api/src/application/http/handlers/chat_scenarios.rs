@@ -62,7 +62,7 @@ const LOW_RECALL_DOC_ID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 // Channel id constants shared by the multi-channel chat scenario tests.
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
-const EMPTY_SITE: &str = "empty_channel";
+const EMPTY_CHANNEL: &str = "empty_channel";
 
 // ---------------------------------------------------------------------------
 // build_rewrite_prompt scenarios
@@ -1598,7 +1598,7 @@ fn low_recall_chat_request(message: &str, session_id: &str) -> Request<Body> {
     let body = serde_json::json!({
         "message": message,
         "sessionId": session_id,
-        "channelId": LOW_RECALL_CHANNEL_ID,
+        "channelId": [LOW_RECALL_CHANNEL_ID],
     });
     Request::builder()
         .method(Method::POST)
@@ -1871,7 +1871,7 @@ async fn parse_json_body(body: Body) -> serde_json::Value {
 ///   - CHANNEL_A: has a channel-specific system prompt and suggested questions.
 ///   - CHANNEL_B: configured, but no system prompt override and no suggested
 ///     questions.
-///   - EMPTY_SITE: configured, but intentionally has no seeded documents.
+///   - EMPTY_CHANNEL: configured, but intentionally has no seeded documents.
 fn channel_chat_channels_config() -> ChannelsConfig {
     let mut channels = HashMap::new();
 
@@ -1904,7 +1904,7 @@ fn channel_chat_channels_config() -> ChannelsConfig {
     );
 
     channels.insert(
-        EMPTY_SITE.to_string(),
+        EMPTY_CHANNEL.to_string(),
         ChannelConfig {
             name: "Empty Site".to_string(),
             system_prompt: None,
@@ -2051,11 +2051,14 @@ async fn seed_channel_published_document(
 }
 
 /// Build a public `/api/chat` POST request that includes `channelId`.
+///
+/// `channel_id` is wrapped into a single-element array to match the multi-channel
+/// request contract (`channelId: Vec<String>`).
 fn channel_chat_request(message: &str, session_id: &str, channel_id: &str) -> Request<Body> {
     let body = serde_json::json!({
         "message": message,
         "sessionId": session_id,
-        "channelId": channel_id,
+        "channelId": [channel_id],
     });
     Request::builder()
         .method(Method::POST)
@@ -2150,7 +2153,7 @@ async fn chat_configured_channel_without_published_docs_returns_503() {
     let state = build_channel_chat_app_state().await;
     let app = create_api_routes(state);
 
-    let req = channel_chat_request("hello", "session-empty-channel", EMPTY_SITE);
+    let req = channel_chat_request("hello", "session-empty-channel", EMPTY_CHANNEL);
     let resp = app.oneshot(req).await.expect("send request");
 
     assert_eq!(
@@ -2186,6 +2189,101 @@ async fn chat_valid_channel_id_succeeds_when_published_docs_exist() {
         resp.status(),
         StatusCode::OK,
         "chat for a configured channel with published docs must return 200"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-channel scenarios
+// ---------------------------------------------------------------------------
+
+/// Build a public `/api/chat` POST request carrying multiple channelIds.
+fn multi_channel_chat_request(
+    message: &str,
+    session_id: &str,
+    channel_ids: &[&str],
+) -> Request<Body> {
+    let body = serde_json::json!({
+        "message": message,
+        "sessionId": session_id,
+        "channelId": channel_ids,
+    });
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request")
+}
+
+// Covers: a request listing several configured channels passes validation when at
+// least one has published documents (union semantics). Verifies the multi-channel
+// gate (`require_all_configured` + `has_published_documents_for_channels`).
+
+#[tokio::test]
+async fn chat_with_multiple_configured_channels_succeeds_when_any_has_published_docs() {
+    let state = build_channel_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    // CHANNEL_A is seeded with published docs; CHANNEL_B is configured but empty.
+    // Union semantics: the request must still succeed because CHANNEL_A has docs.
+    let req = multi_channel_chat_request("hello", "session-multi-channel", &[CHANNEL_A, CHANNEL_B]);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "chat for multiple configured channels must return 200 when any has published docs"
+    );
+}
+
+// Covers: a multi-channel request where one channelId is not configured must be
+// rejected with 400 before any retrieval runs.
+// Maps `require_all_configured` NotConfigured to 400 Bad Request.
+
+#[tokio::test]
+async fn chat_with_one_unconfigured_channel_among_many_returns_400() {
+    let state = build_channel_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = multi_channel_chat_request(
+        "hello",
+        "session-multi-channel-unknown",
+        &[CHANNEL_A, "unknown-channel"],
+    );
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "chat mixing a configured and an unconfigured channel must return 400"
+    );
+
+    let body = parse_json_body(resp.into_body()).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown-channel"),
+        "error message must mention the unconfigured channel id, got {body}"
+    );
+}
+
+// Covers: an empty channelId array is rejected with 400 (multi-channel Empty guard).
+
+#[tokio::test]
+async fn chat_with_empty_channel_id_array_returns_400() {
+    let state = build_channel_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let req = multi_channel_chat_request("hello", "session-empty-array", &[]);
+    let resp = app.oneshot(req).await.expect("send request");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "chat with an empty channelId array must return 400"
     );
 }
 
@@ -2297,8 +2395,8 @@ fn channel_specific_system_prompt_overrides_global_and_unconfigured_channel_fall
 #[test]
 fn identical_session_id_in_different_channels_uses_distinct_storage_keys() {
     let session_id = "shared-session-123";
-    let key_a = session_key(Some(CHANNEL_A), session_id);
-    let key_b = session_key(Some(CHANNEL_B), session_id);
+    let key_a = session_key(Some(&[CHANNEL_A.to_string()]), session_id);
+    let key_b = session_key(Some(&[CHANNEL_B.to_string()]), session_id);
 
     assert_ne!(
         key_a, key_b,
@@ -2326,20 +2424,20 @@ async fn cross_channel_session_lookup_does_not_share_history() {
 
     {
         let mut sessions = state.chat_sessions.lock().await;
-        let key_a = session_key(Some(CHANNEL_A), session_id);
+        let key_a = session_key(Some(&[CHANNEL_A.to_string()]), session_id);
         sessions
             .entry(key_a)
             .or_insert_with(|| rwiki_core::domain::chat::ChatSession::new(session_id.to_string()))
             .add_message("user", "question for channel A");
     }
 
-    let key_b = session_key(Some(CHANNEL_B), session_id);
+    let key_b = session_key(Some(&[CHANNEL_B.to_string()]), session_id);
     let sessions = state.chat_sessions.lock().await;
     assert!(
         sessions.get(&key_b).is_none(),
         "CHANNEL_B must not see CHANNEL_A's session history"
     );
-    let key_a = session_key(Some(CHANNEL_A), session_id);
+    let key_a = session_key(Some(&[CHANNEL_A.to_string()]), session_id);
     let channel_a_session = sessions.get(&key_a).expect("CHANNEL_A session exists");
     assert_eq!(
         channel_a_session.messages.len(),

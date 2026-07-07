@@ -97,7 +97,7 @@ function ChannelRoute() {
   }
 
   return (
-    <ChannelIdProvider channelId={channelId}>
+    <ChannelIdProvider channelId={[channelId]}>
       <DefaultChatStreamProvider>
         <Outlet />
         <FloatingButton visible />
@@ -128,7 +128,7 @@ function ChannelChatModalMount({ channelId }: { channelId: string }) {
     }
 
     let cancelled = false
-    suggestions({ query: { locale, channelId } })
+    suggestions({ query: { locale, channelId: [channelId] } })
       .then((result) => {
         if (!cancelled && result.data) {
           suggestionCache.set(cacheKey, result.data.questions)

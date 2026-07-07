@@ -7,11 +7,11 @@ const cache = new Map<string, string[]>()
 export function useWidgetSuggestions(
   apiUrl: string,
   locale: Locale,
-  channelId: string,
+  channelId: string[],
   // Kept for call-site compatibility; intentionally ignored (channel-strict).
   _fallback?: string[] | Record<string, string[]>,
 ): string[] {
-  const cacheKey = `${channelId}:${locale}`
+  const cacheKey = `${channelId.join(',')}:${locale}`
   const [questions, setQuestions] = useState<string[]>(() => cache.get(cacheKey) ?? [])
 
   useEffect(() => {
@@ -21,7 +21,11 @@ export function useWidgetSuggestions(
     }
 
     let cancelled = false
-    fetch(`${apiUrl}/api/chat/suggestions?locale=${encodeURIComponent(locale)}&channelId=${encodeURIComponent(channelId)}`)
+    // Build query: repeat channelId for each entry (?channelId=a&channelId=b).
+    const channelQuery = channelId
+      .map((id) => `channelId=${encodeURIComponent(id)}`)
+      .join('&')
+    fetch(`${apiUrl}/api/chat/suggestions?locale=${encodeURIComponent(locale)}&${channelQuery}`)
       .then((r) => r.json())
       .then((data: { questions?: string[] }) => {
         if (cancelled) return

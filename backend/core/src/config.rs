@@ -439,6 +439,38 @@ impl ChannelsConfig {
         }
     }
 
+    /// 批量校验多个 channelId：逐个 trim/去空/校验已配置，返回**去重并按字典序排序**的 Vec。
+    ///
+    /// 返回值保证：元素唯一、非空、均已配置、且顺序稳定（字典序）。
+    /// 稳定的顺序用于派生 session_key / 低召回记录 channel_id 等存储键，使同一组频道
+    /// 不论输入顺序如何都映射到同一作用域与存储桶，避免跨频道组合串话。
+    ///
+    /// 语义：
+    /// - 输入为空切片或全为空白字符串 → `ChannelValidationError::Empty`
+    /// - 任一频道未配置 → 返回首个未配置频道的 `NotConfigured(id)`
+    pub fn require_all_configured(
+        &self,
+        channel_ids: &[String],
+    ) -> Result<Vec<String>, ChannelValidationError> {
+        let mut seen = std::collections::HashSet::new();
+        let mut normalized: Vec<String> = Vec::new();
+        for id in channel_ids {
+            let trimmed = Self::normalize_channel_id(id).ok_or(ChannelValidationError::Empty)?;
+            if !seen.contains(trimmed) {
+                if !self.channels.contains_key(trimmed) {
+                    return Err(ChannelValidationError::NotConfigured(trimmed.to_string()));
+                }
+                seen.insert(trimmed.to_string());
+                normalized.push(trimmed.to_string());
+            }
+        }
+        if normalized.is_empty() {
+            return Err(ChannelValidationError::Empty);
+        }
+        normalized.sort();
+        Ok(normalized)
+    }
+
     /// 解析频道系统提示词：频道级配置存在且非空时优先，否则回退到全局提示词。
     pub fn resolved_system_prompt<'a>(
         &'a self,
@@ -447,6 +479,24 @@ impl ChannelsConfig {
     ) -> &'a str {
         channel_id
             .and_then(|id| self.channels.get(id))
+            .and_then(|s| s.system_prompt.as_deref())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(global)
+    }
+
+    /// 多频道版本的系统提示词解析：取频道列表中**首个**已配置且非空的频道级提示词，
+    /// 否则回退到全局提示词。
+    ///
+    /// 调用方通常传入已排序（`require_all_configured` 返回值）的频道列表，
+    /// 因此"首个"是确定的（字典序最小的频道）。多频道场景下无法为每个频道分别拼装
+    /// 单一 system prompt，取首个是最简单、可预测的策略。
+    pub fn resolved_system_prompt_multi<'a>(
+        &'a self,
+        channel_ids: Option<&[String]>,
+        global: &'a str,
+    ) -> &'a str {
+        channel_ids
+            .and_then(|ids| ids.iter().find_map(|id| self.channels.get(id)))
             .and_then(|s| s.system_prompt.as_deref())
             .filter(|s| !s.is_empty())
             .unwrap_or(global)

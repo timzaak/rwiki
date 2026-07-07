@@ -27,7 +27,7 @@ use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
-const UNKNOWN_SITE: &str = "unknown_channel";
+const UNKNOWN_CHANNEL: &str = "unknown_channel";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -214,7 +214,7 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-1",
         "messageId": "msg-1",
         "feedback": "like",
@@ -273,7 +273,7 @@ async fn submit_dislike_feedback_returns_204() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-2",
         "messageId": "msg-2",
         "feedback": "dislike",
@@ -314,7 +314,7 @@ async fn submit_feedback_with_channel_id_persists_channel_id() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
-        "channelId": CHANNEL_B,
+        "channelId": [CHANNEL_B],
         "sessionId": "sess-channel",
         "messageId": "msg-channel",
         "feedback": "like",
@@ -373,10 +373,10 @@ async fn missing_or_empty_channel_id_returns_400() {
         "missing channelId must return 400"
     );
 
-    // Empty channelId
+    // Empty channelId (array with an empty-string element → Empty)
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": "",
+        "channelId": [""],
         "sessionId": "sess-empty",
         "messageId": "msg-empty",
         "feedback": "like",
@@ -391,10 +391,10 @@ async fn missing_or_empty_channel_id_returns_400() {
         "empty channelId must return 400"
     );
 
-    // Whitespace-only channelId
+    // Whitespace-only channelId (array with a whitespace-only element → Empty)
     let app = create_api_routes(state);
     let body = serde_json::json!({
-        "channelId": "   ",
+        "channelId": ["   "],
         "sessionId": "sess-ws",
         "messageId": "msg-ws",
         "feedback": "like",
@@ -420,7 +420,7 @@ async fn unconfigured_channel_id_returns_400() {
     let app = create_api_routes(state.clone());
 
     let body = serde_json::json!({
-        "channelId": UNKNOWN_SITE,
+        "channelId": [UNKNOWN_CHANNEL],
         "sessionId": "sess-unknown",
         "messageId": "msg-unknown",
         "feedback": "like",
@@ -465,7 +465,7 @@ async fn identical_session_message_in_two_channels_does_not_overwrite() {
     // Submit like for CHANNEL_A
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "shared-sess",
         "messageId": "shared-msg",
         "feedback": "like",
@@ -481,7 +481,7 @@ async fn identical_session_message_in_two_channels_does_not_overwrite() {
     // Submit dislike for CHANNEL_B with the same external ids
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_B,
+        "channelId": [CHANNEL_B],
         "sessionId": "shared-sess",
         "messageId": "shared-msg",
         "feedback": "dislike",
@@ -497,7 +497,7 @@ async fn identical_session_message_in_two_channels_does_not_overwrite() {
     // Update CHANNEL_A to dislike
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "shared-sess",
         "messageId": "shared-msg",
         "feedback": "dislike",
@@ -559,7 +559,7 @@ async fn switch_feedback_like_to_dislike_updates_db() {
     // First submit like
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-3",
         "messageId": "msg-3",
         "feedback": "like",
@@ -577,7 +577,7 @@ async fn switch_feedback_like_to_dislike_updates_db() {
     // Then submit dislike with same session/message
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-3",
         "messageId": "msg-3",
         "feedback": "dislike",
@@ -633,7 +633,7 @@ async fn cancel_feedback_deletes_db_record() {
     // First submit like
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": "like",
@@ -651,7 +651,7 @@ async fn cancel_feedback_deletes_db_record() {
     // Cancel with feedback=null
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": null,
@@ -683,7 +683,7 @@ async fn cancel_feedback_deletes_db_record() {
     // Idempotent: cancel again on non-existent record still returns 204
     let app = create_api_routes(state);
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-4",
         "messageId": "msg-4",
         "feedback": null,
@@ -710,7 +710,7 @@ async fn missing_required_fields_returns_400() {
     // Empty sessionId
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "",
         "messageId": "msg-5",
         "feedback": "like",
@@ -728,7 +728,7 @@ async fn missing_required_fields_returns_400() {
     // Empty messageId
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-5",
         "messageId": "",
         "feedback": "like",
@@ -746,7 +746,7 @@ async fn missing_required_fields_returns_400() {
     // Empty sessionId and messageId (whitespace-only also counts)
     let app = create_api_routes(state);
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "   ",
         "messageId": "   ",
         "feedback": "like",
@@ -773,7 +773,7 @@ async fn invalid_feedback_value_returns_400() {
     // feedback: "meh"
     let app = create_api_routes(state.clone());
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-6",
         "messageId": "msg-6",
         "feedback": "meh",
@@ -791,7 +791,7 @@ async fn invalid_feedback_value_returns_400() {
     // feedback: "unknown"
     let app = create_api_routes(state);
     let body = serde_json::json!({
-        "channelId": CHANNEL_A,
+        "channelId": [CHANNEL_A],
         "sessionId": "sess-6",
         "messageId": "msg-6",
         "feedback": "unknown",
@@ -943,7 +943,7 @@ async fn query_feedback_unconfigured_channel_id_returns_400() {
 
     let req = auth_request(
         Method::GET,
-        format!("/api/chat/feedback?channelId={UNKNOWN_SITE}"),
+        format!("/api/chat/feedback?channelId={UNKNOWN_CHANNEL}"),
     );
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(

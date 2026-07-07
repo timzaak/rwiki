@@ -18,9 +18,9 @@ use rwiki_core::config::ChannelValidationError;
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRequest {
-    /// 频道标识；必填（在 handler 中二次校验以返回 400）
+    /// 频道标识数组；必填（在 handler 中二次校验以返回 400）。支持单频道或多频道。
     #[serde(default)]
-    pub channel_id: Option<String>,
+    pub channel_id: Option<Vec<String>>,
     pub session_id: String,
     pub message_id: String,
     pub feedback: Option<String>,
@@ -81,16 +81,21 @@ pub async fn submit_feedback(
     State(state): State<Arc<AppState>>,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let channel_id = state
+    // 批量校验频道；多频道时取排序后首个频道写入 chat_feedback.channel_id（单 TEXT 列），
+    // 保持 list 查询单频道筛选语义不变。
+    let channel_ids = state
         .channels_config
-        .require_configured(req.channel_id.as_deref().unwrap_or(""))
+        .require_all_configured(req.channel_id.as_deref().unwrap_or(&[]))
         .map_err(|e| match e {
             ChannelValidationError::Empty => ApiError::bad_request("channelId 不能为空"),
             ChannelValidationError::NotConfigured(id) => {
                 ApiError::bad_request(format!("频道 {id} 未配置"))
             }
-        })?
-        .to_string();
+        })?;
+    let channel_id = channel_ids
+        .first()
+        .cloned()
+        .expect("require_all_configured guarantees at least one id");
 
     // Validate required fields
     if req.session_id.trim().is_empty() || req.message_id.trim().is_empty() {

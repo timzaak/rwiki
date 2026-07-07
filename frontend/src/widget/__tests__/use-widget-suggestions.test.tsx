@@ -31,7 +31,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 async function renderSuggestionsHook(
-  channelId: string,
+  channelId: string | string[],
   locale: 'en' | 'zh-CN' = 'en',
   fallback?: string[],
   apiUrl = API_URL,
@@ -39,7 +39,8 @@ async function renderSuggestionsHook(
   const mod = await import('../use-widget-suggestions')
   type UseSuggestions = typeof useWidgetSuggestions
   const useFn = mod.useWidgetSuggestions as unknown as UseSuggestions
-  return renderHook(() => useFn(apiUrl, locale, channelId, fallback))
+  const channelIds = Array.isArray(channelId) ? channelId : [channelId]
+  return renderHook(() => useFn(apiUrl, locale, channelIds, fallback))
 }
 
 describe('useWidgetSuggestions', () => {
