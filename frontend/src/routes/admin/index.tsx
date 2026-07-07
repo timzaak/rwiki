@@ -7,6 +7,7 @@ import {
 } from '@/components/admin/document-table'
 import { UploadDocument } from '@/components/admin/upload-document'
 import { BatchActions } from '@/components/admin/batch-actions'
+import { useAdminSite } from '@/lib/admin-site-context'
 
 export const Route = createFileRoute('/admin/')({
   // 守卫集中在父 route `routes/admin/route.tsx` 的 `beforeLoad`，
@@ -15,7 +16,9 @@ export const Route = createFileRoute('/admin/')({
 })
 
 function AdminComponent() {
-  const { documents, loading, error, refreshList } = useDocumentList()
+  // 全局站点上下文：siteId 为 null 时 useDocumentList 跳过请求（列表保持空）。
+  const { siteId } = useAdminSite()
+  const { documents, loading, error, refreshList } = useDocumentList(siteId)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [statusFilter, setStatusFilter] = useState<DocumentStatusFilter>('all')
 

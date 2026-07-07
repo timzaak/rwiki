@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chat-store'
 import { MessageItem } from '@/components/chat/message-item'
 import { ChatStreamProvider } from '@/components/chat/chat-stream-context'
 import type { ChatStreamValue } from '@/components/chat/chat-stream-context'
+import { SiteIdProvider } from '@/components/chat/site-id-context'
 import { client } from '@/lib/api-generated/client.gen'
 
 function makeMessage(overrides?: Partial<ChatMessage>): ChatMessage {
@@ -33,7 +34,9 @@ function renderWithStream(
 ) {
   return render(
     <ChatStreamProvider value={value}>
-      <MessageItem message={message} onRetry={extra?.onRetry} />
+      <SiteIdProvider siteId="test-site">
+        <MessageItem message={message} onRetry={extra?.onRetry} />
+      </SiteIdProvider>
     </ChatStreamProvider>,
   )
 }

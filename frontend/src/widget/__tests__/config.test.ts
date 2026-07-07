@@ -7,14 +7,18 @@ describe('validateWidgetConfig', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
-  it('returns null and logs error when apiUrl is missing', () => {
+  it('returns null and logs error when apiUrl is missing (checked before siteId)', () => {
+    // apiUrl is checked BEFORE siteId: when BOTH are missing, the apiUrl error
+    // is the one that fires and the function returns immediately — siteId error
+    // never fires. This makes the impl's ordering observable.
     const result = validateWidgetConfig({})
     expect(result).toBeNull()
-    expect(console.error).toHaveBeenCalledWith('[RWikiChat] apiUrl is required')
+    expect(console.error).toHaveBeenCalledTimes(1)
+    expect(console.error).toHaveBeenNthCalledWith(1, '[RWikiChat] apiUrl is required')
   })
 
   it('returns null when apiUrl does not start with http:// or https://', () => {
-    const result = validateWidgetConfig({ apiUrl: 'ftp://example.com' })
+    const result = validateWidgetConfig({ apiUrl: 'ftp://example.com', siteId: 'help-center' })
     expect(result).toBeNull()
     expect(console.error).toHaveBeenCalledWith(
       '[RWikiChat] apiUrl must start with http:// or https://',
@@ -22,7 +26,7 @@ describe('validateWidgetConfig', () => {
   })
 
   it('strips trailing slashes from apiUrl', () => {
-    const result = validateWidgetConfig({ apiUrl: 'http://example.com/' })
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com/', siteId: 'help-center' })
     expect(result).not.toBeNull()
     expect(result!.apiUrl).toBe('http://example.com')
   })
@@ -30,6 +34,7 @@ describe('validateWidgetConfig', () => {
   it('returns null when primaryColor is not a valid hex color', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       primaryColor: 'red',
     })
     expect(result).toBeNull()
@@ -41,6 +46,7 @@ describe('validateWidgetConfig', () => {
   it('preserves valid primaryColor in result', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       primaryColor: '#ff5500',
     })
     expect(result).not.toBeNull()
@@ -50,6 +56,7 @@ describe('validateWidgetConfig', () => {
   it('returns null when position is invalid', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       position: 'top' as any,
     })
     expect(result).toBeNull()
@@ -61,6 +68,7 @@ describe('validateWidgetConfig', () => {
   it('returns ValidatedWidgetConfig with defaults for valid full config', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       primaryColor: '#ff5500',
       title: 'My Bot',
       position: 'left',
@@ -68,6 +76,7 @@ describe('validateWidgetConfig', () => {
     })
     expect(result).toEqual({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       primaryColor: '#ff5500',
       title: 'My Bot',
       position: 'left',
@@ -76,10 +85,11 @@ describe('validateWidgetConfig', () => {
     })
   })
 
-  it('applies defaults when only apiUrl is provided', () => {
-    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+  it('applies defaults when only apiUrl and siteId are provided', () => {
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com', siteId: 'help-center' })
     expect(result).toEqual({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       primaryColor: '#3b82f6',
       position: 'right',
       locale: 'en',
@@ -87,18 +97,19 @@ describe('validateWidgetConfig', () => {
   })
 
   it('does not include a title key when no title is provided (resolved at render time)', () => {
-    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com', siteId: 'help-center' })
     expect(result).not.toHaveProperty('title')
   })
 
   it('resolves locale from navigator.language by default (en-US -> en)', () => {
-    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com', siteId: 'help-center' })
     expect(result!.locale).toBe('en')
   })
 
   it('preserves an explicit supported locale', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       locale: 'zh-CN',
     })
     expect(result!.locale).toBe('zh-CN')
@@ -107,6 +118,7 @@ describe('validateWidgetConfig', () => {
   it('resolves an explicit locale prefix to a supported locale (zh-CN-Hans -> zh-CN)', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       locale: 'zh-CN-Hans',
     })
     expect(result!.locale).toBe('zh-CN')
@@ -116,6 +128,7 @@ describe('validateWidgetConfig', () => {
     for (const locale of ['zh-Hans', 'zh-TW', 'zh-HK', 'zh']) {
       const result = validateWidgetConfig({
         apiUrl: 'http://example.com',
+        siteId: 'help-center',
         locale,
       })
       expect(result!.locale).toBe('zh-CN')
@@ -125,6 +138,7 @@ describe('validateWidgetConfig', () => {
   it('falls back to en for an unsupported locale', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       locale: 'fr',
     })
     expect(result!.locale).toBe('en')
@@ -134,6 +148,7 @@ describe('validateWidgetConfig', () => {
     const overrides = { inputPlaceholder: 'Custom' }
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       messages: overrides,
     })
     expect(result).toHaveProperty('messages', overrides)
@@ -142,6 +157,7 @@ describe('validateWidgetConfig', () => {
   it('returns null when locale is an empty string', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       locale: '',
     })
     expect(result).toBeNull()
@@ -151,15 +167,51 @@ describe('validateWidgetConfig', () => {
   })
 
   it('omits welcomeMessage when undefined', () => {
-    const result = validateWidgetConfig({ apiUrl: 'http://example.com' })
+    const result = validateWidgetConfig({ apiUrl: 'http://example.com', siteId: 'help-center' })
     expect(result).not.toHaveProperty('welcomeMessage')
   })
 
   it('includes welcomeMessage when provided', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
+      siteId: 'help-center',
       welcomeMessage: 'How can I help?',
     })
     expect(result).toHaveProperty('welcomeMessage', 'How can I help?')
+  })
+
+  // ── siteId validation (FE-D01: siteId is required + trimmed) ──
+  describe('siteId validation (required + trimmed)', () => {
+    // Boundary table: every invalid shape → null + console.error mentions
+    // 'siteId is required'. Uses a VALID apiUrl so we reach the siteId check.
+    it.each([
+      ['missing (undefined)', { apiUrl: 'http://example.com' }],
+      ['empty string', { apiUrl: 'http://example.com', siteId: '' }],
+      ['whitespace-only', { apiUrl: 'http://example.com', siteId: '   ' }],
+      ['non-string (number)', { apiUrl: 'http://example.com', siteId: 123 as any }],
+    ])('returns null and logs siteId error when siteId is %s', (_label, config) => {
+      const result = validateWidgetConfig(config)
+      expect(result).toBeNull()
+      expect(console.error).toHaveBeenCalledWith('[RWikiChat] siteId is required')
+    })
+
+    it('trims surrounding whitespace from a valid siteId', () => {
+      const result = validateWidgetConfig({
+        apiUrl: 'http://example.com',
+        siteId: '  help-center  ',
+      })
+      expect(result).not.toBeNull()
+      expect(result!.siteId).toBe('help-center')
+    })
+
+    it('includes a trimmed siteId alongside a valid apiUrl in the result', () => {
+      const result = validateWidgetConfig({
+        apiUrl: 'http://example.com/',
+        siteId: 'help-center',
+      })
+      expect(result).not.toBeNull()
+      expect(result!.siteId).toBe('help-center')
+      expect(result!.apiUrl).toBe('http://example.com')
+    })
   })
 })

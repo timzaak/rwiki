@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { chat } from '@/lib/api-generated/sdk.gen'
 import type { ChatRequest } from '@/lib/api-generated/types.gen'
 import { useChatStore } from '@/stores/chat-store'
+import { useSiteId } from '@/components/chat/site-id-context'
 
 function detectEventType(
   data: unknown,
@@ -19,6 +20,7 @@ function detectEventType(
 
 export function useChatStream() {
   const abortRef = useRef<AbortController | null>(null)
+  const siteId = useSiteId()
 
   const {
     sessionId,
@@ -52,6 +54,7 @@ export function useChatStream() {
         const body: ChatRequest = {
           message: content,
           sessionId: sessionId,
+          siteId,
         }
 
         const result = await chat({
@@ -122,6 +125,7 @@ export function useChatStream() {
     },
     [
       sessionId,
+      siteId,
       addUserMessage,
       addAssistantMessage,
       appendToLastAssistant,

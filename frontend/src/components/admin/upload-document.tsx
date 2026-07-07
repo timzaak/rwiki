@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { uploadDocument } from '@/lib/api-generated/sdk.gen'
+import { useAdminSite } from '@/lib/admin-site-context'
 
 export interface UploadDocumentProps {
   /** Called after a successful upload so the parent can refresh the list. */
@@ -41,6 +42,9 @@ function StatusIcon({ status }: { status: UploadStatus }) {
 }
 
 export function UploadDocument({ onUploaded }: UploadDocumentProps) {
+  // 全局站点上下文：siteId 为 null（尚未选定/无可用站点）时禁用上传。
+  // 不在此组件内新增 per-upload selector（已被全局 admin-site-select 取代）。
+  const { siteId } = useAdminSite()
   const inputRef = useRef<HTMLInputElement>(null)
   const idRef = useRef(0)
   const [items, setItems] = useState<UploadItem[]>([])
@@ -90,6 +94,8 @@ export function UploadDocument({ onUploaded }: UploadDocumentProps) {
   async function doUpload() {
     const queue = items.filter((item) => item.status === 'pending')
     if (queue.length === 0) return
+    // siteId 必填（multipart body）；为 null 时本函数不应被触发（按钮已禁用）。
+    if (siteId === null) return
 
     setUploading(true)
     let anyNew = false
@@ -98,7 +104,9 @@ export function UploadDocument({ onUploaded }: UploadDocumentProps) {
       try {
         // multipart serialization is handled by the generated SDK
         // (formDataBodySerializer + Content-Type cleared); no manual work here.
-        const result = await uploadDocument({ body: { file: item.file } })
+        const result = await uploadDocument({
+          body: { file: item.file, siteId },
+        })
         if (result.error || (result.response && !result.response.ok)) {
           updateStatus(item.id, 'error')
         } else {
@@ -135,12 +143,12 @@ export function UploadDocument({ onUploaded }: UploadDocumentProps) {
         variant="default"
         size="lg"
         data-testid="upload-dropzone"
-        disabled={uploading}
+        disabled={uploading || siteId === null}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
-          if (uploading) return
+          if (uploading || siteId === null) return
           stageFiles(e.dataTransfer.files)
         }}
       >
@@ -196,7 +204,7 @@ export function UploadDocument({ onUploaded }: UploadDocumentProps) {
               className="mt-3 w-full"
               data-testid="upload-button"
               onClick={doUpload}
-              disabled={uploading || pending.length === 0}
+              disabled={uploading || pending.length === 0 || siteId === null}
             >
               {uploading ? (
                 <LoaderCircleIcon className="animate-spin" />

@@ -9,6 +9,19 @@ import { useChatStore } from '@/stores/chat-store'
 import type { ChatMessage } from '@/stores/chat-store'
 import { FeedbackSubmitFnContext } from '@/hooks/feedback-context'
 import { client } from '@/lib/api-generated/client.gen'
+import { SiteIdProvider } from '@/components/chat/site-id-context'
+
+/**
+ * FE-D02 regression: `useFeedback` now reads `useSiteId()` at the top, so every
+ * hook render must be wrapped in `SiteIdProvider` or it throws. The wrapper
+ * injects the main-site siteId that flows into the feedback request body
+ * (`siteId` alongside sessionId/messageId/feedback).
+ */
+function makeWrapper(siteId = 'site-a') {
+  return ({ children }: { children: React.ReactNode }) => (
+    <SiteIdProvider siteId={siteId}>{children}</SiteIdProvider>
+  )
+}
 
 function resetStore() {
   useChatStore.setState({
@@ -61,9 +74,9 @@ describe('useFeedback initial state', () => {
   it('returns undefined feedback when message has no feedback', () => {
     seedStore([makeMessage({ feedback: undefined })])
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     expect(result.current.feedback).toBeUndefined()
   })
@@ -71,9 +84,9 @@ describe('useFeedback initial state', () => {
   it('returns like feedback when message feedback is like', () => {
     seedStore([makeMessage({ feedback: 'like' })])
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     expect(result.current.feedback).toBe('like')
   })
@@ -81,9 +94,9 @@ describe('useFeedback initial state', () => {
   it('returns dislike feedback when message feedback is dislike', () => {
     seedStore([makeMessage({ feedback: 'dislike' })])
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     expect(result.current.feedback).toBe('dislike')
   })
@@ -91,9 +104,9 @@ describe('useFeedback initial state', () => {
   it('returns isSubmitting false initially', () => {
     seedStore([makeMessage()])
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     expect(result.current.isSubmitting).toBe(false)
   })
@@ -111,9 +124,9 @@ describe('useFeedback submitFeedback', () => {
       }),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     await act(async () => {
       await result.current.submitFeedback('like')
@@ -130,6 +143,9 @@ describe('useFeedback submitFeedback', () => {
       feedback: 'like',
       userMessage: 'user question',
       assistantMessage: 'AI response',
+      // FE-T02 load-bearing contract: siteId from SiteIdProvider is transmitted
+      // in the feedback request body alongside the feedback fields.
+      siteId: 'site-a',
     })
 
     // isSubmitting back to false after completion
@@ -147,9 +163,9 @@ describe('useFeedback submitFeedback', () => {
       }),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     await act(async () => {
       await result.current.submitFeedback('dislike')
@@ -158,6 +174,34 @@ describe('useFeedback submitFeedback', () => {
     const msg = useChatStore.getState().messages[0]
     expect(msg.feedback).toBe('dislike')
     expect((capturedBody as { feedback: string }).feedback).toBe('dislike')
+  })
+
+  it('includes siteId in the feedback request body (dislike path)', async () => {
+    // FE-T02 load-bearing contract: triggering like/dislike on the main-site
+    // path (no contextSubmitFn → SDK branch) must carry siteId in the body,
+    // not just the feedback fields.
+    seedStore([makeMessage({ feedback: undefined })])
+
+    let capturedBody: unknown = null
+    server.use(
+      http.post('/api/chat/feedback', async ({ request }) => {
+        capturedBody = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper('site-a'),
+    })
+
+    await act(async () => {
+      await result.current.submitFeedback('dislike')
+    })
+
+    const body = capturedBody as { siteId?: string; feedback?: string } | null
+    expect(body).not.toBeNull()
+    expect(body!.siteId).toBe('site-a')
+    expect(body!.feedback).toBe('dislike')
   })
 
   it('cancels feedback when submitting same type', async () => {
@@ -171,9 +215,9 @@ describe('useFeedback submitFeedback', () => {
       }),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     await act(async () => {
       await result.current.submitFeedback('like')
@@ -201,9 +245,9 @@ describe('useFeedback submitFeedback', () => {
       ),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     await act(async () => {
       await result.current.submitFeedback('dislike')
@@ -230,9 +274,9 @@ describe('useFeedback submitFeedback', () => {
       }),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     // Start the submit
     const submitPromise = act(async () => {
@@ -263,10 +307,9 @@ describe('useFeedback submitFeedback', () => {
       }),
     )
 
-    const { result } = renderHook(() =>
-      useFeedback(
-        makeFeedbackOptions({ sessionId: null }),
-      ),
+    const { result } = renderHook(
+      () => useFeedback(makeFeedbackOptions({ sessionId: null })),
+      { wrapper: makeWrapper() },
     )
 
     await act(async () => {
@@ -285,9 +328,11 @@ describe('useFeedback context resolution', () => {
     const contextSubmitFn = vi.fn().mockResolvedValue(undefined)
 
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <FeedbackSubmitFnContext.Provider value={contextSubmitFn}>
-        {children}
-      </FeedbackSubmitFnContext.Provider>
+      <SiteIdProvider siteId="site-a">
+        <FeedbackSubmitFnContext.Provider value={contextSubmitFn}>
+          {children}
+        </FeedbackSubmitFnContext.Provider>
+      </SiteIdProvider>
     )
 
     const { result } = renderHook(
@@ -305,6 +350,9 @@ describe('useFeedback context resolution', () => {
       feedback: 'like',
       userMessage: 'user question',
       assistantMessage: 'AI response',
+      // siteId from the wrapping SiteIdProvider is forwarded to the context
+      // submitFn (Widget path); main-site path forwards it to the SDK body.
+      siteId: 'site-a',
     })
 
     const msg = useChatStore.getState().messages[0]
@@ -323,9 +371,9 @@ describe('useFeedback context resolution', () => {
     )
 
     // No FeedbackSubmitFnContext wrapper — falls through to SDK
-    const { result } = renderHook(() =>
-      useFeedback(makeFeedbackOptions()),
-    )
+    const { result } = renderHook(() => useFeedback(makeFeedbackOptions()), {
+      wrapper: makeWrapper(),
+    })
 
     await act(async () => {
       await result.current.submitFeedback('like')

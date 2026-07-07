@@ -11,16 +11,27 @@ import { useCallback, useEffect, useState } from 'react'
 import { listDocuments } from '@/lib/api-generated/sdk.gen'
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 
-export function useDocumentList() {
+/**
+ * @param siteId 当前管理后台站点。为 null 时跳过请求（列表保持空、loading=false），
+ *   避免向必填 siteId 的端点发送非法载荷。非 null 时按该 siteId 拉取，切换站点自动重取。
+ */
+export function useDocumentList(siteId: string | null) {
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const refreshList = useCallback(async () => {
+    // siteId 为 null（尚未选定/无可用站点）时不发请求。
+    if (siteId === null) {
+      setDocuments([])
+      setLoading(false)
+      setError(null)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
-      const result = await listDocuments()
+      const result = await listDocuments({ query: { siteId } })
       if (result.error) {
         setError('Failed to load')
       } else if (result.data) {
@@ -31,7 +42,7 @@ export function useDocumentList() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [siteId])
 
   useEffect(() => {
     void refreshList()

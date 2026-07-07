@@ -1,41 +1,40 @@
 import { useEffect, useState } from 'react'
 
 import type { Locale } from '@/components/chat/messages'
-import { matchSuggestedQuestions } from '@/utils/match-suggested-questions'
 
 const cache = new Map<string, string[]>()
 
 export function useWidgetSuggestions(
   apiUrl: string,
   locale: Locale,
-  fallback?: string[] | Record<string, string[]>,
+  siteId: string,
+  // Kept for call-site compatibility; intentionally ignored (site-strict).
+  _fallback?: string[] | Record<string, string[]>,
 ): string[] {
-  const [questions, setQuestions] = useState<string[]>(() => {
-    const cached = cache.get(locale)
-    return cached ?? matchSuggestedQuestions(fallback, locale)
-  })
+  const cacheKey = `${siteId}:${locale}`
+  const [questions, setQuestions] = useState<string[]>(() => cache.get(cacheKey) ?? [])
 
   useEffect(() => {
-    if (cache.has(locale)) {
-      setQuestions(cache.get(locale)!)
+    if (cache.has(cacheKey)) {
+      setQuestions(cache.get(cacheKey)!)
       return
     }
 
     let cancelled = false
-    fetch(`${apiUrl}/api/chat/suggestions?locale=${encodeURIComponent(locale)}`)
+    fetch(`${apiUrl}/api/chat/suggestions?locale=${encodeURIComponent(locale)}&siteId=${encodeURIComponent(siteId)}`)
       .then((r) => r.json())
       .then((data: { questions?: string[] }) => {
-        if (!cancelled && data.questions?.length) {
-          cache.set(locale, data.questions)
-          setQuestions(data.questions)
-        }
+        if (cancelled) return
+        const next = data.questions ?? []
+        cache.set(cacheKey, next)
+        setQuestions(next)
       })
       .catch(() => {})
 
     return () => {
       cancelled = true
     }
-  }, [apiUrl, locale])
+  }, [apiUrl, locale, siteId, cacheKey])
 
   return questions
 }

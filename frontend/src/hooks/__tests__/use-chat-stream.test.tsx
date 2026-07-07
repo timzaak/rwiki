@@ -7,6 +7,19 @@ import { createSseResponse } from '@/test/helpers/sse'
 import { useChatStream } from '@/hooks/use-chat-stream'
 import { useChatStore } from '@/stores/chat-store'
 import { client } from '@/lib/api-generated/client.gen'
+import { SiteIdProvider } from '@/components/chat/site-id-context'
+
+/**
+ * FE-D02 regression: `useChatStream` now reads `useSiteId()` at the top, so
+ * every hook render must be wrapped in `SiteIdProvider` or it throws. The
+ * wrappers below inject the main-site siteId that flows into the chat request
+ * body (`siteId` alongside `message`/`sessionId`).
+ */
+function makeWrapper(siteId = 'site-a') {
+  return ({ children }: { children: React.ReactNode }) => (
+    <SiteIdProvider siteId={siteId}>{children}</SiteIdProvider>
+  )
+}
 
 function resetStore() {
   useChatStore.setState({
@@ -52,7 +65,9 @@ describe('useChatStream sending a message', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('What is the sales data?')
 
@@ -87,7 +102,9 @@ describe('useChatStream sending a message', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 
@@ -108,7 +125,9 @@ describe('useChatStream sending a message', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 
@@ -130,7 +149,9 @@ describe('useChatStream sending a message', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 
@@ -169,7 +190,9 @@ describe('useChatStream sending a message', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     // Start sending, then immediately abort
     const sendPromise = result.current.sendMessage('test')
@@ -201,14 +224,54 @@ describe('useChatStream request body validation', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test question')
 
     expect(capturedBody).toEqual({
       message: 'test question',
       sessionId: null,
+      // FE-T02 load-bearing contract: siteId from SiteIdProvider is transmitted
+      // in the chat request body alongside message/sessionId.
+      siteId: 'site-a',
     })
+  })
+
+  it('changes body.siteId when the provider siteId changes on rerender', async () => {
+    // Guards against siteId being hoisted out of the sendMessage dependency
+    // array: if the hook closed over a stale siteId, the rerendered send would
+    // still carry the old value. The wrapper reads a mutable ref so the same
+    // wrapper instance can supply a different siteId after `rerender`.
+    let capturedBody: unknown = null
+    let currentSiteId = 'site-a'
+
+    server.use(
+      http.post('/api/chat', async ({ request }) => {
+        capturedBody = await request.json()
+        return createSseResponse([
+          { event: 'session', data: { sessionId: 'sess-rerender' } },
+          { event: 'done', data: {} },
+        ])
+      }),
+    )
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <SiteIdProvider siteId={currentSiteId}>{children}</SiteIdProvider>
+    )
+
+    const { result, rerender } = renderHook(() => useChatStream(), { wrapper })
+
+    // Flip the provider siteId, then re-render so the hook re-reads context.
+    currentSiteId = 'site-b'
+    rerender()
+
+    await result.current.sendMessage('after rerender')
+
+    const body = capturedBody as { siteId?: string } | null
+    expect(body).not.toBeNull()
+    expect(body!.siteId).toBe('site-b')
   })
 
   it('sends sessionId in request when store has one', async () => {
@@ -227,13 +290,17 @@ describe('useChatStream request body validation', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('follow-up question')
 
     expect(capturedBody).toEqual({
       message: 'follow-up question',
       sessionId: 'existing-session-123',
+      // FE-T02: siteId is transmitted on follow-up messages too.
+      siteId: 'site-a',
     })
   })
 })
@@ -258,7 +325,9 @@ describe('useChatStream post-answer suggestions', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 
@@ -295,7 +364,9 @@ describe('useChatStream post-answer suggestions', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 
@@ -329,7 +400,9 @@ describe('useChatStream post-answer suggestions', () => {
       }),
     )
 
-    const { result } = renderHook(() => useChatStream())
+    const { result } = renderHook(() => useChatStream(), {
+      wrapper: makeWrapper(),
+    })
 
     await result.current.sendMessage('test')
 

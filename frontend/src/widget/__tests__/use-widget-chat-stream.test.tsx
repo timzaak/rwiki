@@ -61,6 +61,7 @@ function resetStore() {
 }
 
 const API_URL = 'http://localhost:3000'
+const SITE_ID = 'site-a'
 
 describe('useWidgetChatStream', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
@@ -86,7 +87,7 @@ describe('useWidgetChatStream', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -103,7 +104,7 @@ describe('useWidgetChatStream', () => {
   it('sets error in store on network failure during fetch', async () => {
     fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'))
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -115,7 +116,7 @@ describe('useWidgetChatStream', () => {
   it('sets error with status code on non-OK HTTP response', async () => {
     fetchSpy.mockResolvedValue(new Response('Service Unavailable', { status: 503 }))
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -136,7 +137,7 @@ describe('useWidgetChatStream', () => {
       })
     })
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     // Start sending, then abort
     const sendPromise = result.current.sendMessage('Hi')
@@ -175,7 +176,7 @@ describe('useWidgetChatStream', () => {
 
     fetchSpy.mockImplementationOnce(firstFetch).mockImplementationOnce(secondFetch)
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     // Start first message (stream stays open)
     const firstPromise = result.current.sendMessage('First')
@@ -227,7 +228,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -254,7 +255,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -283,7 +284,7 @@ describe('useWidgetChatStream post-answer suggestions', () => {
       ]),
     )
 
-    const { result } = renderHook(() => useWidgetChatStream(API_URL))
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
 
     await result.current.sendMessage('Hi')
 
@@ -296,5 +297,78 @@ describe('useWidgetChatStream post-answer suggestions', () => {
     expect(lastMsg.suggestedQuestions).toEqual(['what-next-a', 'what-next-b'])
     expect(lastMsg.isStreaming).toBe(false)
     expect(state.isLoading).toBe(false)
+  })
+})
+
+describe('useWidgetChatStream siteId passthrough (request body contract)', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    resetStore()
+    fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  /** Reads the JSON body of the nth fetch call (init arg index 1). */
+  function readBody(callIndex = 0): Record<string, unknown> {
+    const init = fetchSpy.mock.calls[callIndex]![1] as RequestInit
+    return JSON.parse(init.body as string)
+  }
+
+  it('sends siteId in the /api/chat POST body alongside message + sessionId', async () => {
+    fetchSpy.mockResolvedValue(
+      createSseResponse([sseData({ sessionId: 'sess-body' }), sseData({})]),
+    )
+
+    const { result } = renderHook(() => useWidgetChatStream(API_URL, SITE_ID))
+
+    await result.current.sendMessage('Hi')
+
+    // The fetch hit /api/chat ...
+    const url = fetchSpy.mock.calls[0]![0] as string
+    expect(url).toBe(`${API_URL}/api/chat`)
+
+    // ... and its JSON body carries siteId at the same level as message/sessionId
+    const body = readBody(0)
+    expect(body).toEqual(
+      expect.objectContaining({
+        message: 'Hi',
+        sessionId: null, // no prior session
+        siteId: SITE_ID,
+      }),
+    )
+  })
+
+  it('uses the current siteId when re-rendered with a different siteId', async () => {
+    // Guards against siteId being hoisted/omitted in the sendMessage closure.
+    const OTHER_SITE = 'site-b'
+    fetchSpy.mockResolvedValue(
+      createSseResponse([sseData({ sessionId: 'sess-a' }), sseData({})]),
+    )
+
+    const { result, rerender } = renderHook(
+      ({ siteId }) => useWidgetChatStream(API_URL, siteId),
+      { initialProps: { siteId: SITE_ID } },
+    )
+
+    await result.current.sendMessage('first')
+
+    // Re-render with a different siteId; the memoized sendMessage must pick it up
+    rerender({ siteId: OTHER_SITE })
+    fetchSpy.mockClear()
+    fetchSpy.mockResolvedValue(
+      createSseResponse([sseData({ sessionId: 'sess-b' }), sseData({})]),
+    )
+
+    await result.current.sendMessage('second')
+
+    const body = readBody(0)
+    expect(body.siteId).toBe(OTHER_SITE)
+    expect(body).not.toHaveProperty('siteId', SITE_ID)
   })
 })

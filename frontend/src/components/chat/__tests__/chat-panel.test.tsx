@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { useChatStreamContext } from '@/components/chat/chat-stream-context'
 import { useChatStore } from '@/stores/chat-store'
 import { ChatPanel } from '@/components/chat/chat-panel'
+import { SiteIdProvider } from '@/components/chat/site-id-context'
 
 vi.mock('@/components/chat/chat-stream-context', () => ({
   useChatStreamContext: vi.fn(),
@@ -30,7 +31,11 @@ beforeEach(() => {
 })
 
 function renderPanel() {
-  return render(<ChatPanel />)
+  return render(
+    <SiteIdProvider siteId="test-site">
+      <ChatPanel />
+    </SiteIdProvider>,
+  )
 }
 
 describe('ChatPanel error display', () => {

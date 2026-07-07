@@ -17,6 +17,7 @@ import { server } from '@/test/mocks/server'
 import { client } from '@/lib/api-generated/client.gen'
 import type { DocumentListItem } from '@/lib/api-generated/types.gen'
 import { AdminLayout } from '@/components/admin/admin-layout'
+import { AdminSiteProvider } from '@/lib/admin-site-context'
 
 /**
  * FE-T03 — admin multi-page route guard migration regression.
@@ -71,9 +72,20 @@ import { AdminLayout } from '@/components/admin/admin-layout'
 
 const BASE_URL = 'http://localhost:3000'
 const LIST_URL = `${BASE_URL}/api/documents`
+const SITES_URL = `${BASE_URL}/api/sites`
 const UPLOAD_URL = `${BASE_URL}/api/documents/upload`
 const BATCH_STATUS_URL = `${BASE_URL}/api/documents/batch-status`
 const KEY_STORAGE = 'rwiki_api_key'
+
+// FE-D03: AdminLayout (and AdminComponent via context) call useAdminSite(),
+// which fetches /api/sites on mount. The provider auto-selects the first site
+// ('site-a'), so useDocumentList's fetch carries siteId=site-a. The /api/sites
+// handler is installed in beforeEach; the /api/documents handler does NOT
+// validate siteId (the dedicated use-document-list suite owns that assertion).
+const SITES = [
+  { id: 'site-a', name: 'A' },
+  { id: 'site-b', name: 'B' },
+]
 
 function makeDoc(
   id: string,
@@ -86,6 +98,7 @@ function makeDoc(
     rowCount: 3,
     createdAt: '2026-01-01T00:00:00.000Z',
     errorMessage: null,
+    siteId: 'site-a',
   }
 }
 
@@ -103,6 +116,19 @@ const { Route: AdminIndexRoute } = await import('@/routes/admin/index')
 AdminComponent = AdminIndexRoute.options.component as ComponentType
 beforeLoad = AdminLayoutRoute.options.beforeLoad as BeforeLoadFn | undefined
 
+// FE-D03: AdminComponent consumes useAdminSite() (the page-body fetches
+// documents for the context's siteId). In the real app it renders inside
+// AdminLayout, which is wrapped in AdminSiteProvider by routes/admin/route.tsx.
+// The page-body cases render it standalone, so wrap it here to satisfy the
+// context requirement and let useDocumentList(siteId) carry site-a.
+function AdminPage() {
+  return (
+    <AdminSiteProvider>
+      <AdminComponent />
+    </AdminSiteProvider>
+  )
+}
+
 // --- shared MSW counters ---------------------------------------------------
 let listCallCount: number
 
@@ -115,10 +141,20 @@ function installListHandler(docs: DocumentListItem[]) {
   )
 }
 
+function installSitesHandler() {
+  server.use(
+    http.get(SITES_URL, () => HttpResponse.json({ sites: SITES })),
+  )
+}
+
 beforeEach(() => {
   localStorage.clear()
   client.setConfig({ baseUrl: BASE_URL })
   listCallCount = 0
+  // FE-D03: AdminLayout + page-body components consume useAdminSite(), which
+  // fetches /api/sites on mount. Seed a default list so the provider selects
+  // site-a and the descendant list/upload/batch calls carry a valid siteId.
+  installSitesHandler()
   vi.clearAllMocks()
 })
 
@@ -171,7 +207,13 @@ describe('admin layout — navigation visibility', () => {
     const adminRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: '/admin',
-      component: AdminLayout,
+      // FE-D03: AdminLayout consumes useAdminSite(); wrap it in the provider
+      // (mirrors routes/admin/route.tsx's inline wrapper component).
+      component: () => (
+        <AdminSiteProvider>
+          <AdminLayout />
+        </AdminSiteProvider>
+      ),
     })
     const adminIndexRoute = createRoute({
       getParentRoute: () => adminRoute,
@@ -217,13 +259,25 @@ describe('admin layout — navigation visibility', () => {
     expect(docManagementLink.getAttribute('href')).toContain('/admin')
     expect(lowRecallLink.getAttribute('href')).toContain('/admin/low-recall')
   })
+
+  it('renders admin-site-select and defaults to the first site (site-a)', async () => {
+    renderAdminLayoutInRouter()
+
+    // FE-D03 point a: the global site selector exists and auto-selects the
+    // first site from /api/sites (which beforeEach seeds with [site-a, site-b]).
+    const select = await screen.findByTestId('admin-site-select')
+    expect(select).toBeInTheDocument()
+    await waitFor(() => {
+      expect((select as HTMLSelectElement).value).toBe('site-a')
+    })
+  })
 })
 
 describe('admin page — list load assembly', () => {
   it('renders admin-page and document rows after the initial list load', async () => {
     installListHandler([makeDoc('a', 'draft'), makeDoc('b', 'published')])
 
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     // admin-page is always present (skeleton + content).
     expect(screen.getByTestId('admin-page')).toBeInTheDocument()
@@ -237,12 +291,29 @@ describe('admin page — list load assembly', () => {
     expect(listCallCount).toBe(1)
   })
 
-  it('shows the loading skeleton before the first fetch resolves', () => {
-    installListHandler([])
+  it('shows the loading skeleton before the first fetch resolves', async () => {
+    // FE-D03: AdminPage now resolves the site context (async /api/sites) before
+    // useDocumentList fires the document fetch. Stall the document response so
+    // the loading skeleton is observable once the provider selects site-a and
+    // the in-flight document request is pending.
+    let resolveList: () => void
+    const listPending = new Promise<void>((resolve) => {
+      resolveList = resolve
+    })
+    server.use(
+      http.get(LIST_URL, async () => {
+        await listPending
+        return HttpResponse.json({ documents: [] })
+      }),
+    )
 
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
-    expect(screen.getByTestId('document-list-loading')).toBeInTheDocument()
+    // The document-list-loading skeleton appears while the fetch is pending.
+    expect(await screen.findByTestId('document-list-loading')).toBeInTheDocument()
+
+    // Release the stalled response so the test tears down cleanly.
+    resolveList!()
   })
 
   it('shows document-list-error when listDocuments fails', async () => {
@@ -252,7 +323,7 @@ describe('admin page — list load assembly', () => {
       ),
     )
 
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     // Admin owns the list-level error testid (NOT the table's error-message).
     expect(await screen.findByTestId('document-list-error')).toBeVisible()
@@ -264,7 +335,7 @@ describe('admin page — list load assembly', () => {
     // `empty-state` testid; `document-list-empty` does not exist.
     installListHandler([])
 
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     expect(await screen.findByTestId('empty-state')).toBeVisible()
     expect(screen.queryByTestId('document-list-empty')).toBeNull()
@@ -277,7 +348,7 @@ describe('admin page — upload-success refresh wiring', () => {
     installListHandler([makeDoc('a', 'draft')])
 
     const user = userEvent.setup()
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     // Wait for the mount fetch to complete before driving the upload.
     await screen.findAllByTestId('document-row')
@@ -312,7 +383,7 @@ describe('admin page — batch-completed clears selection + refreshes', () => {
     installListHandler([makeDoc('a', 'draft'), makeDoc('b', 'draft')])
 
     const user = userEvent.setup()
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     await screen.findAllByTestId('document-row')
     expect(listCallCount).toBe(1)
@@ -381,7 +452,7 @@ describe('admin page — filter change clears selection (data-loss guard)', () =
     installListHandler([makeDoc('a', 'draft'), makeDoc('b', 'published')])
 
     const user = userEvent.setup()
-    render(<AdminComponent />)
+    render(<AdminPage />)
 
     await screen.findAllByTestId('document-row')
 

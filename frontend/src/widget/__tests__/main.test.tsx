@@ -80,9 +80,24 @@ describe('Widget lifecycle (init/destroy)', () => {
     errorSpy.mockRestore()
   })
 
+  it('init() without siteId logs error and does not create DOM', () => {
+    // Symmetric with the "init without apiUrl" case: siteId is now required,
+    // so omitting it must short-circuit validation before any DOM/root work.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const api = getGlobalAPI()
+    api.init({ apiUrl: 'http://localhost:3000' } as any)
+
+    expect(document.querySelector('#rwiki-chat-widget')).toBeNull()
+    expect(mockCreateRoot).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith('[RWikiChat] siteId is required')
+
+    errorSpy.mockRestore()
+  })
+
   it('init() with valid config creates Shadow DOM container and mounts React', () => {
     const api = getGlobalAPI()
-    api.init({ apiUrl: 'http://localhost:3000' })
+    api.init({ apiUrl: 'http://localhost:3000', siteId: 'help-center' })
 
     const container = document.querySelector('#rwiki-chat-widget')
     expect(container).not.toBeNull()
@@ -94,7 +109,7 @@ describe('Widget lifecycle (init/destroy)', () => {
 
   it('destroy() removes container and unmounts React', () => {
     const api = getGlobalAPI()
-    api.init({ apiUrl: 'http://localhost:3000' })
+    api.init({ apiUrl: 'http://localhost:3000', siteId: 'help-center' })
 
     expect(document.querySelector('#rwiki-chat-widget')).not.toBeNull()
 
@@ -107,9 +122,9 @@ describe('Widget lifecycle (init/destroy)', () => {
   it('double init() destroys the first instance before creating a new one', () => {
     const api = getGlobalAPI()
 
-    api.init({ apiUrl: 'http://localhost:3000' })
+    api.init({ apiUrl: 'http://localhost:3000', siteId: 'help-center' })
 
-    api.init({ apiUrl: 'http://localhost:3001' })
+    api.init({ apiUrl: 'http://localhost:3001', siteId: 'help-center' })
 
     // Only one container should exist
     expect(document.querySelectorAll('#rwiki-chat-widget')).toHaveLength(1)
@@ -150,7 +165,7 @@ describe('Widget setLocale', () => {
 
   it('setLocale() after init re-renders with the new locale without unmounting', () => {
     const api = getGlobalAPI()
-    api.init({ apiUrl: 'http://localhost:3000', locale: 'en' })
+    api.init({ apiUrl: 'http://localhost:3000', siteId: 'help-center', locale: 'en' })
     expect(mockRender).toHaveBeenCalledTimes(1)
 
     api.setLocale('zh-CN')

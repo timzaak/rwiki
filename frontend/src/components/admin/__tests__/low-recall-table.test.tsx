@@ -53,6 +53,7 @@ function makeRecord(
     resultCount: 0,
     createdAt: '2026-01-01T00:00:00.000Z',
     sources: [],
+    siteId: 'site-a',
     ...overrides,
   }
 }

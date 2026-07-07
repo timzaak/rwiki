@@ -14,6 +14,7 @@ import {
   batchUpdateStatus,
   deleteDocument,
 } from '@/lib/api-generated/sdk.gen'
+import { useAdminSite } from '@/lib/admin-site-context'
 
 export interface BatchActionsProps {
   selectedIds: Set<string>
@@ -36,6 +37,9 @@ export function BatchActions({
   documents,
   onCompleted,
 }: BatchActionsProps) {
+  // 全局站点上下文：siteId 为 null（尚未选定/无可用站点）时禁用所有操作。
+  // batch siteId 在 body（BatchStatusRequest），delete siteId 在 query。
+  const { siteId } = useAdminSite()
   const [submitting, setSubmitting] = useState(false)
   const [feedback, setFeedback] = useState<BatchStatusItem[] | null>(null)
   const [lastAction, setLastAction] = useState<'publish' | 'unpublish' | null>(
@@ -58,7 +62,7 @@ export function BatchActions({
     () => documents.filter((doc) => selectedIds.has(doc.id)),
     [documents, selectedIds],
   )
-  const disabled = selected.length === 0 || submitting
+  const disabled = selected.length === 0 || submitting || siteId === null
 
   // Concise feedback: a single summary line, with only the failures enumerated
   // (success noise removed). Derivation is pure over `feedback`.
@@ -84,13 +88,17 @@ export function BatchActions({
         ? selected.filter((d) => d.status === 'published').map((d) => d.id)
         : []
     if (publish.length === 0 && unpublish.length === 0) return
+    // siteId 在 body（BatchStatusRequest.siteId，必填）；为 null 时按钮已禁用。
+    if (siteId === null) return
 
     setSubmitting(true)
     setLastAction(action)
     setFeedback(null)
     setError(null)
     try {
-      const result = await batchUpdateStatus({ body: { publish, unpublish } })
+      const result = await batchUpdateStatus({
+        body: { publish, unpublish, siteId },
+      })
       if (result.error || (result.response && !result.response.ok)) {
         setError('Batch operation failed')
       } else if (result.data) {
@@ -105,6 +113,8 @@ export function BatchActions({
   }
 
   async function submitDelete() {
+    // siteId 在 query（必填）；为 null 时按钮已禁用。
+    if (siteId === null) return
     setSubmitting(true)
     setDeleteError(null)
     try {
@@ -112,7 +122,10 @@ export function BatchActions({
       // （即传入 documents）的选中项，避免删除被筛选排除的隐藏文档。
       await Promise.all(
         selected.map((doc) =>
-          deleteDocument({ path: { documentId: doc.id } }),
+          deleteDocument({
+            path: { documentId: doc.id },
+            query: { siteId },
+          }),
         ),
       )
       onCompleted()
