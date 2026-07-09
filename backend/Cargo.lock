@@ -144,7 +144,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "api"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "app"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "api",
@@ -6919,7 +6919,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rwiki-core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "calamine",
