@@ -56,6 +56,9 @@ backend/static/
 # Generated OpenAPI spec
 docs-web/openapi.json
 
+# Production seed script (run-once deployment helper, not part of tracked scripts)
+scripts/seed-production.py
+
 # Eval results & generated datasets (keep .gitkeep)
 eval/results/*
 !eval/results/.gitkeep

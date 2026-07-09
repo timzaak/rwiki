@@ -6,6 +6,7 @@ const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 // 字段与 configuration 文档的 Widget 配置一致。
 type RWikiChatOptions = {
   apiUrl: string;
+  channelId: string | string[];
   locale?: string;
   title?: string;
   primaryColor?: string;
@@ -43,6 +44,7 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
     const initWidget = () => {
       w.RWikiChat?.init?.({
         apiUrl,
+        channelId: "help_center",
         primaryColor: "#7c3aed",
         locale: localeRef.current,
       });
