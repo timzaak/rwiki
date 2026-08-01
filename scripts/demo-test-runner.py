@@ -230,8 +230,14 @@ def run_tests(
                         line.encode("ascii", errors="replace").decode("ascii"), end=""
                     )
         exit_code = proc.wait()
-    duration = round(time.time() - start, 1)
 
+    # Playwright already prints the discovered tests and their total. The structured
+    # run summary below describes execution artifacts, so it is misleading noise for
+    # a discovery-only command.
+    if list_tests:
+        return exit_code
+
+    duration = round(time.time() - start, 1)
     # 生成摘要
     summary = {
         "success": "true" if exit_code == 0 else "false",
@@ -246,7 +252,7 @@ def run_tests(
     }
 
     # 打印结果
-    if not list_tests and exit_code != 0:
+    if exit_code != 0:
         try:
             print(f"✗ Failed ({exit_code})")
         except UnicodeEncodeError:
