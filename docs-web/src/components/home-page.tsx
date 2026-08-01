@@ -111,7 +111,7 @@ export function HomePage({ texts, docsLink }: { texts: HomeTexts; docsLink: { to
               <div className="px-5 py-5 md:py-6 bg-stone-900/50 font-mono text-sm md:text-base overflow-x-auto">
                 <span className="text-amber-400 select-none mr-2 font-semibold">$</span>
                 <span className="text-stone-200">
-                  docker run -d -p 8080:8080 -v rwiki-data:/app/data rwiki
+                  docker run -d -p 8080:8080 -v rwiki-data:/app/data ghcr.io/timzaak/rwiki
                 </span>
                 <span className="inline-block w-[7px] h-[18px] bg-amber-400/90 ml-0.5 animate-pulse rounded-[1px]" />
               </div>
