@@ -17,6 +17,8 @@ export interface ChatMessage {
   content: string
   timestamp: number
   isStreaming?: boolean
+  /** 恢复时由 isStreaming=true 推导：该消息在持久化时仍在流式中（如页面刷新），内容不完整。 */
+  interrupted?: boolean
   error?: string
   feedback?: 'like' | 'dislike'
   suggestedQuestions?: string[]
@@ -61,6 +63,7 @@ function sanitizePersistedState(
     messages: state.messages.map((message) => ({
       ...message,
       isStreaming: false,
+      interrupted: message.isStreaming ? true : message.interrupted,
     })),
   }
 }

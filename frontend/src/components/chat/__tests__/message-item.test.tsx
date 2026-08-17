@@ -263,3 +263,99 @@ describe('MessageItem suggested questions', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('MessageItem interrupted messages', () => {
+  function seedStore(messages: ChatMessage[]) {
+    useChatStore.setState({
+      messages,
+      sessionId: 'test-session',
+      isLoading: false,
+      error: null,
+    })
+  }
+
+  const interruptedMessage = makeMessage({
+    id: 'msg-asst-1',
+    role: 'assistant',
+    content: 'partial answ',
+    isStreaming: false,
+    interrupted: true,
+  })
+
+  it('shows the interrupted notice instead of passing the truncated answer off as complete', () => {
+    seedStore([
+      makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
+      interruptedMessage,
+    ])
+
+    renderMessage({ ...interruptedMessage })
+
+    expect(screen.getByTestId('message-interrupted-notice')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'The response was interrupted; the content above may be incomplete.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('shows no interrupted notice for a completed message', () => {
+    seedStore([
+      makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
+      makeMessage({
+        id: 'msg-asst-1',
+        role: 'assistant',
+        content: 'full answer',
+        isStreaming: false,
+      }),
+    ])
+
+    renderMessage({
+      id: 'msg-asst-1',
+      role: 'assistant',
+      content: 'full answer',
+      isStreaming: false,
+    })
+
+    expect(
+      screen.queryByTestId('message-interrupted-notice'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('offers retry on the last interrupted message and re-sends on click', async () => {
+    const onRetry = vi.fn()
+    const user = userEvent.setup()
+    seedStore([
+      makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
+      interruptedMessage,
+    ])
+
+    renderWithStream({ ...interruptedMessage }, defaultStreamValue, { onRetry })
+    await user.click(screen.getByTestId('message-retry-button'))
+
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the notice but hides retry when a newer turn exists after the interrupted one', () => {
+    // WHY: chat-panel 的重试会移除最后一对问答并重发最后的问题；
+    // 若在非最后一条上提供重试，会错删新的一轮。因此仅提示、不提供重试。
+    const onRetry = vi.fn()
+    seedStore([
+      makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q1' }),
+      interruptedMessage,
+      makeMessage({ id: 'msg-user-2', role: 'user', content: 'Q2' }),
+      makeMessage({
+        id: 'msg-asst-2',
+        role: 'assistant',
+        content: 'newer answer',
+        isStreaming: false,
+      }),
+    ])
+
+    renderWithStream({ ...interruptedMessage }, defaultStreamValue, { onRetry })
+
+    expect(screen.getByTestId('message-interrupted-notice')).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('message-retry-button'),
+    ).not.toBeInTheDocument()
+  })
+})

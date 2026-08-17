@@ -274,6 +274,90 @@ describe('useChatStore persistence', () => {
     expect(state.error).toBeNull()
   })
 
+  it('marks a message that was still streaming when persisted as interrupted on restore', async () => {
+    // WHY: 页面在流式中途刷新后，半截回答会被恢复展示；没有标记就无法与正常完成的回答区分，
+    // 用户会把截断的内容当成完整答案。恢复时必须保留"未完成"这一事实。
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [
+            makeMessage({ id: 'user-1', role: 'user', content: 'Q' }),
+            makeMessage({
+              id: 'asst-1',
+              role: 'assistant',
+              content: 'partial answ',
+              isStreaming: true,
+            }),
+          ],
+          sessionId: 'session-mid-stream',
+          updatedAt,
+        },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    const messages = useChatStore.getState().messages
+    expect(messages[1]).toMatchObject({ isStreaming: false, interrupted: true })
+    expect(messages[0].interrupted).toBeUndefined()
+  })
+
+  it('does not mark completed messages as interrupted on restore', async () => {
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [
+            makeMessage({
+              id: 'asst-1',
+              role: 'assistant',
+              content: 'Full answer',
+              isStreaming: false,
+            }),
+          ],
+          sessionId: 'session-done',
+          updatedAt,
+        },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    expect(useChatStore.getState().messages[0].interrupted).toBeUndefined()
+  })
+
+  it('keeps the interrupted flag of a previously marked message across another restore', async () => {
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [
+            makeMessage({
+              id: 'asst-1',
+              role: 'assistant',
+              content: 'partial',
+              isStreaming: false,
+              interrupted: true,
+            }),
+          ],
+          sessionId: 'session-flagged',
+          updatedAt,
+        },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    expect(useChatStore.getState().messages[0].interrupted).toBe(true)
+  })
+
   it('drops a conversation updated more than 30 minutes ago', async () => {
     localStorage.setItem(
       CHAT_STORAGE_KEY,

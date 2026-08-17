@@ -85,6 +85,13 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
   const isFailed = !isUser && !message.isStreaming && !message.content.trim()
 
   const sessionId = useChatStore((s) => s.sessionId)
+  // 重试只对最后一条消息有效：chat-panel 的 handleRetry 会移除末尾问答对并重发最后的问题。
+  const isLastMessage = useChatStore(
+    useCallback(
+      (s) => s.messages[s.messages.length - 1]?.id === message.id,
+      [message.id],
+    ),
+  )
   const userMessage = useChatStore(
     useCallback(
       (s) => {
@@ -184,6 +191,29 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
               <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-xs text-destructive ring-1 ring-destructive/20">
                 {message.error}
               </span>
+            )}
+
+            {message.interrupted && (
+              <div
+                data-testid="message-interrupted-notice"
+                className="mt-1 flex flex-col items-start gap-1"
+              >
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <AlertCircleIcon className="size-3 shrink-0 text-amber-500" />
+                  {t.responseInterrupted}
+                </span>
+                {onRetry && isLastMessage && (
+                  <button
+                    type="button"
+                    data-testid="message-retry-button"
+                    className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/80 px-2 py-1 text-xs text-muted-foreground ring-1 ring-border/40 transition-colors hover:bg-secondary hover:text-foreground"
+                    onClick={onRetry}
+                  >
+                    <RefreshCwIcon className="size-3" />
+                    {t.retry}
+                  </button>
+                )}
+              </div>
             )}
 
             {!message.isStreaming && !isFailed && suggestedQuestions.length > 0 && (

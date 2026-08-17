@@ -7,6 +7,7 @@ export interface WidgetMessages {
   titleDefault: string
   inputPlaceholder: string
   responseFailed: string
+  responseInterrupted: string
   retry: string
   a11yOpen: string
   a11yClose: string
@@ -21,6 +22,8 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     titleDefault: 'Rwiki Chat',
     inputPlaceholder: 'Ask anything...',
     responseFailed: 'Response generation failed. Please try again.',
+    responseInterrupted:
+      'The response was interrupted; the content above may be incomplete.',
     retry: 'Retry',
     a11yOpen: 'Open chat assistant',
     a11yClose: 'Close chat modal',
@@ -34,6 +37,7 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     titleDefault: 'Rwiki 助手',
     inputPlaceholder: '随便问点什么…',
     responseFailed: '回复生成失败,请重试。',
+    responseInterrupted: '回答被中断,以上内容可能不完整。',
     retry: '重试',
     a11yOpen: '打开聊天助手',
     a11yClose: '关闭聊天窗口',
