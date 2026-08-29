@@ -511,6 +511,7 @@ async fn main() -> Result<()> {
         reranker,
         rerank_config: config.rerank.clone().unwrap_or_default(),
         low_recall_config: config.low_recall.clone(),
+        mcp_config: config.mcp.clone(),
         channels_config: config.channels.clone(),
         metrics: metrics.clone(),
         session_count: session_count.clone(),

@@ -55,6 +55,12 @@ md5 = "0.7"
 rig = { version = "0.39.0", features = ["derive"] }
 calamine = "0.35"
 
+# MCP (Model Context Protocol) server
+rmcp = { version = "=3.1.4", features = ["transport-streamable-http-server"] }
+# schemars 1.x 直接依赖：rmcp 的 JsonSchema derive 生成的代码以绝对路径引用
+# schemars crate，消费方必须直接依赖（与 utoipa 5 的旧版 schemars 0.9 共存，仅增编译体积）
+schemars = "1.2.1"
+
 # Text splitting
 text-splitter = { version = "0.32", features = ["markdown"] }
 

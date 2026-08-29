@@ -92,6 +92,7 @@ async fn test_app_state_with_channels(channels_config: ChannelsConfig) -> Arc<Ap
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
+        mcp_config: None,
         channels_config,
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),

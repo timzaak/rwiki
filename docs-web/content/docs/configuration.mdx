@@ -419,3 +419,16 @@ Build and copy the widget before starting docs-web:
 cd frontend && npm run build:widget
 cp dist/rwiki-chat.js ../docs-web/public/
 ```
+
+## MCP
+
+Controls the knowledge base MCP server, which exposes QA and search as MCP tools for agent clients such as Claude Code and Cursor.
+
+```toml
+# Presence of the section enables the server (it has no fields).
+# Omit the section to disable it; the /mcp route is not mounted.
+# Authentication reuses the [api] section: Bearer token + optional IP allowlist.
+[mcp]
+```
+
+For client setup and the tool reference, see [MCP Server](/en/docs/mcp).

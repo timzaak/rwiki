@@ -1,0 +1,99 @@
+---
+title: MCP Server
+description: 把知识库问答与检索暴露为 MCP 工具，供 Claude Code、Cursor 等 Agent 客户端调用
+icon: Bot
+---
+
+RWiki 可以把知识库问答和检索能力以 MCP（Model Context Protocol）工具的形式暴露出去。Claude Code、Cursor 这类 Agent 客户端凭 API Token 连接后，Agent 就能直接查你的知识库：要么拿到一段带来源引用的完整回答，要么拿到按相关性排序的原始知识片段。
+
+回答口径和 Web 聊天同源。同一个问题、同一个频道，MCP 问答和页面聊天走同一条管线（查询改写、混合检索、rerank），引用同一批已发布文档。
+
+工具面只有两个只读工具：`rwiki_qa` 和 `rwiki_search`。文档上传、发布、删除这类管理操作不通过 MCP 暴露。
+
+## 启用
+
+`config.toml` 中加入 `[mcp]` 段即启用，段本身没有字段：
+
+```toml
+[mcp]
+```
+
+省略整段则关闭：`/mcp` 路由不挂载，对客户端表现为入口不存在，其余功能不受影响。
+
+MCP 没有独立的鉴权配置，复用 `[api]` 段：客户端请求必须带 `Authorization: Bearer <API_TOKEN>` 请求头；如果配置了 `api.allowed_ip_ranges`，来源 IP 还需在白名单内。Token 缺失或无效时请求直接被拒，不返回任何知识库内容。
+
+## 接入客户端
+
+Claude Code 一条命令接入（`<host>:<port>` 换成你的服务地址）：
+
+```bash
+claude mcp add --transport http rwiki http://<host>:<port>/mcp \
+  --header "Authorization: Bearer <API_TOKEN>"
+```
+
+Cursor、MCP Inspector 等其他支持 Streamable HTTP 传输的客户端，配置要素相同：端点地址 `http://<host>:<port>/mcp`，请求头带 Bearer Token。
+
+不接客户端也能手动验证。先对端点发一个 initialize 握手：
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.0.0"}}}'
+```
+
+握手成功会返回 `serverInfo`（name 为 `rwiki`）和工具能力声明。之后的 `tools/list` 工具发现由 MCP 客户端自动完成。
+
+## 工具
+
+### rwiki_qa
+
+对指定频道的已发布知识库做检索增强问答，返回一段完整的非流式回答。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `query` | string | 问题文本 |
+| `channelId` | string | 目标频道，必须在 `[channels]` 中已配置 |
+
+返回两部分：`answer` 是完整回答，内联 `[Source N]` 形式的引用标记；`references` 是引用列表，每条含编号、标题、章节、链接和语言。引用只指向该频道的已发布文档。
+
+### rwiki_search
+
+返回与查询相关的原始知识片段，按相关性排序，不经 LLM 改写。适合 Agent 直接阅读和比对原文。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `query` | string | 查询文本 |
+| `channelId` | string | 目标频道 |
+| `topK` | number | 可选。返回片段数上限，1 到 20；省略时用 retrieval 配置的默认值 |
+
+返回 `results` 数组，每条片段含 `title`、`section`、`content`、`link`、`locale`、`score` 和 `documentId`。没有相关内容时返回空数组，不算错误。
+
+手动调用一次检索（接在握手之后）：
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rwiki_search","arguments":{"query":"支持的部署方式","channelId":"help_center","topK":5}}}'
+```
+
+## 频道隔离与错误
+
+每次工具调用必须携带 `channelId`。检索和问答只发生在该频道的已发布文档集合内，跨频道内容不可见、不可枚举，规则和[多频道](/zh/docs/multi-channel)一致。
+
+业务异常的提示沿用 Web 聊天的口径：
+
+| 情况 | 行为 |
+|------|------|
+| 频道未在 `[channels]` 中配置 | 调用被拒，提示 `频道 <channelId> 未配置` |
+| 频道内没有已发布文档 | 问答调用被拒，提示 `当前频道没有可用文档` |
+| 检索无相关内容 | 返回空结果，正常结束 |
+
+## 单轮语义
+
+每次工具调用独立完成，服务端不保存调用之间的对话历史，重复调用互不影响。多轮上下文由 Agent 客户端自己维护：Claude Code 和 Cursor 本来就管理完整对话，把上一轮回答带进下一个问题即可，不需要服务端记忆。
+
+配置只有一个开关，见[配置 → MCP](/zh/docs/configuration#mcp)。

@@ -3,6 +3,7 @@ use rig::providers::openai;
 use rwiki_core::config::ChannelsConfig;
 use rwiki_core::config::ChatConfig;
 use rwiki_core::config::LowRecallConfig;
+use rwiki_core::config::McpConfig;
 use rwiki_core::config::RerankConfig;
 use rwiki_core::config::RetrievalConfig;
 use rwiki_core::domain::chat::ChatSession;
@@ -50,6 +51,8 @@ pub struct AppState {
     pub rerank_config: RerankConfig,
     /// 低相关召回记录配置（None 表示功能关闭）
     pub low_recall_config: Option<LowRecallConfig>,
+    /// MCP Server 配置（None 表示能力关闭，/mcp 路由不挂载）
+    pub mcp_config: Option<McpConfig>,
     /// 多频道配置注册表
     pub channels_config: ChannelsConfig,
     /// RAG OTel Metrics 仪器集合

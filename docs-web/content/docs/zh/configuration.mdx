@@ -419,3 +419,15 @@ export default function RWikiChatWidget({ channelId, locale }: { channelId: stri
 cd frontend && npm run build:widget
 cp dist/rwiki-chat.js ../docs-web/public/
 ```
+
+## MCP
+
+控制知识库 MCP Server：把问答与检索以 MCP 工具暴露给 Claude Code、Cursor 等 Agent 客户端。
+
+```toml
+# 段存在即启用（无字段），省略整段则关闭，/mcp 路由不挂载。
+# 鉴权复用 [api] 段：Bearer Token + 可选 IP 白名单。
+[mcp]
+```
+
+客户端接入方法和工具说明见 [MCP Server](/zh/docs/mcp)。

@@ -1,0 +1,99 @@
+---
+title: MCP Server
+description: Expose knowledge base QA and search as MCP tools for agent clients such as Claude Code and Cursor
+icon: Bot
+---
+
+RWiki can expose its knowledge base QA and search capabilities as MCP (Model Context Protocol) tools. Agent clients such as Claude Code and Cursor connect with an API token, and the agent can then query your knowledge base directly: either a complete answer with source references, or relevance-sorted raw knowledge chunks.
+
+Answers come from the same pipeline as the web chat. Same question, same channel: MCP QA and the page chat run through the same query rewrite, hybrid retrieval, and rerank steps, citing the same set of published documents.
+
+The tool surface is two read-only tools, `rwiki_qa` and `rwiki_search`. Management operations such as document upload, publish, and delete are not exposed over MCP.
+
+## Enabling
+
+Add an `[mcp]` section to `config.toml`. The section has no fields:
+
+```toml
+[mcp]
+```
+
+Omit the section to disable the server: the `/mcp` route is not mounted, so clients see no endpoint, and everything else keeps working as before.
+
+MCP has no separate authentication settings. It reuses the `[api]` section: requests must carry an `Authorization: Bearer <API_TOKEN>` header, and if `api.allowed_ip_ranges` is configured, the source IP must be allowlisted. A missing or invalid token gets the request rejected before any knowledge base content is returned.
+
+## Connecting a client
+
+Claude Code connects with one command (replace `<host>:<port>` with your server address):
+
+```bash
+claude mcp add --transport http rwiki http://<host>:<port>/mcp \
+  --header "Authorization: Bearer <API_TOKEN>"
+```
+
+Other clients that support the Streamable HTTP transport (Cursor, MCP Inspector) need the same two things: the endpoint URL `http://<host>:<port>/mcp`, and the Bearer token header.
+
+You can also verify the endpoint by hand. Send an initialize handshake first:
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.0.0"}}}'
+```
+
+A successful handshake returns `serverInfo` (name `rwiki`) and the tools capability. MCP clients then handle `tools/list` discovery on their own.
+
+## Tools
+
+### rwiki_qa
+
+Runs retrieval-augmented QA against a channel's published knowledge base and returns one complete, non-streaming answer.
+
+| Parameter | Type | Description |
+|------|------|------|
+| `query` | string | Question text |
+| `channelId` | string | Target channel, must be configured under `[channels]` |
+
+The result has two parts: `answer` is the full answer with inline `[Source N]` citation markers, and `references` lists each source with its index, title, section, link, and locale. References only point at published documents in that channel.
+
+### rwiki_search
+
+Returns raw knowledge chunks relevant to the query, sorted by relevance, without any LLM rewriting. Useful when the agent wants to read and compare the original text.
+
+| Parameter | Type | Description |
+|------|------|------|
+| `query` | string | Query text |
+| `channelId` | string | Target channel |
+| `topK` | number | Optional. Maximum number of chunks, 1 to 20; defaults to the retrieval config when omitted |
+
+The result is a `results` array where each chunk carries `title`, `section`, `content`, `link`, `locale`, `score`, and `documentId`. No relevant content returns an empty array, not an error.
+
+A manual search call, sent after the handshake:
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rwiki_search","arguments":{"query":"supported deployment options","channelId":"help_center","topK":5}}}'
+```
+
+## Channel isolation and errors
+
+Every tool call must carry a `channelId`. Retrieval and QA only happen inside that channel's published documents; content in other channels is invisible and cannot be enumerated. The rules match [Multi-Channel](/en/docs/multi-channel).
+
+Business errors use the same messages as the web chat:
+
+| Case | Behavior |
+|------|------|
+| Channel not configured under `[channels]` | Call rejected with `频道 <channelId> 未配置` |
+| Channel has no published documents | QA call rejected with `当前频道没有可用文档` |
+| Search finds nothing relevant | Empty result, normal completion |
+
+## Single-turn semantics
+
+Each tool call completes on its own. The server keeps no conversation history between MCP calls, so repeated calls don't affect each other. Multi-turn context lives in the agent client: Claude Code and Cursor already manage the full conversation and carry earlier answers into the next question, so the server doesn't need memory of its own.
+
+The only setting is the on/off section, see [Configuration → MCP](/en/docs/configuration#mcp).

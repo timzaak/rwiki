@@ -5,6 +5,7 @@ pub mod document;
 pub mod eval;
 pub mod feedback;
 pub mod low_recall;
+pub mod mcp;
 
 #[cfg(test)]
 mod chat_scenarios;
@@ -38,6 +39,9 @@ mod metrics_scenarios;
 
 #[cfg(test)]
 mod eval_scenarios;
+
+#[cfg(test)]
+mod mcp_scenarios;
 
 #[cfg(test)]
 mod rerank_scenarios;

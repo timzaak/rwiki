@@ -155,6 +155,7 @@ async fn test_app_state() -> Arc<AppState> {
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
+        mcp_config: None,
         channels_config: {
             let mut channels = HashMap::new();
             channels.insert(

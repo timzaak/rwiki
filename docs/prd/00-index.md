@@ -48,6 +48,7 @@
 | core | Rerank 精排 | [core/rerank-investigation.md](core/rerank-investigation.md) | Implemented | 检索管线精排、多 Provider 支持、无感降级、配置管理 |
 | core | 知识库文档管理后台（勾选式批量上下线） | [core/batch-refresh.md](core/batch-refresh.md) | Implemented | 文档管理后台、批量上下线、写入去重自包含、API Key 登录、eval 指定文档集合评测 |
 | chat | 低相关召回记录 | [chat/low-recall-logging.md](chat/low-recall-logging.md) | Implemented | 自动旁路记录低相关召回查询、运营页列表与筛选、阈值与功能开关可配置、记录与实时回答解耦 |
+| integration | MCP Server（知识库 MCP 服务） | [integration/mcp-server.md](integration/mcp-server.md) | Implemented | MCP 只读工具面（问答/检索）、频道隔离、API Token 鉴权整合、配置启用开关 |
 
 ## 内部工程工具（无 PRD）
 

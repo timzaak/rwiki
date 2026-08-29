@@ -48,6 +48,7 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 - **Rerank (optional)** — Semantically re-scores retrieved chunks after hybrid search to sharpen precision. Supports OpenRouter, Zhipu BigModel, and Alibaba DashScope. Opt-in via a `[rerank]` section (zero overhead when omitted); auto-degrades to fusion results on failure.
 - **Query rewrite & expansion** — Automatic query rewriting with multi-query expansion to handle ambiguous questions
 - **Embeddable chat widget** — Single JS file, Shadow DOM, add to any site with two lines of HTML
+- **MCP server (optional)** — Expose knowledge Q&A and retrieval as read-only MCP tools (`rwiki_qa`, `rwiki_search`) for Claude Code, Cursor, and other agent clients over Streamable HTTP. Opt-in via an `[mcp]` section (route not mounted when omitted)
 - **Multi-format ingestion** — Markdown files, XLSX spreadsheets, OpenAPI specifications
 - **API documentation assistant** — Upload OpenAPI specs, ask questions about your APIs
 - **Provider-agnostic** — OpenAI, OpenRouter, BigModel, any OpenAI-compatible endpoint
@@ -84,6 +85,15 @@ cargo run
 ## Configuration
 
 Copy `backend/config/config.example.toml` to `config.toml` and edit. All options with comments are documented there.
+
+### MCP Server (optional)
+
+Expose the knowledge base as read-only MCP tools (`rwiki_qa`, `rwiki_search`) for agent clients such as Claude Code and Cursor. Add an `[mcp]` section to `config.toml` to enable (omitting it keeps `/mcp` unmounted); auth reuses the `[api]` token and IP allowlist.
+
+```bash
+claude mcp add --transport http rwiki http://localhost:8080/mcp \
+  --header "Authorization: Bearer <API_TOKEN>"
+```
 
 ## AI-Built
 

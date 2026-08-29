@@ -194,3 +194,12 @@ name = "Help Center"
 # threshold 校准基于 rerank 的 0..1 relevance_score。
 # [low_recall]
 # threshold = 0.3   # 待首批记录校准
+
+# [mcp] — MCP Server（把知识库问答/检索以 MCP 工具暴露给 Claude Code、Cursor 等 Agent 客户端）。
+# Enablement 与 rerank/low_recall 一致：包含 [mcp] 段即启用（段本身无字段）；
+# 省略整段则关闭，/mcp 路由不挂载，现有行为不变。
+# 鉴权复用 [api] 段：客户端需携带 `Authorization: Bearer <API_TOKEN>` 请求头访问
+# POST /mcp（Streamable HTTP 传输），并受 api.allowed_ip_ranges IP 白名单约束。
+# 接入示例：claude mcp add --transport http rwiki http://<host>:<port>/mcp \
+#   --header "Authorization: Bearer <API_TOKEN>"
+# [mcp]

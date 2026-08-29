@@ -524,6 +524,7 @@ async fn test_app_state_for_suggestions() -> Arc<AppState> {
         reranker: None,
         rerank_config: RerankConfig::default(),
         low_recall_config: None,
+        mcp_config: None,
         channels_config: suggestions_channels_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),

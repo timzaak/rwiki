@@ -77,6 +77,14 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
         .layer(cors)
         .with_state(state.clone());
 
+    // MCP Server：`[mcp]` 段存在即挂载 /mcp（受 auth_middleware 保护），
+    // 省略时完全不挂载，现有行为不变（省略即关闭惯例）。
+    let app = if state.mcp_config.is_some() {
+        app.merge(handlers::mcp::mcp_router(state.clone()))
+    } else {
+        app
+    };
+
     // OpenAPI 开关：根据配置决定是否暴露 Swagger 文档
     let app = if state.enable_openapi {
         let swagger_ui = utoipa_swagger_ui::SwaggerUi::new("/swagger")

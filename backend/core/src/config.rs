@@ -29,6 +29,10 @@ pub struct AppConfig {
     /// 存在段即启用，参照 rerank 惯例。
     #[serde(default)]
     pub low_recall: Option<LowRecallConfig>,
+    /// MCP Server 配置；省略整个 `[mcp]` 段时为 `None`（关闭，/mcp 路由不挂载）。
+    /// 存在段（即使为空）即视为启用，参照 rerank/low_recall 惯例。
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
     /// 多频道配置；省略 `[channels]` 段 → 空频道列表。
     /// 系统启动时校验至少存在一个已配置频道。
     #[serde(default)]
@@ -350,6 +354,12 @@ impl Default for LowRecallConfig {
         }
     }
 }
+
+/// MCP Server 配置；省略整个 `[mcp]` 段时为 `None`（关闭）。
+/// 存在段（即使为空）即视为启用（参照 `[rerank]`/`[low_recall]` section-presence 惯例）。
+/// 首版无字段：传输、鉴权、会话策略均由设计与既有配置段决定。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpConfig {}
 
 /// 单个频道配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1131,6 +1141,72 @@ mod tests {
         assert!(
             config.rerank.is_some(),
             "present [rerank] section should mean rerank is enabled"
+        );
+    }
+
+    // Covers: Enablement is decided by section presence — a missing `[mcp]`
+    // section deserializes to `None` (disabled, /mcp route not mounted).
+    // This is the load-bearing semantic: MCP is OFF unless the section exists.
+    #[test]
+    fn mcp_disabled_when_section_absent() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [api]
+        "#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config without [mcp] should deserialize");
+        assert!(
+            config.mcp.is_none(),
+            "missing [mcp] section should mean MCP is disabled"
+        );
+    }
+
+    // Covers: Enablement is decided by section presence — an empty `[mcp]`
+    // section deserializes to `Some` (enabled). The section carries no fields,
+    // so presence itself is the only toggle.
+    #[test]
+    fn mcp_enabled_when_empty_section_present() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [mcp]
+
+            [api]
+        "#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config with empty [mcp] should deserialize");
+        assert!(
+            config.mcp.is_some(),
+            "present empty [mcp] section should mean MCP is enabled"
         );
     }
 
