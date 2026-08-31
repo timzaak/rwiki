@@ -31,7 +31,8 @@ pub struct EvalQueryRequest {
     /// Session ID to reuse chat SessionStore for history context
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
-    /// 指定文档集合评测（放开发布限制，可评测草稿）；缺省/空维持线上行为
+    /// Evaluate against a specific document set (bypasses the published-only
+    /// restriction, drafts allowed); omitted/empty keeps production behavior
     #[serde(rename = "documentIds", default)]
     pub document_ids: Option<Vec<String>>,
 }

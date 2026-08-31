@@ -42,28 +42,33 @@ const POST_ANSWER_MAX_QUESTIONS: usize = 3;
 // DTOs
 // ---------------------------------------------------------------------------
 
-/// 公共聊天请求体：按 channelId 限定检索范围，仅命中指定频道的已发布文档。
+/// Public chat request body: restricts retrieval to the given channelId(s),
+/// hitting only published documents of the specified channels.
 ///
-/// `channel_id` 为频道标识数组，支持跨频道并集检索；后端会在 handler 中
-/// 逐个校验频道已配置（缺失或任一未配置返回 400）。
+/// `channel_id` is a list of channel identifiers supporting cross-channel
+/// union retrieval; the handler validates each channel is configured
+/// (missing or any unconfigured channel returns 400).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
-    /// 频道标识数组；必填（在 handler 中二次校验以返回 400）。支持单频道或多频道并集检索。
+    /// Channel identifiers; required (re-validated in the handler to return 400).
+    /// Supports single- or multi-channel union retrieval.
     #[serde(rename = "channelId", default)]
     pub channel_id: Option<Vec<String>>,
 }
 
-/// 认证端点 `/api/chat/scoped` 的请求体：允许通过 documentIds 指定文档集合，
-/// 放开发布限制（构建 RetrievalScope::Collection）。
+/// Request body for the authenticated `/api/chat/scoped` endpoint: allows
+/// targeting a document set via documentIds, bypassing the published-only
+/// restriction (builds RetrievalScope::Collection).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ScopedChatRequest {
     pub message: String,
     #[serde(rename = "sessionId", default)]
     pub session_id: Option<String>,
-    /// 指定文档集合检索（放开发布限制）；仅认证端点可用
+    /// Retrieve from a specific document set (bypasses the published-only
+    /// restriction); authenticated endpoint only
     #[serde(rename = "documentIds", default)]
     pub document_ids: Option<Vec<String>>,
 }
@@ -96,7 +101,8 @@ where
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SuggestionsQuery {
     pub locale: Option<String>,
-    /// 频道标识数组；必填（支持 query 单值 `?channelId=a` 或多值 `?channelId=a&channelId=b`）
+    /// Channel identifiers; required (accepts a single query value `?channelId=a`
+    /// or repeated values `?channelId=a&channelId=b`)
     #[serde(rename = "channelId", deserialize_with = "deserialize_channel_id_vec")]
     pub channel_id: Vec<String>,
 }

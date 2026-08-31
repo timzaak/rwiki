@@ -5,14 +5,14 @@ use serde::Serialize;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-/// 频道列表单项。
+/// A single channel entry.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChannelItem {
     pub id: String,
     pub name: String,
 }
 
-/// 频道列表响应。
+/// Channel list response.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChannelsResponse {
     pub channels: Vec<ChannelItem>,
@@ -27,10 +27,11 @@ impl From<ChannelMetadata> for ChannelItem {
     }
 }
 
-/// 获取已配置频道列表。
+/// List configured channels.
 ///
 /// GET /api/channels
-/// 仅返回频道元数据（id + name），供管理后台上传组件、主站导航等使用。
+/// Returns channel metadata only (id + name), used by the admin upload widget
+/// and the main-site navigation.
 #[utoipa::path(
     get,
     path = "/api/channels",

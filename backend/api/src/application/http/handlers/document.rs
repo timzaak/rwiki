@@ -38,11 +38,13 @@ pub struct UploadDocumentResponse {
 
 /// multipart/form-data body for document upload.
 ///
-/// NOTE: 此 struct 仅用于 OpenAPI schema 生成（utoipa），handler 不会反序列化它。
-/// 实际 multipart 字段解析见 `upload_document`（按字段名 "file" / "channelId" / "refresh_embed"
-/// 读取，`refresh_embed` 以 `text == "true"` 判定，与 Option<bool> 语义略有出入）。
-/// 新增/重命名字段时，此处 schema 与 handler 解析必须同步，否则生成的客户端与
-/// 服务器契约会静默偏离。
+/// NOTE: this struct exists only for OpenAPI schema generation (utoipa); the
+/// handler does not deserialize it. Actual multipart field parsing lives in
+/// `upload_document` (reads fields by name "file" / "channelId" / "refresh_embed",
+/// where `refresh_embed` is judged by `text == "true"`, slightly diverging from
+/// Option<bool> semantics). When adding or renaming fields, this schema and the
+/// handler parsing must be kept in sync, otherwise generated clients and the
+/// server contract will silently drift.
 #[derive(utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadDocumentRequest {

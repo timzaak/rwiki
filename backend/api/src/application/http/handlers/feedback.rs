@@ -18,7 +18,8 @@ use rwiki_core::config::ChannelValidationError;
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRequest {
-    /// 频道标识数组；必填（在 handler 中二次校验以返回 400）。支持单频道或多频道。
+    /// Channel identifiers; required (re-validated in the handler to return 400).
+    /// Supports single or multiple channels.
     #[serde(default)]
     pub channel_id: Option<Vec<String>>,
     pub session_id: String,
@@ -32,7 +33,7 @@ pub struct FeedbackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackItem {
     pub id: i64,
-    /// 反馈所属频道
+    /// Channel the feedback belongs to
     pub channel_id: String,
     pub session_id: String,
     pub message_id: String,
@@ -51,7 +52,7 @@ pub struct FeedbackListResponse {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackQueryParams {
-    /// 频道标识；必填
+    /// Channel identifier; required
     pub channel_id: String,
     pub feedback: Option<String>,
     pub limit: Option<u32>,

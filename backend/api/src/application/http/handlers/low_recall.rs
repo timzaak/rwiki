@@ -14,27 +14,28 @@ use rwiki_core::config::ChannelValidationError;
 // DTOs
 // ---------------------------------------------------------------------------
 
-/// 查询参数（channelId 必填，其余可选）
+/// Query parameters (channelId required, others optional)
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LowRecallQueryParams {
-    /// 频道标识；必填
+    /// Channel identifier; required
     pub channel_id: String,
-    /// 仅返回 topScore >= minScore 的记录
+    /// Only return records with topScore >= minScore
     pub min_score: Option<f64>,
-    /// 仅返回 topScore <= maxScore 的记录
+    /// Only return records with topScore <= maxScore
     pub max_score: Option<f64>,
-    /// createdAt >= from（ISO8601）
+    /// createdAt >= from (ISO8601)
     pub from: Option<String>,
-    /// createdAt <= to（ISO8601）
+    /// createdAt <= to (ISO8601)
     pub to: Option<String>,
-    /// 分页大小，默认 20，上限 100
+    /// Page size, default 20, max 100
     pub limit: Option<u32>,
-    /// 分页偏移，默认 0
+    /// Page offset, default 0
     pub offset: Option<u32>,
 }
 
-/// 召回来源摘要（top-K）。含 Deserialize 以便从 sources JSON 列反序列化。
+/// Retrieval source summary (top-K). Derives Deserialize so it can be parsed
+/// from the sources JSON column.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LowRecallSource {
@@ -44,23 +45,23 @@ pub struct LowRecallSource {
     pub score: f64,
 }
 
-/// 单条低相关召回记录。
+/// A single low-recall record.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LowRecallRecord {
     pub id: i64,
-    /// 记录所属频道
+    /// Channel the record belongs to
     pub channel_id: String,
     pub session_id: Option<String>,
     pub query: String,
-    /// top-1 相关度分数；None 表示完全未命中
+    /// Top-1 relevance score; None means no hits at all
     pub top_score: Option<f64>,
     pub result_count: i64,
     pub sources: Vec<LowRecallSource>,
     pub created_at: String,
 }
 
-/// 列表响应。
+/// List response.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LowRecallListResponse {
     pub items: Vec<LowRecallRecord>,
@@ -71,9 +72,9 @@ pub struct LowRecallListResponse {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// 查询低相关召回记录（分数区间 + 时间段 + 分页）。
+/// Query low-relevance recall records (score range + time range + pagination).
 ///
-/// 挂入 doc_router，受 Bearer Token 鉴权保护。
+/// Mounted on doc_router and protected by Bearer token auth.
 #[utoipa::path(
     get,
     path = "/api/low-recall/records",
