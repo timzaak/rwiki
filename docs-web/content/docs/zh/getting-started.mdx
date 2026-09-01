@@ -14,7 +14,7 @@ RWiki 是一个知识库问答平台。你把文档传上去，它自动分块�
 
 - **Rust**：最新稳定版。用 `rustup update` 确认版本。
 - **Node.js**：20 或更高。用 `node -v` 检查。
-- **Embedding API Key**：RWiki 用它把文档转成向量做检索。支持 OpenAI、智谱 AI（BigModel）等兼容 OpenAI 接口的服务。
+- **Embedding API Key**：RWiki 用它把文档转成向量做检索。支持 OpenAI、智谱 AI（BigModel）、Google Gemini 等兼容 OpenAI 接口的服务。
 - **LLM API Key**：用于对话问答。同样支持 OpenAI / OpenRouter / 智谱。
 
 两个 key **都是必填的**，否则后端跑不起来。RWiki 不需要外部数据库，SQLite 嵌入在进程中，零依赖。
@@ -65,7 +65,7 @@ base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-chat-v3-0324"
 ```
 
-也支持 OpenAI、智谱 AI 等 provider，详见[配置](/zh/docs/configuration)。
+也支持 OpenAI、智谱 AI、Google Gemini 等 provider，详见[配置](/zh/docs/configuration)。
 
 ### 零成本启动（OpenRouter 免费模型）
 

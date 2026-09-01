@@ -98,7 +98,7 @@ model = "qwen-plus"  # 也可 qwen-max / qwen-turbo / qwen-long
 | `api_key` | string | 是* | — | API Key。优先使用 `OPENAI_API_KEY` 环境变量 |
 | `base_url` | string | 否 | OpenAI 默认 | API Base URL，非 OpenAI provider 必须设置 |
 | `model` | string | 否 | `"text-embedding-3-small"` | 模型名称 |
-| `dimensions` | number | 否 | 模型默认 | 向量维度。BigModel 支持 256/512/1024/2048 |
+| `dimensions` | number | 否 | 模型默认 | 向量维度。BigModel 支持 256/512/1024/2048；Gemini 支持 768/1536/3072 |
 
 **注意**：更换 embedding 模型后如果维度不同，需要删除旧数据库重建（服务启动时会自动校验维度一致性）。
 
@@ -123,7 +123,20 @@ api_key = "sk-..."  # 可与 [llm] 共用同一百炼 key
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 model = "text-embedding-v3"
 dimensions = 1024   # 可选：512 / 768 / 1024
+
+# Google Gemini（OpenAI 兼容层）
+[embedding]
+api_key = "your-gemini-api-key"  # 从 https://aistudio.google.com/apikey 获取
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-embedding-001"
+dimensions = 1536   # 必填：768 / 1536 / 3072
 ```
+
+使用 Gemini 时有三个限制：
+
+- `dimensions` 必须设置。`gemini-embedding-001` 默认输出 3072 维向量，而服务按这个配置值建 `vec_chunks` 向量表；省略时按 0 维建表，文档索引进不去。推荐 1536。
+- 单条输入上限 2048 token。RWiki 按 1600 字符分块，英文文档不会碰到上限；中文长段落换算成 token 后可能超过 2048，Gemini 会以 HTTP 400 拒绝请求。遇到时把 `backend/core/src/infrastructure/text_chunker.rs` 里的 `DEFAULT_MAX_CHUNK_CHARS` 调小。
+- `generativelanguage.googleapis.com` 在大陆无法直连，启动后端时需要设置代理环境变量，例如 `HTTPS_PROXY=http://127.0.0.1:7890`。
 
 ## API Token
 

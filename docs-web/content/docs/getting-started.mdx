@@ -14,7 +14,7 @@ The flow: upload a document → publish → ask questions via the chat UI or API
 
 - **Rust**: Latest stable. Run `rustup update` to check.
 - **Node.js**: 20 or higher. Run `node -v` to verify.
-- **Embedding API Key**: RWiki uses this to vectorize documents for retrieval. Supports OpenAI, BigModel (Zhipu AI), and other OpenAI-compatible services.
+- **Embedding API Key**: RWiki uses this to vectorize documents for retrieval. Supports OpenAI, BigModel (Zhipu AI), Google Gemini, and other OpenAI-compatible services.
 - **LLM API Key**: For conversational Q&A. Same provider options as above.
 
 Both keys are **required** — the backend won't start without them. RWiki doesn't need an external database. SQLite is embedded in the process, zero external dependencies.
@@ -65,7 +65,7 @@ base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-chat-v3-0324"
 ```
 
-Other providers like OpenAI, BigModel (Zhipu AI) are also supported. See [Configuration](/en/docs/configuration) for details.
+Other providers like OpenAI, BigModel (Zhipu AI), and Google Gemini are also supported. See [Configuration](/en/docs/configuration) for details.
 
 ### Zero-cost setup (OpenRouter free models)
 

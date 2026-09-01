@@ -65,6 +65,15 @@ model = "deepseek/deepseek-chat-v3-0324"
 # model = "text-embedding-v3"
 # dimensions = 1024   # Optional; supports 512/768/1024
 
+# --- Google Gemini Embedding (OpenAI-compatible) ---
+# api_key = "your-gemini-api-key"  # from https://aistudio.google.com/apikey
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+# model = "gemini-embedding-001"
+# dimensions = 1536   # Required: 768/1536/3072. The vector table is sized from
+#                     # this value, so leaving it unset breaks indexing.
+# Notes: each input is capped at 2048 tokens (long Chinese chunks may exceed it);
+#        the endpoint needs a proxy in mainland China (set HTTPS_PROXY).
+
 [api]
 # API Token for document management endpoints
 # Leave empty to use the API_TOKEN environment variable

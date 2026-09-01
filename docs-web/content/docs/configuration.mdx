@@ -98,7 +98,7 @@ Users in China can drive chat, embedding, and rerank with a single Alibaba Cloud
 | `api_key` | string | Yes* | — | API Key. `OPENAI_API_KEY` env var takes priority |
 | `base_url` | string | No | OpenAI default | API Base URL. Required for non-OpenAI providers |
 | `model` | string | No | `"text-embedding-3-small"` | Model name |
-| `dimensions` | number | No | Model default | Vector dimensions. BigModel supports 256/512/1024/2048 |
+| `dimensions` | number | No | Model default | Vector dimensions. BigModel supports 256/512/1024/2048; Gemini supports 768/1536/3072 |
 
 **Note**: If you change the embedding model and the dimensions differ, you must delete the old database and rebuild it. The service validates dimension consistency on startup.
 
@@ -123,7 +123,20 @@ api_key = "sk-..."  # can share the same Bailian key with [llm]
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 model = "text-embedding-v3"
 dimensions = 1024   # Optional: 512 / 768 / 1024
+
+# Google Gemini (OpenAI-compatible layer)
+[embedding]
+api_key = "your-gemini-api-key"  # from https://aistudio.google.com/apikey
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-embedding-001"
+dimensions = 1536   # Required: 768 / 1536 / 3072
 ```
+
+Gemini comes with three constraints:
+
+- `dimensions` is required. `gemini-embedding-001` outputs 3072-dimensional vectors by default, and the service sizes the `vec_chunks` vector table from this setting. Leaving it unset creates a 0-dimension table and indexing fails. 1536 is a good default.
+- Each input is capped at 2048 tokens. RWiki splits documents into 1600-character chunks, which stays well under the cap for English. Long Chinese paragraphs can exceed it because Chinese text costs more tokens per character, and Gemini rejects the request with HTTP 400. Lower `DEFAULT_MAX_CHUNK_CHARS` in `backend/core/src/infrastructure/text_chunker.rs` if that happens.
+- `generativelanguage.googleapis.com` is not reachable from mainland China directly. Set a proxy environment variable when starting the backend, for example `HTTPS_PROXY=http://127.0.0.1:7890`.
 
 ## API Token
 
