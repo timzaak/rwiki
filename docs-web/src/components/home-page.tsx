@@ -26,9 +26,9 @@ function GitHubIcon({ className }: { className?: string }) {
   );
 }
 
-export function HomePage({ texts, docsLink }: { texts: HomeTexts; docsLink: { to: string; params: Record<string, string> } }) {
+export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: string; docsLink: { to: string; params: Record<string, string> } }) {
   return (
-    <HomeLayout {...baseOptions()}>
+    <HomeLayout {...baseOptions(lang)}>
       <div className="relative overflow-hidden selection:bg-amber-200 selection:text-amber-900 dark:selection:bg-amber-800 dark:selection:text-amber-100">
         {/* Dot grid background */}
         <div

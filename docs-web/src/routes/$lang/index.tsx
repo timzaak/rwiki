@@ -14,6 +14,7 @@ function LangHome() {
 
   return (
     <HomePage
+      lang={lang}
       texts={texts}
       docsLink={{ to: "/$lang/docs/$", params: { lang, _splat: "getting-started" } }}
     />

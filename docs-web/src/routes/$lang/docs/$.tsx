@@ -131,7 +131,7 @@ function Page() {
   }
 
   return (
-    <DocsLayout {...baseOptions()} tree={data.pageTree}>
+    <DocsLayout {...baseOptions(Route.useParams().lang)} tree={data.pageTree}>
       {data.type === "docs" && <Link to={data.markdownUrl} hidden />}
       <Suspense>{content}</Suspense>
     </DocsLayout>

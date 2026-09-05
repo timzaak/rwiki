@@ -2,11 +2,16 @@ import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 import { i18n } from "./i18n";
 import { appName, gitConfig } from "./shared";
 
-export function baseOptions(): BaseLayoutProps {
+export function baseOptions(lang: string = "en"): BaseLayoutProps {
   return {
     i18n,
     nav: {
       title: appName,
+      // Point the navbar logo at the locale root instead of "/", which only
+      // exists as a client-side redirect to /en. A raw <a href="/"> (fumadocs
+      // renders a plain anchor, not a TanStack Link) re-hydrates the SPA shell
+      // and runs the beforeLoad redirect, which hangs in the prerendered build.
+      url: `/${lang}`,
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
     links: [
