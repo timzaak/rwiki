@@ -2,7 +2,7 @@
 
 **基于 RAG 的知识库问答。单个二进制文件，零外部数据库。**
 
-上传 Markdown、XLSX 或 OpenAPI 规格文件 — RWiki 自动分块、向量化，提供带结构化引用的流式问答。内置混合搜索（关键词 + 向量）、查询改写和本地 Embedding 支持。基于 SQLite 运行，一条命令部署，支持任何 OpenAI 兼容的 LLM。
+上传 Markdown、XLSX 或 OpenAPI 规格文件 — RWiki 自动分块、向量化，提供带结构化引用的流式问答。内置混合搜索（关键词 + 向量）、查询改写与可插拔的 Embedding Provider。基于 SQLite 运行，一条命令部署，支持任何 OpenAI 兼容的 LLM。
 
 [English](README.md)
 
@@ -10,7 +10,7 @@
 
 ## 快速开始
 
-将 LLM Key 填入 `config.toml` 的 `[llm].api_key`（支持任意 OpenAI 兼容 provider，参考 `backend/config/config.example.toml`），然后：
+将 `backend/config/config.example.toml` 复制为 `config.toml`，在 `[llm].api_key` 填入 LLM Key（支持任意 OpenAI 兼容 provider），并取消 `static_dir = "/app/static"` 的注释（不设置则不托管 Web UI），然后：
 
 ```bash
 docker run -d -p 8080:8080 \
@@ -22,10 +22,11 @@ docker run -d -p 8080:8080 \
 
 `OPENAI_API_KEY` 设置 Embedding Key。打开 `http://localhost:8080`，上传文档，发布，开始对话。
 
-或运行演示：
+或运行演示（需要 Docker、Rust、Node.js；Python 仅用标准库）：
 
 ```bash
-cd scripts && pip install -r requirements.txt && python demo-start.py
+cp backend/config/demo-config-bailian.toml.example backend/config/demo.toml  # 编辑填入 API Key
+cd scripts && python demo-start.py
 ```
 
 ## 为什么选择 RWiki
@@ -52,7 +53,8 @@ RWiki 只做一件事 — 知识库问答 — 并把基础设施压缩到一个�
 - **多格式导入** — Markdown 文件、XLSX 表格、OpenAPI 规格
 - **API 文档助手** — 上传 OpenAPI 规格，向 API 提问
 - **LLM 无关** — 支持 OpenAI、OpenRouter、BigModel 等任何 OpenAI 兼容接口
-- **本地 Embedding** — 内置多语言 Embedding，无需外部 API Key
+- **灵活的 Embedding 配置** — 支持 OpenAI、智谱 BigModel、DashScope、Google Gemini 或任意 OpenAI 兼容端点（需要 Embedding API Key）
+- **RAG 评测** — 内置 eval 端点返回检索轨迹与参考答案，可直接交给 Ragas / DeepEval / RAGChecker 等评测工具计算指标（HitRate、MRR、Recall、答案质量）
 - **可观测性** — 支持 OpenTelemetry / Jaeger 链路追踪
 - **可配置** — 自定义系统提示词、内容语言设置、对话记忆参数
 
@@ -81,9 +83,17 @@ cp config/config.example.toml config/config.toml
 cargo run
 ```
 
+后端在 `http://localhost:8080` 提供 API。如需 Web UI，在另一个终端启动前端开发服务器：
+
+```bash
+cd rwiki/frontend
+npm install
+npm run dev   # http://localhost:3000，/api 代理到后端
+```
+
 ## 配置
 
-将 `backend/config/config.example.toml` 复制为 `config.toml` 并编辑。所有选项均有注释说明。
+将 `backend/config/config.example.toml` 复制为 `config.toml` 并编辑。所有选项均有注释说明。Docker 部署时请取消 `static_dir = "/app/static"` 的注释，以托管 Web UI 与聊天组件。
 
 ### MCP Server（可选）
 
