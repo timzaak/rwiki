@@ -6,7 +6,7 @@
 //!
 //! These are pure in-memory tests with no external dependencies.
 
-use super::chat::ChatSession;
+use super::chat::{ChatMessage, ChatSession};
 
 // ---------------------------------------------------------------------------
 // Session creation
@@ -405,4 +405,47 @@ fn compact_history_keeps_all_when_within_window() {
 
     assert_eq!(session.messages.len(), 2, "should keep all 2 messages");
     assert_eq!(session.summary, Some("Short summary".to_string()));
+}
+
+// Covers: add_interrupted_assistant_message appends an assistant message flagged
+// as truncated, so a round interrupted by client disconnect stays in server-side
+// session memory and can be told apart from fully generated answers.
+#[test]
+fn add_interrupted_assistant_message_flags_truncation() {
+    let mut session = ChatSession::new("ir1".to_string());
+    session.add_message("user", "3 月销售数据");
+    session.add_interrupted_assistant_message("3 月销售额为");
+
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.messages[1].role, "assistant");
+    assert_eq!(session.messages[1].content, "3 月销售额为");
+    assert!(
+        session.messages[1].interrupted,
+        "interrupted partial answer must carry the truncation flag"
+    );
+}
+
+// Covers: messages written via the normal add_message path are never flagged,
+// so the flag exclusively marks client-disconnect truncation.
+#[test]
+fn add_message_does_not_flag_truncation() {
+    let mut session = ChatSession::new("ir2".to_string());
+    session.add_message("user", "q");
+    session.add_message("assistant", "full answer");
+
+    assert!(!session.messages[0].interrupted);
+    assert!(!session.messages[1].interrupted);
+}
+
+// Covers: session memory predating the flag deserializes from the legacy
+// two-field shape; #[serde(default)] keeps old payloads valid with
+// interrupted == false.
+#[test]
+fn chat_message_deserializes_legacy_two_field_json_without_flag() {
+    let msg: ChatMessage = serde_json::from_str(r#"{"role":"assistant","content":"old memory"}"#)
+        .expect("legacy two-field JSON must stay deserializable");
+
+    assert_eq!(msg.role, "assistant");
+    assert_eq!(msg.content, "old memory");
+    assert!(!msg.interrupted);
 }

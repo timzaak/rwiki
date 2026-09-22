@@ -57,6 +57,12 @@ pub struct ChatRequest {
     /// Supports single- or multi-channel union retrieval.
     #[serde(rename = "channelId", default)]
     pub channel_id: Option<Vec<String>>,
+    /// Client capability declaration: when true, the server emits a
+    /// `contentEnd` SSE event once the answer body completes. Absent/false
+    /// keeps the legacy event set — old clients structurally never receive
+    /// the new event.
+    #[serde(rename = "supportsContentEndEvent", default)]
+    pub supports_content_end_event: bool,
 }
 
 /// Request body for the authenticated `/api/chat/scoped` endpoint: allows
@@ -71,6 +77,9 @@ pub struct ScopedChatRequest {
     /// restriction); authenticated endpoint only
     #[serde(rename = "documentIds", default)]
     pub document_ids: Option<Vec<String>>,
+    /// Client capability declaration: same semantics as `ChatRequest`.
+    #[serde(rename = "supportsContentEndEvent", default)]
+    pub supports_content_end_event: bool,
 }
 
 /// Deserialize a query field that may appear as a single value (`?channelId=a`)
@@ -139,6 +148,15 @@ struct ErrorEvent {
 #[serde(rename_all = "camelCase")]
 struct SuggestionsEvent {
     suggestions: Vec<String>,
+}
+
+/// 回答主体内容完成信号（仅当请求声明 `supportsContentEndEvent=true` 时发送）。
+/// payload 必须带判别键 `contentEnd`：真实客户端按 payload 形状（而非事件名）
+/// 分发事件，空对象会与 `done` 的 `{}` 不可区分。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentEndEvent {
+    content_end: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +839,32 @@ pub(crate) fn session_key(channel_id: Option<&[String]>, session_id: &str) -> St
     }
 }
 
+/// 持久化一轮对话到会话记忆：user 消息总是写入；assistant 消息仅在非空时
+/// 写入，`interrupted=true` 时标记为客户端断开导致的截断（正常完成为 false）。
+/// 不触发压缩检查——单轮最多新增两条消息，超阈会话由下一个正常完成轮次的
+/// 既有 should_compact 检查补上。按值接收消息文本：三个调用点在持久化后
+/// 都不再使用原字符串，避免整段克隆。
+async fn persist_round(
+    chat_sessions: &tokio::sync::Mutex<HashMap<String, rwiki_core::domain::chat::ChatSession>>,
+    storage_key: &str,
+    user_message: String,
+    assistant_text: String,
+    interrupted: bool,
+) {
+    let mut sessions = chat_sessions.lock().await;
+    let session = sessions
+        .entry(storage_key.to_string())
+        .or_insert_with_key(|id| rwiki_core::domain::chat::ChatSession::new(id.clone()));
+    session.add_message("user", user_message);
+    if !assistant_text.is_empty() {
+        if interrupted {
+            session.add_interrupted_assistant_message(assistant_text);
+        } else {
+            session.add_message("assistant", assistant_text);
+        }
+    }
+}
+
 /// 共享的 SSE 聊天主体：解析完请求、确定作用域之后的全部逻辑。
 /// public `/api/chat` 与认证的 `/api/chat/scoped` 均通过此函数复用，
 /// 仅检索作用域不同（前者恒为 Channel(s)，后者可由 documentIds 构建 Collection）。
@@ -833,6 +877,7 @@ async fn chat_inner(
     session_id: Option<String>,
     channel_id: Option<&[String]>,
     scope: rwiki_core::infrastructure::vector_store::RetrievalScope,
+    supports_content_end_event: bool,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Validate message is not empty
     if message.trim().is_empty() {
@@ -1076,6 +1121,15 @@ async fn chat_inner(
                         .event("session")
                         .data(serde_json::to_string(&session_event).unwrap_or_default());
                     if tx.send(Ok(event)).await.is_err() {
+                        // Disconnected before any content: persist user message only
+                        persist_round(
+                            &state.chat_sessions,
+                            &storage_key,
+                            user_message,
+                            String::new(),
+                            true,
+                        )
+                        .await;
                         return;
                     }
 
@@ -1111,12 +1165,36 @@ async fn chat_inner(
                                 if tx.send(Ok(event)).await.is_err() {
                                     tracing::Span::current()
                                         .record("output_chars", assistant_text.chars().count());
+                                    // Client disconnected mid-stream: persist the round with
+                                    // whatever partial answer was generated so far
+                                    persist_round(
+                                        &state.chat_sessions,
+                                        &storage_key,
+                                        user_message,
+                                        assistant_text,
+                                        true,
+                                    )
+                                    .await;
                                     return;
                                 }
                             }
                             Ok(rig::agent::MultiTurnStreamItem::FinalResponse(_)) => {
-                                // Post-answer suggestions (only when switch is on; silent degrade to empty)
-                                if enable_post_answer_suggestions {
+                                // Capability-gated content-complete signal: emitted after the
+                                // last chunk, before suggestion generation. Send errors are
+                                // ignored — the answer is complete and normal persistence
+                                // proceeds regardless of whether the client is still there.
+                                if supports_content_end_event {
+                                    let event = Event::default().event("contentEnd").data(
+                                        serde_json::to_string(&ContentEndEvent {
+                                            content_end: true,
+                                        })
+                                        .unwrap_or_default(),
+                                    );
+                                    let _ = tx.send(Ok(event)).await;
+                                }
+                                // Post-answer suggestions (only when switch is on and the
+                                // client is still connected; silent degrade to empty)
+                                if enable_post_answer_suggestions && !tx.is_closed() {
                                     let suggestions = generate_post_answer_suggestions(
                                         &state.llm_client,
                                         &state.llm_model,
@@ -1182,16 +1260,14 @@ async fn chat_inner(
                         .record(context_chunks as f64, &[]);
 
                     // Persist user message and assistant response to session
-                    {
-                        let mut sessions = state.chat_sessions.lock().await;
-                        let session = sessions.entry(storage_key.clone()).or_insert_with_key(|id| {
-                            rwiki_core::domain::chat::ChatSession::new(id.clone())
-                        });
-                        session.add_message("user", &user_message);
-                        if !assistant_text.is_empty() {
-                            session.add_message("assistant", &assistant_text);
-                        }
-                    }
+                    persist_round(
+                        &state.chat_sessions,
+                        &storage_key,
+                        user_message,
+                        assistant_text,
+                        false,
+                    )
+                    .await;
 
                     // Compact check: if session exceeds thresholds, compress old messages
                     let sessions = state.chat_sessions.clone();
@@ -1315,6 +1391,7 @@ pub async fn chat(
         req.session_id,
         Some(&channel_ids),
         rwiki_core::infrastructure::vector_store::RetrievalScope::Channels(channel_ids.clone()),
+        req.supports_content_end_event,
     )
     .await
 }
@@ -1343,7 +1420,15 @@ pub async fn chat_scoped(
     let scope = rwiki_core::infrastructure::vector_store::RetrievalScope::from_document_ids(
         req.document_ids.as_ref(),
     );
-    chat_inner(state, req.message, req.session_id, None, scope).await
+    chat_inner(
+        state,
+        req.message,
+        req.session_id,
+        None,
+        scope,
+        req.supports_content_end_event,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1880,10 +1965,12 @@ mod tests {
             ChatMessage {
                 role: "user".into(),
                 content: "What is Rust?".into(),
+                interrupted: false,
             },
             ChatMessage {
                 role: "assistant".into(),
                 content: "Rust is a systems language.".into(),
+                interrupted: false,
             },
         ];
         let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
@@ -1924,10 +2011,12 @@ mod tests {
             ChatMessage {
                 role: "user".into(),
                 content: "What is Rust?".into(),
+                interrupted: false,
             },
             ChatMessage {
                 role: "assistant".into(),
                 content: "A systems language.".into(),
+                interrupted: false,
             },
         ];
         let prompt = build_compact_prompt(Some("Previous summary about Rust."), &messages);
@@ -1946,6 +2035,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".into(),
             content: "What is Rust?".into(),
+            interrupted: false,
         }];
         let prompt = build_compact_prompt(None, &messages);
         assert!(
@@ -2066,10 +2156,12 @@ mod tests {
             ChatMessage {
                 role: "user".into(),
                 content: "What is Rust?".into(),
+                interrupted: false,
             },
             ChatMessage {
                 role: "assistant".into(),
                 content: "Rust is a systems language.".into(),
+                interrupted: false,
             },
         ];
         let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
@@ -2107,6 +2199,7 @@ mod tests {
         let history = vec![ChatMessage {
             role: "user".into(),
             content: "test".into(),
+            interrupted: false,
         }];
         let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
         assert!(
@@ -2129,6 +2222,7 @@ mod tests {
         let history = vec![ChatMessage {
             role: "user".into(),
             content: "test".into(),
+            interrupted: false,
         }];
         let prompt = build_rewrite_prompt(&history, "test", None);
         assert!(
@@ -2157,6 +2251,7 @@ mod tests {
         let history = vec![ChatMessage {
             role: "user".into(),
             content: "test".into(),
+            interrupted: false,
         }];
         let prompt = build_rewrite_prompt(&history, "follow up", Some(""));
         assert!(
@@ -2187,6 +2282,7 @@ mod tests {
         let history = vec![ChatMessage {
             role: "user".into(),
             content: "test".into(),
+            interrupted: false,
         }];
         let prompt = build_rewrite_prompt(&history, "follow up", Some("中文"));
         assert!(
@@ -2219,6 +2315,7 @@ mod tests {
         let history = vec![ChatMessage {
             role: "user".into(),
             content: "test".into(),
+            interrupted: false,
         }];
         let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
         let lang_pos = prompt
@@ -2601,5 +2698,128 @@ mod tests {
         let ch = ["help_center".to_string(), "dev_docs".to_string()];
         let key = session_key(Some(&ch), "sess-multi");
         assert_eq!(key, "channel:help_center,dev_docs:sess-multi");
+    }
+
+    #[tokio::test]
+    async fn persist_round_interrupted_writes_user_and_flagged_partial_assistant() {
+        let sessions: tokio::sync::Mutex<HashMap<String, rwiki_core::domain::chat::ChatSession>> =
+            tokio::sync::Mutex::new(HashMap::new());
+        persist_round(
+            &sessions,
+            "channel:ch:s1",
+            "What is Rust?".to_string(),
+            "Rust is a...".to_string(),
+            true,
+        )
+        .await;
+
+        let sessions = sessions.lock().await;
+        let session = sessions.get("channel:ch:s1").expect("session created");
+        assert_eq!(session.messages.len(), 2, "user + partial assistant");
+        assert_eq!(session.messages[0].role, "user");
+        assert_eq!(session.messages[0].content, "What is Rust?");
+        assert!(!session.messages[0].interrupted);
+        assert_eq!(session.messages[1].role, "assistant");
+        assert_eq!(session.messages[1].content, "Rust is a...");
+        assert!(
+            session.messages[1].interrupted,
+            "partial assistant answer must be flagged as interrupted"
+        );
+        assert!(
+            !session.is_expired(rwiki_core::domain::chat::SESSION_TTL_SECS),
+            "persisting refreshes last_accessed"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_round_interrupted_empty_partial_writes_user_only() {
+        let sessions: tokio::sync::Mutex<HashMap<String, rwiki_core::domain::chat::ChatSession>> =
+            tokio::sync::Mutex::new(HashMap::new());
+        persist_round(
+            &sessions,
+            "channel:ch:s2",
+            "Hello?".to_string(),
+            String::new(),
+            true,
+        )
+        .await;
+
+        let sessions = sessions.lock().await;
+        let session = sessions.get("channel:ch:s2").expect("session created");
+        assert_eq!(
+            session.messages.len(),
+            1,
+            "interrupted before first content chunk: no assistant message"
+        );
+        assert_eq!(session.messages[0].role, "user");
+    }
+
+    #[tokio::test]
+    async fn persist_round_interrupted_appends_to_existing_session() {
+        let sessions: tokio::sync::Mutex<HashMap<String, rwiki_core::domain::chat::ChatSession>> =
+            tokio::sync::Mutex::new(HashMap::new());
+        {
+            let mut sessions = sessions.lock().await;
+            let session = sessions
+                .entry("channel:ch:s3".to_string())
+                .or_insert_with_key(|id| rwiki_core::domain::chat::ChatSession::new(id.clone()));
+            session.add_message("user", "earlier question");
+            session.add_message("assistant", "earlier full answer");
+        }
+        persist_round(
+            &sessions,
+            "channel:ch:s3",
+            "next question".to_string(),
+            "partial".to_string(),
+            true,
+        )
+        .await;
+
+        let sessions = sessions.lock().await;
+        let session = sessions.get("channel:ch:s3").expect("session exists");
+        assert_eq!(
+            session.messages.len(),
+            4,
+            "interrupted round appends instead of overwriting history"
+        );
+        assert_eq!(session.messages[2].content, "next question");
+        assert!(session.messages[3].interrupted);
+    }
+
+    #[test]
+    fn chat_request_deserializes_supports_content_end_event() {
+        let req: ChatRequest = serde_json::from_str(
+            r#"{"message":"hi","channelId":["ch"],"supportsContentEndEvent":true}"#,
+        )
+        .expect("new field accepted");
+        assert!(req.supports_content_end_event);
+
+        let legacy: ChatRequest = serde_json::from_str(r#"{"message":"hi","channelId":["ch"]}"#)
+            .expect("legacy body without the field stays valid");
+        assert!(
+            !legacy.supports_content_end_event,
+            "absent field must default to false so old clients never receive contentEnd"
+        );
+    }
+
+    #[test]
+    fn scoped_chat_request_deserializes_supports_content_end_event() {
+        let req: ScopedChatRequest =
+            serde_json::from_str(r#"{"message":"hi","supportsContentEndEvent":true}"#)
+                .expect("new field accepted");
+        assert!(req.supports_content_end_event);
+
+        let legacy: ScopedChatRequest = serde_json::from_str(r#"{"message":"hi"}"#)
+            .expect("legacy body without the field stays valid");
+        assert!(!legacy.supports_content_end_event);
+    }
+
+    #[test]
+    fn content_end_event_serializes_payload_with_discriminating_key() {
+        // Real clients dispatch SSE events by payload shape, not event name;
+        // an empty payload would be indistinguishable from `done`'s {}.
+        let json = serde_json::to_string(&ContentEndEvent { content_end: true })
+            .expect("serialization is infallible for a bool");
+        assert_eq!(json, r#"{"contentEnd":true}"#);
     }
 }

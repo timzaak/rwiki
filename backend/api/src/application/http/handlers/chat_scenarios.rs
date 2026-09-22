@@ -81,10 +81,12 @@ fn rewrite_prompt_includes_history_and_user_message() {
         ChatMessage {
             role: "user".into(),
             content: "What is Rust?".into(),
+            interrupted: false,
         },
         ChatMessage {
             role: "assistant".into(),
             content: "Rust is a systems programming language.".into(),
+            interrupted: false,
         },
     ];
     let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
@@ -236,10 +238,12 @@ fn compact_prompt_with_existing_summary_includes_old_summary() {
         ChatMessage {
             role: "user".into(),
             content: "What is ownership in Rust?".into(),
+            interrupted: false,
         },
         ChatMessage {
             role: "assistant".into(),
             content: "Ownership is a memory management concept.".into(),
+            interrupted: false,
         },
     ];
     let prompt = build_compact_prompt(Some("Previous summary about Rust basics."), &messages);
@@ -272,6 +276,7 @@ fn compact_prompt_without_existing_summary_omits_summary_section() {
     let messages = vec![ChatMessage {
         role: "user".into(),
         content: "What is Rust?".into(),
+        interrupted: false,
     }];
     let prompt = build_compact_prompt(None, &messages);
 
@@ -405,10 +410,12 @@ fn query_rewriting_failure_fallback_code_structure_verified() {
         ChatMessage {
             role: "user".into(),
             content: "What is Rust?".into(),
+            interrupted: false,
         },
         ChatMessage {
             role: "assistant".into(),
             content: "Rust is a systems programming language.".into(),
+            interrupted: false,
         },
     ];
     let original_query = "How does it handle memory?";
@@ -646,10 +653,12 @@ fn rewrite_prompt_includes_json_output_format_constraint() {
         ChatMessage {
             role: "user".into(),
             content: "What is Kubernetes?".into(),
+            interrupted: false,
         },
         ChatMessage {
             role: "assistant".into(),
             content: "Kubernetes is a container orchestration platform.".into(),
+            interrupted: false,
         },
     ];
     let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
@@ -681,10 +690,12 @@ fn rewrite_prompt_retains_history_context_for_coreference_resolution() {
         ChatMessage {
             role: "user".into(),
             content: "What is Rust?".into(),
+            interrupted: false,
         },
         ChatMessage {
             role: "assistant".into(),
             content: "Rust is a systems programming language.".into(),
+            interrupted: false,
         },
     ];
     let prompt = build_rewrite_prompt(&history, "it", None);
@@ -2490,5 +2501,199 @@ async fn low_recall_channel_scoped_chat_records_channel_id() {
         Some(LOW_RECALL_CHANNEL_ID.to_string()),
         "low_recall_records row must record the current channel_id; got {:?}",
         channel_id
+    );
+}
+
+/// Production (non-test) slice of chat.rs. The structure test below pins the
+/// `contentEnd` capability gate — wiring that cannot be driven in-process
+/// without a real SSE disconnect: the streamed body is never polled through
+/// `oneshot`, so send-failure branches are unreachable at runtime in tests.
+fn chat_handler_production_source() -> &'static str {
+    const FULL: &str = include_str!("chat.rs");
+    &FULL[..FULL
+        .find("#[cfg(test)]")
+        .expect("chat.rs must contain its #[cfg(test)] test module")]
+}
+
+/// Strip all whitespace so structure assertions survive reformatting.
+fn strip_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+// An unupgraded old client sends the legacy request shape (no
+// `supportsContentEndEvent`); its request must stay valid and the SSE
+// contract must be unchanged.
+// Covers: compatibility gate — old-shape POST /api/chat keeps 200 +
+// text/event-stream.
+#[tokio::test]
+async fn chat_legacy_request_shape_keeps_sse_contract() {
+    let state = build_channel_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let body = serde_json::json!({
+        "message": "hello",
+        "sessionId": "session-chat-interrupt-legacy",
+        "channelId": [CHANNEL_A],
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "legacy body without the capability field must stay valid"
+    );
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "chat response must stay an SSE stream, got content-type {content_type}"
+    );
+}
+
+// A client declaring the `supportsContentEndEvent` capability must not change
+// HTTP-layer behavior; the capability only gates an additional SSE event.
+// Covers: new-field POST /api/chat keeps 200 + text/event-stream.
+#[tokio::test]
+async fn chat_request_with_content_end_capability_keeps_sse_contract() {
+    let state = build_channel_chat_app_state().await;
+    let app = create_api_routes(state);
+
+    let body = serde_json::json!({
+        "message": "hello",
+        "sessionId": "session-chat-interrupt-capability",
+        "channelId": [CHANNEL_A],
+        "supportsContentEndEvent": true,
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_string(&body).expect("serialize json"),
+        ))
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "capability-declaring body must be accepted"
+    );
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "chat response must stay an SSE stream, got content-type {content_type}"
+    );
+}
+
+// Old clients dispatch SSE events by payload shape and would treat any
+// unknown event as `done`, breaking the stream; the `contentEnd` event must
+// therefore be structurally unreachable for them, and once the client is
+// gone no suggestion LLM call may start.
+// Covers: (a) the `contentEnd` send is inside `if supports_content_end_event`
+// (the decisive compatibility gate), (b) it is sent before suggestion
+// generation and `done`, (c) suggestions are double-gated by
+// `enable_post_answer_suggestions && !tx.is_closed()`.
+#[test]
+fn content_end_event_capability_gating_structure_verified() {
+    let src = strip_ws(chat_handler_production_source());
+
+    assert_eq!(
+        src.matches(".event(\"contentEnd\")").count(),
+        1,
+        "contentEnd must be sent from exactly one site"
+    );
+    let gate = src
+        .find("ifsupports_content_end_event")
+        .expect("contentEnd send must be gated by `if supports_content_end_event`");
+    let content_end = src
+        .find(".event(\"contentEnd\")")
+        .expect("contentEnd event send must exist");
+    let suggestions_call = src
+        .find("=generate_post_answer_suggestions(&state.llm_client")
+        .expect("post-answer suggestion call must exist");
+    let done_event = src
+        .find(".event(\"done\")")
+        .expect("done event send must exist");
+
+    assert!(
+        gate < content_end,
+        "contentEnd send must sit inside the capability gate so legacy clients structurally never receive it"
+    );
+    assert!(
+        content_end < suggestions_call,
+        "contentEnd must be emitted after the answer body completes and before suggestion generation"
+    );
+    assert!(
+        suggestions_call < done_event,
+        "suggestions must precede the done event"
+    );
+    assert!(
+        src.contains("enable_post_answer_suggestions&&!tx.is_closed()"),
+        "suggestion LLM call must be skipped once the client has disconnected"
+    );
+}
+
+// An interrupted round must keep participating in query rewrite, compaction,
+// and the sliding window exactly like a normal round, and the truncation
+// flag must never leak into any prompt.
+// Covers: (a) prompt builders produce byte-identical output for an
+// interrupted vs. non-interrupted history (no special-casing, no marker
+// leakage), (b) the sliding window keeps interrupted rounds.
+#[test]
+fn interrupted_flag_participates_uniformly_and_never_leaks_into_prompts() {
+    let interrupted_history = vec![
+        ChatMessage {
+            role: "user".into(),
+            content: "3 月销售数据".into(),
+            interrupted: false,
+        },
+        ChatMessage {
+            role: "assistant".into(),
+            content: "3 月销售额为".into(),
+            interrupted: true,
+        },
+    ];
+    let mut normal_history = interrupted_history.clone();
+    normal_history[1].interrupted = false;
+
+    assert_eq!(
+        build_rewrite_prompt(&interrupted_history, "那个月的产品明细呢", None),
+        build_rewrite_prompt(&normal_history, "那个月的产品明细呢", None),
+        "rewrite prompt must not depend on the interrupted flag"
+    );
+    assert_eq!(
+        build_compact_prompt(Some("旧摘要"), &interrupted_history),
+        build_compact_prompt(Some("旧摘要"), &normal_history),
+        "compact prompt must not depend on the interrupted flag"
+    );
+    assert!(
+        build_rewrite_prompt(&interrupted_history, "那个月的产品明细呢", None)
+            .contains("3 月销售额为"),
+        "interrupted partial answer must still feed rewrite context for follow-up resolution"
+    );
+
+    let mut session = ChatSession::new("chat-interrupt-window".to_string());
+    session.add_message("user", "3 月销售数据");
+    session.add_interrupted_assistant_message("3 月销售额为");
+    assert_eq!(
+        session.get_sliding_window(6).len(),
+        2,
+        "interrupted rounds must stay inside the sliding window"
     );
 }

@@ -9,6 +9,11 @@ pub const SESSION_TTL_SECS: u64 = 3600;
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// 本条 assistant 回答是否因客户端断开而被截断。
+    /// 仅服务端会话记忆用途：参与滑窗/改写/摘要时与普通消息同质，
+    /// 所有 prompt 构建与 rig 映射只读 role/content，标记不外泄。
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 /// 聊天会话（纯内存，不持久化）
@@ -35,9 +40,24 @@ impl ChatSession {
     }
 
     pub fn add_message(&mut self, role: impl Into<String>, content: impl Into<String>) {
+        self.push_message(role, content, false);
+    }
+
+    /// 追加一条标记截断的 assistant 消息（客户端断开后持久化已生成的部分回答）。
+    pub fn add_interrupted_assistant_message(&mut self, content: impl Into<String>) {
+        self.push_message("assistant", content, true);
+    }
+
+    fn push_message(
+        &mut self,
+        role: impl Into<String>,
+        content: impl Into<String>,
+        interrupted: bool,
+    ) {
         self.messages.push(ChatMessage {
             role: role.into(),
             content: content.into(),
+            interrupted,
         });
         self.last_accessed = Instant::now();
     }
