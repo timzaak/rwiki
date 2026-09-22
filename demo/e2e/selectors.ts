@@ -18,10 +18,16 @@ export const SELECTORS = {
     panel: '[data-testid="chat-panel"]',
     input: '[data-testid="chat-input"]',
     sendButton: '[data-testid="chat-send-button"]',
+    // Stop-generating form of the send button, shown while a response streams
+    // (US-CORE-039; mutually exclusive with sendButton).
+    stopButton: '[data-testid="chat-stop-button"]',
     messageList: '[data-testid="message-list"]',
     messageListEmpty: '[data-testid="message-list-empty"]',
     messageItem: (role: string) => `[data-testid="message-item-${role}"]`,
     messageStreaming: '[data-testid="message-item-streaming"]',
+    // Persistent "response interrupted" notice inside an interrupted assistant
+    // message (US-CORE-039 scenarios 1/2).
+    messageInterruptedNotice: '[data-testid="message-interrupted-notice"]',
     errorBanner: '[data-testid="chat-error-banner"]',
     modal: '[data-testid="chat-modal"]',
     modalHeader: '[data-testid="chat-modal-header"]',

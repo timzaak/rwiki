@@ -145,6 +145,14 @@ Submitting feedback is an UPSERT: if the user already gave feedback on a message
 
 The frontend renders thumbs-up/thumbs-down buttons below each assistant message once streaming finishes. Clicking the same button again removes the feedback. The UI uses optimistic updates — the button state changes immediately, rolling back if the API call fails.
 
+### Chat interrupt
+
+Users can interrupt a streaming answer at any time: click the stop button, or send a new question directly (implicit interrupt). On the wire, an interrupt is simply the SSE connection dropping — there is no cancel endpoint; the server detects the disconnect when writing an event to the broken connection fails, then cancels the remaining LLM generation and suggested-questions generation for that round.
+
+The interrupted round is persisted into the server-side session history: the user message is always written; a non-empty partial answer is written alongside it and flagged as truncated; if no content was generated yet (interrupted before the first chunk), only the user message is recorded. Truncated rounds participate in query rewriting, the sliding window, and summary compression exactly like normal rounds — that's why follow-ups after an interrupt still connect. User-initiated interrupts and network drops are handled identically server-side; whether to prompt a retry is decided client-side from the interrupt source.
+
+Old-client compatibility relies on capability negotiation: when a request carries the optional `supportsContentEndEvent` field, the server emits a `contentEnd` event (payload `{"contentEnd":true}`) after the answer body completes and before suggested-questions generation, letting the frontend distinguish "answer complete, only suggestions were interrupted" from "partial answer + interrupted notice". Clients without the field structurally never receive the event, so their behavior is unchanged.
+
 ### Low-recall logging
 
 Feedback is sparse — most bad answers get no thumbs-down. To cover the rest, the backend records every published-scope chat query whose top result relevance falls below a configurable threshold (or that returns nothing) into a log table. The record keeps the question, the top relevance score, the recall sources, and the time, written on a side path that doesn't touch the answer. Operators read these records in the [admin console](/en/docs/admin#low-recall-records) to find knowledge-base blind spots. The feature is off by default and enabled by the `[low_recall]` config section. This is the third quality signal alongside feedback (human, sparse) and the eval endpoint (offline, batch) — the three are complementary, not overlapping.

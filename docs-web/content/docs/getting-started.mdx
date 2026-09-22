@@ -231,6 +231,18 @@ data: {}
 
 You can also ask questions directly in the frontend chat page — it's more intuitive.
 
+### Interrupt an answer and follow up
+
+You can interrupt an answer at any point while it streams — no need to wait for a long response to finish:
+
+- While streaming, the send button in the chat input morphs into a **stop button**; clicking it ends the current generation
+- Sending a new question mid-stream interrupts the current answer too, and the new question starts streaming normally; your draft is never cleared by interrupting
+- The interrupted answer keeps what was already generated, marked "The response was interrupted; the content above may be incomplete." Interrupting is not an error, so there is no retry prompt; network failures keep their existing retry behavior
+
+The interrupted round still enters conversation memory: follow up with "what about that month's product details" or "continue", and the system resolves references against the interrupted question and the partial answer.
+
+You can verify the semantics with curl: pressing Ctrl+C mid-stream is the same as clicking stop — the server cancels the rest of the generation and records the round (partial answer included) into the session history.
+
 ### Give feedback on an answer
 
 After streaming completes, you can submit like/dislike feedback on the answer:
