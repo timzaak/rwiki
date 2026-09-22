@@ -321,24 +321,26 @@ describe('MessageItem interrupted messages', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('offers retry on the last interrupted message and re-sends on click', async () => {
+  it('offers no retry on interrupted messages — interruption is not an error', () => {
+    // WHY: 用户主动打断不提示重试（打断即终止本轮，可自然语言追问
+    // "继续"）；重试入口只属于 isFailed 网络失败分支。
     const onRetry = vi.fn()
-    const user = userEvent.setup()
     seedStore([
       makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
       interruptedMessage,
     ])
 
     renderWithStream({ ...interruptedMessage }, defaultStreamValue, { onRetry })
-    await user.click(screen.getByTestId('message-retry-button'))
 
-    expect(onRetry).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('message-interrupted-notice')).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('message-retry-button'),
+    ).not.toBeInTheDocument()
   })
 
-  it('keeps the notice but hides retry when a newer turn exists after the interrupted one', () => {
-    // WHY: chat-panel 的重试会移除最后一对问答并重发最后的问题；
-    // 若在非最后一条上提供重试，会错删新的一轮。因此仅提示、不提供重试。
-    const onRetry = vi.fn()
+  it('keeps the notice on an interrupted message when a newer turn exists after it', () => {
+    // WHY: 中断标识是内容完整性事实，不因后续轮次消失；该消息也不再提供
+    // 任何重试入口（见上一用例）。
     seedStore([
       makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q1' }),
       interruptedMessage,
@@ -351,11 +353,88 @@ describe('MessageItem interrupted messages', () => {
       }),
     ])
 
-    renderWithStream({ ...interruptedMessage }, defaultStreamValue, { onRetry })
+    renderWithStream({ ...interruptedMessage }, defaultStreamValue, {
+      onRetry: vi.fn(),
+    })
 
     expect(screen.getByTestId('message-interrupted-notice')).toBeInTheDocument()
     expect(
       screen.queryByTestId('message-retry-button'),
     ).not.toBeInTheDocument()
+  })
+
+  it('shows no interrupted notice for a contentEnded message (complete answer)', () => {
+    // WHY: 回答主体已完成的轮次内容是完整的，不得呈现"可能不完整"提示。
+    seedStore([
+      makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
+      makeMessage({
+        id: 'msg-asst-1',
+        role: 'assistant',
+        content: 'full answer',
+        isStreaming: false,
+        contentEnded: true,
+      }),
+    ])
+
+    renderMessage({
+      id: 'msg-asst-1',
+      role: 'assistant',
+      content: 'full answer',
+      isStreaming: false,
+      contentEnded: true,
+    })
+
+    expect(
+      screen.queryByTestId('message-interrupted-notice'),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('MessageItem empty but explained answers', () => {
+  function renderEmpty(overrides: Partial<ChatMessage>, onRetry?: () => void) {
+    const message = makeMessage({
+      id: 'msg-asst-1',
+      role: 'assistant',
+      content: '',
+      isStreaming: false,
+      ...overrides,
+    })
+    useChatStore.setState({
+      messages: [
+        makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }),
+        message,
+      ],
+      sessionId: 'test-session',
+      isLoading: false,
+      error: null,
+    })
+    return renderWithStream({ ...message }, defaultStreamValue, { onRetry })
+  }
+
+  it('renders a completed-but-empty answer as empty, not as a failure', () => {
+    // WHY: contentEnd 后零 chunk 说明服务端正常完成但答案为空；isFailed
+    // 启发式若不看 contentEnded，会把它渲染成"生成失败"+重试，把正常完成
+    // 误报为失败。
+    renderEmpty({ contentEnded: true }, vi.fn())
+
+    expect(
+      screen.queryByText('Response generation failed. Please try again.'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId('message-retry-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-empty-response')).toHaveTextContent(
+      'The model returned an empty response.',
+    )
+  })
+
+  it('renders a refresh-restored empty interrupted round with the notice, not as failed', () => {
+    // WHY: 首内容前被打断的轮次经持久化恢复得到 content='' +
+    // interrupted=true；打断不是错误，不得进入失败态。
+    renderEmpty({ interrupted: true }, vi.fn())
+
+    expect(
+      screen.queryByText('Response generation failed. Please try again.'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId('message-retry-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-interrupted-notice')).toBeInTheDocument()
   })
 })

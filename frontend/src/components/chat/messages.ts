@@ -8,10 +8,13 @@ export interface WidgetMessages {
   inputPlaceholder: string
   responseFailed: string
   responseInterrupted: string
+  /** Shown for a completed answer whose body is empty (contentEnd, no chunks). */
+  emptyResponse: string
   retry: string
   a11yOpen: string
   a11yClose: string
   a11yClear: string
+  a11yStop: string
   a11yLike: string
   a11yDislike: string
   errorBoundary: string
@@ -24,10 +27,12 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     responseFailed: 'Response generation failed. Please try again.',
     responseInterrupted:
       'The response was interrupted; the content above may be incomplete.',
+    emptyResponse: 'The model returned an empty response.',
     retry: 'Retry',
     a11yOpen: 'Open chat assistant',
     a11yClose: 'Close chat modal',
     a11yClear: 'Clear current conversation',
+    a11yStop: 'Stop generating',
     a11yLike: 'Like',
     a11yDislike: 'Dislike',
     errorBoundary:
@@ -38,10 +43,12 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     inputPlaceholder: '随便问点什么…',
     responseFailed: '回复生成失败,请重试。',
     responseInterrupted: '回答被中断,以上内容可能不完整。',
+    emptyResponse: '模型未返回内容。',
     retry: '重试',
     a11yOpen: '打开聊天助手',
     a11yClose: '关闭聊天窗口',
     a11yClear: '清空当前对话',
+    a11yStop: '停止生成',
     a11yLike: '赞',
     a11yDislike: '踩',
     errorBoundary:
@@ -67,7 +74,6 @@ export function resolveLocale(rawLocale: string | undefined): Locale {
   }
   const matched = matchLocaleRecord(WIDGET_MESSAGES, raw)
   if (matched) {
-    // find the key whose value matched (supported locale)
     const key = SUPPORTED_LOCALES.find((l) => WIDGET_MESSAGES[l] === matched)
     if (key) return key
   }

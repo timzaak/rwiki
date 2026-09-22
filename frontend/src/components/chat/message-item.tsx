@@ -82,16 +82,18 @@ const markdownComponents: Components = {
 
 export function MessageItem({ message, onRetry }: MessageItemProps) {
   const isUser = message.role === 'user'
-  const isFailed = !isUser && !message.isStreaming && !message.content.trim()
+  // Empty content is a failure only when no flag explains the emptiness:
+  // contentEnded = server completed with an empty answer, interrupted =
+  // refresh-restored round cut off before the first content chunk.
+  const isFailed =
+    !isUser &&
+    !message.isStreaming &&
+    !message.content.trim() &&
+    !message.contentEnded &&
+    !message.interrupted
+  const isEmptyResponse = !isUser && message.contentEnded && !message.content.trim()
 
   const sessionId = useChatStore((s) => s.sessionId)
-  // 重试只对最后一条消息有效：chat-panel 的 handleRetry 会移除末尾问答对并重发最后的问题。
-  const isLastMessage = useChatStore(
-    useCallback(
-      (s) => s.messages[s.messages.length - 1]?.id === message.id,
-      [message.id],
-    ),
-  )
   const userMessage = useChatStore(
     useCallback(
       (s) => {
@@ -171,14 +173,23 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
           </div>
         ) : (
           <>
-            <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em] [&_table]:w-full [&_table]:border-collapse [&_table]:my-2 [&_table]:text-xs [&_th]:border [&_th]:border-border/60 [&_td]:border [&_td]:border-border/60 [&_th]:bg-secondary/50 [&_th]:px-2 [&_td]:px-2 [&_th]:py-1.5 [&_td]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_td]:align-top [&_table]:overflow-x-auto [&_table]:block">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                components={markdownComponents}
+            {isEmptyResponse ? (
+              <span
+                data-testid="message-empty-response"
+                className="text-xs leading-relaxed text-muted-foreground"
               >
-                {message.content}
-              </Markdown>
-            </div>
+                {t.emptyResponse}
+              </span>
+            ) : (
+              <div className="prose prose-sm break-all max-w-none dark:prose-invert [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-4 [&_a]:decoration-primary/30 hover:[&_a]:decoration-primary/60 [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3 [&_pre]:ring-1 [&_pre]:ring-border/30 [&_pre]:overflow-x-auto [&_code:not(pre code)]:rounded [&_code:not(pre code)]:bg-secondary/60 [&_code:not(pre code)]:px-1.5 [&_code:not(pre code)]:py-0.5 [&_code:not(pre code)]:text-[0.85em] [&_table]:w-full [&_table]:border-collapse [&_table]:my-2 [&_table]:text-xs [&_th]:border [&_th]:border-border/60 [&_td]:border [&_td]:border-border/60 [&_th]:bg-secondary/50 [&_th]:px-2 [&_td]:px-2 [&_th]:py-1.5 [&_td]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_td]:align-top [&_table]:overflow-x-auto [&_table]:block">
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  components={markdownComponents}
+                >
+                  {message.content}
+                </Markdown>
+              </div>
+            )}
 
             {message.isStreaming && (
               <span
@@ -202,17 +213,6 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
                   <AlertCircleIcon className="size-3 shrink-0 text-amber-500" />
                   {t.responseInterrupted}
                 </span>
-                {onRetry && isLastMessage && (
-                  <button
-                    type="button"
-                    data-testid="message-retry-button"
-                    className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/80 px-2 py-1 text-xs text-muted-foreground ring-1 ring-border/40 transition-colors hover:bg-secondary hover:text-foreground"
-                    onClick={onRetry}
-                  >
-                    <RefreshCwIcon className="size-3" />
-                    {t.retry}
-                  </button>
-                )}
               </div>
             )}
 

@@ -2,21 +2,9 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import { chat } from '@/lib/api-generated/sdk.gen'
 import type { ChatRequest } from '@/lib/api-generated/types.gen'
+import { detectEventType } from '@/lib/chat-sse'
 import { useChatStore } from '@/stores/chat-store'
 import { useChannelId } from '@/components/chat/channel-id-context'
-
-function detectEventType(
-  data: unknown,
-): 'session' | 'chunk' | 'suggestions' | 'error' | 'done' {
-  if (typeof data !== 'object' || data === null) return 'done'
-  const record = data as Record<string, unknown>
-  if ('sessionId' in record && record.sessionId) return 'session'
-  if ('content' in record && record.content !== undefined) return 'chunk'
-  if ('suggestions' in record && Array.isArray(record.suggestions))
-    return 'suggestions'
-  if ('message' in record && record.message) return 'error'
-  return 'done'
-}
 
 export function useChatStream() {
   const abortRef = useRef<AbortController | null>(null)
@@ -28,6 +16,8 @@ export function useChatStream() {
     addAssistantMessage,
     appendToLastAssistant,
     finishStreaming,
+    markContentEnded,
+    interruptStreaming,
     setLastAssistantSuggestions,
     setSessionId,
     setError,
@@ -39,13 +29,11 @@ export function useChatStream() {
 
   const sendMessage = useCallback(
     async (content: string) => {
-      // Abort any in-progress stream
       abortRef.current?.abort()
 
       const controller = new AbortController()
       abortRef.current = controller
 
-      // Add user message and placeholder assistant message
       addUserMessage(content)
       const assistantId = crypto.randomUUID()
       addAssistantMessage(assistantId)
@@ -55,6 +43,7 @@ export function useChatStream() {
           message: content,
           sessionId: sessionId,
           channelId,
+          supportsContentEndEvent: true,
         }
 
         const result = await chat({
@@ -85,6 +74,9 @@ export function useChatStream() {
                 (event as Record<string, unknown>).suggestions as string[],
               )
               break
+            case 'contentEnd':
+              markContentEnded(assistantId)
+              break
             case 'error':
               setError(
                 String((event as Record<string, unknown>).message),
@@ -97,12 +89,17 @@ export function useChatStream() {
           }
         }
 
-        // Stream ended normally
-        finishStreaming()
-      } catch (err: unknown) {
-        // AbortError means user cancelled — preserve displayed content, no error
+        // Stream ended: aborted means user interrupt, otherwise normal completion
         if (controller.signal.aborted) {
+          interruptStreaming(assistantId)
+        } else {
           finishStreaming()
+        }
+      } catch (err: unknown) {
+        // AbortError means user cancelled — finish this round as interrupted,
+        // preserve displayed content, no error
+        if (controller.signal.aborted) {
+          interruptStreaming(assistantId)
           return
         }
 
@@ -110,7 +107,6 @@ export function useChatStream() {
         let message =
           err instanceof Error ? err.message : 'Connection lost. Please try again.'
 
-        // Map SSE HTTP errors to user-friendly messages
         if (message.startsWith('SSE failed:')) {
           if (message.includes('503')) {
             message = 'No indexed data in knowledge base. Please upload a document first.'
@@ -130,13 +126,14 @@ export function useChatStream() {
       addAssistantMessage,
       appendToLastAssistant,
       finishStreaming,
+      markContentEnded,
+      interruptStreaming,
       setLastAssistantSuggestions,
       setSessionId,
       setError,
     ],
   )
 
-  // Cleanup: abort on unmount
   useEffect(() => {
     return () => {
       abortRef.current?.abort()

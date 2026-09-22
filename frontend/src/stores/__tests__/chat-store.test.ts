@@ -358,6 +358,44 @@ describe('useChatStore persistence', () => {
     expect(useChatStore.getState().messages[0].interrupted).toBe(true)
   })
 
+  it('does not mark a contentEnded message as interrupted on restore (suggestion-phase refresh)', async () => {
+    // WHY: 推荐生成阶段刷新后回看，回答主体已完成的轮次不能带"可能不
+    // 完整"标识；contentEnded 也必须随 partialize 持久化，否则刷新即丢失
+    // 判定输入。
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [
+            makeMessage({
+              id: 'user-1',
+              role: 'user',
+              content: 'Q',
+            }),
+            makeMessage({
+              id: 'asst-1',
+              role: 'assistant',
+              content: 'full answer',
+              isStreaming: true,
+              contentEnded: true,
+            }),
+          ],
+          sessionId: 'session-content-ended',
+          updatedAt,
+        },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    const message = useChatStore.getState().messages[1]
+    expect(message.isStreaming).toBe(false)
+    expect(message.contentEnded).toBe(true)
+    expect(message.interrupted).toBeUndefined()
+  })
+
   it('drops a conversation updated more than 30 minutes ago', async () => {
     localStorage.setItem(
       CHAT_STORAGE_KEY,
@@ -420,7 +458,6 @@ describe('useChatStore post-answer suggestions', () => {
       const messages = useChatStore.getState().messages
       const lastIndex = messages.length - 1
       expect(messages[lastIndex].suggestedQuestions).toEqual(['q1', 'q2'])
-      // Earlier assistant messages stay untouched.
       for (let i = 1; i < assistants.length; i++) {
         expect(messages[lastIndex - i].suggestedQuestions).toBeUndefined()
       }
@@ -512,6 +549,164 @@ describe('useChatStore post-answer suggestions', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('useChatStore interruption finishing', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useChatStore.setState({
+      messages: [],
+      sessionId: null,
+      updatedAt: null,
+      isLoading: false,
+      error: null,
+    })
+  })
+
+  it('interruptStreaming marks a streaming message with content as interrupted and clears loading', () => {
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({ id: 'user-1', role: 'user', content: 'Q' }),
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: 'partial answ',
+          isStreaming: true,
+        }),
+      ],
+    })
+
+    useChatStore.getState().interruptStreaming('asst-1')
+
+    expect(useChatStore.getState().messages[1]).toMatchObject({
+      content: 'partial answ',
+      interrupted: true,
+      isStreaming: false,
+    })
+    expect(useChatStore.getState().isLoading).toBe(false)
+  })
+
+  it('interruptStreaming finishes a contentEnded message completely without the interrupted flag', () => {
+    // WHY: 回答主体已完成的轮次被打断时，内容是完整的，标成"可能不完
+    // 整"会误导用户。
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: 'full answer',
+          isStreaming: true,
+          contentEnded: true,
+        }),
+      ],
+    })
+
+    useChatStore.getState().interruptStreaming('asst-1')
+
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      content: 'full answer',
+      isStreaming: false,
+    })
+    expect(useChatStore.getState().messages[0].interrupted).toBeUndefined()
+    expect(useChatStore.getState().isLoading).toBe(false)
+  })
+
+  it('interruptStreaming removes an empty placeholder that never received content', () => {
+    // WHY: 首内容前打断不能留下空占位，否则会被 MessageItem 的 isFailed
+    // 分支渲染成失败态。
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({ id: 'user-1', role: 'user', content: 'Q' }),
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: '',
+          isStreaming: true,
+        }),
+      ],
+    })
+
+    useChatStore.getState().interruptStreaming('asst-1')
+
+    const state = useChatStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0].role).toBe('user')
+    expect(state.isLoading).toBe(false)
+  })
+
+  it('interruptStreaming keeps isLoading when a newer assistant turn exists (ownsLoading guard)', () => {
+    // WHY: 隐式打断主路径 — 被取代旧流的异步清理按 ID 定向收尾时，不得把
+    // 新流的加载状态清掉，否则新回答仍在流式却显示可发送。
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({ id: 'user-1', role: 'user', content: 'First' }),
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: 'partial first',
+          isStreaming: true,
+        }),
+        makeMessage({ id: 'user-2', role: 'user', content: 'Second' }),
+        makeMessage({
+          id: 'asst-2',
+          role: 'assistant',
+          content: '',
+          isStreaming: true,
+        }),
+      ],
+    })
+
+    useChatStore.getState().interruptStreaming('asst-1')
+
+    const state = useChatStore.getState()
+    expect(state.messages[1].interrupted).toBe(true)
+    expect(state.isLoading).toBe(true)
+    // The replacement turn is untouched by the old stream's cleanup.
+    expect(state.messages[3]).toMatchObject({ isStreaming: true, content: '' })
+  })
+
+  it('interruptStreaming is a no-op when the message no longer exists', () => {
+    // WHY: 清空会话路径 — 先 stopStreaming 再 clearMessages 后，旧流的收尾
+    // 不得复活已清空的会话或误置 isLoading。
+    useChatStore.setState({
+      isLoading: false,
+      messages: [makeMessage({ id: 'user-1', role: 'user', content: 'Q' })],
+    })
+
+    useChatStore.getState().interruptStreaming('asst-gone')
+
+    const state = useChatStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.isLoading).toBe(false)
+    expect(state.error).toBeNull()
+  })
+
+  it('markContentEnded records contentEnded by id without touching streaming state', () => {
+    useChatStore.setState({
+      isLoading: true,
+      messages: [
+        makeMessage({
+          id: 'asst-1',
+          role: 'assistant',
+          content: 'answer body',
+          isStreaming: true,
+        }),
+      ],
+    })
+
+    useChatStore.getState().markContentEnded('asst-1')
+
+    const message = useChatStore.getState().messages[0]
+    expect(message.contentEnded).toBe(true)
+    // contentEnd only marks "answer body complete"; the turn is still
+    // streaming (suggestions) until done/finishStreaming.
+    expect(message.isStreaming).toBe(true)
+    expect(useChatStore.getState().isLoading).toBe(true)
   })
 })
 

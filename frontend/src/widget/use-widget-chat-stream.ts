@@ -1,24 +1,13 @@
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { ChatStreamValue } from '@/components/chat/chat-stream-context'
+import { detectEventType } from '@/lib/chat-sse'
 import { useChatStore } from '@/stores/chat-store'
-
-function detectEventType(
-  data: unknown,
-): 'session' | 'chunk' | 'suggestions' | 'error' | 'done' {
-  if (typeof data !== 'object' || data === null) return 'done'
-  const record = data as Record<string, unknown>
-  if ('sessionId' in record && record.sessionId) return 'session'
-  if ('content' in record && record.content !== undefined) return 'chunk'
-  if ('suggestions' in record && Array.isArray(record.suggestions))
-    return 'suggestions'
-  if ('message' in record && record.message) return 'error'
-  return 'done'
-}
 
 function processSseLines(
   lines: string[],
   store: ReturnType<typeof useChatStore.getState>,
+  assistantId: string,
 ): boolean {
   for (const line of lines) {
     if (line.startsWith('event: ')) continue
@@ -36,6 +25,9 @@ function processSseLines(
           break
         case 'suggestions':
           store.setLastAssistantSuggestions(parsed.suggestions as string[])
+          break
+        case 'contentEnd':
+          store.markContentEnded(assistantId)
           break
         case 'error':
           store.setError(String(parsed.message ?? 'Failed to generate response'))
@@ -80,6 +72,7 @@ export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatSt
             message: content,
             sessionId: store.sessionId,
             channelId,
+            supportsContentEndEvent: true,
           }),
           signal: controller.signal,
         })
@@ -97,7 +90,21 @@ export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatSt
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
-            store.finishStreaming()
+            // Reader done: aborted means user interrupt, otherwise normal completion
+            if (controller.signal.aborted) {
+              store.interruptStreaming(assistantId)
+            } else {
+              store.finishStreaming()
+            }
+            break
+          }
+
+          // Re-check abort in case stopStreaming was called during iteration.
+          // A host-page fetch polyfill may keep resolving reads from buffered
+          // data after abort; without this check the stale events of this
+          // round would bleed into the next round's assistant placeholder.
+          if (controller.signal.aborted) {
+            store.interruptStreaming(assistantId)
             break
           }
 
@@ -105,11 +112,11 @@ export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatSt
           const lines = buffer.split('\n')
           buffer = lines.pop()!
 
-          if (processSseLines(lines, store)) return
+          if (processSseLines(lines, store, assistantId)) return
         }
       } catch {
         if (controller.signal.aborted) {
-          store.finishStreaming()
+          store.interruptStreaming(assistantId)
           return
         }
         store.setError('Unable to connect to server. Please check your configuration or try again later.')

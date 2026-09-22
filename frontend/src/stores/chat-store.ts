@@ -17,8 +17,10 @@ export interface ChatMessage {
   content: string
   timestamp: number
   isStreaming?: boolean
-  /** 恢复时由 isStreaming=true 推导：该消息在持久化时仍在流式中（如页面刷新），内容不完整。 */
+  /** 用户主动打断（停止/新发送/unmount）或恢复时由 isStreaming=true 推导：内容不完整。 */
   interrupted?: boolean
+  /** 本轮已收到 contentEnd SSE 事件：回答主体已完成（推荐生成阶段）。 */
+  contentEnded?: boolean
   error?: string
   feedback?: 'like' | 'dislike'
   suggestedQuestions?: string[]
@@ -35,6 +37,8 @@ interface ChatState {
   addAssistantMessage: (id: string) => void
   appendToLastAssistant: (chunk: string) => void
   finishStreaming: () => void
+  markContentEnded: (messageId: string) => void
+  interruptStreaming: (messageId: string) => void
   setSessionId: (id: string) => void
   setError: (error: string) => void
   setLoading: (loading: boolean) => void
@@ -63,7 +67,10 @@ function sanitizePersistedState(
     messages: state.messages.map((message) => ({
       ...message,
       isStreaming: false,
-      interrupted: message.isStreaming ? true : message.interrupted,
+      interrupted:
+        message.isStreaming && !message.contentEnded
+          ? true
+          : message.interrupted,
     })),
   }
 }
@@ -138,6 +145,47 @@ export const useChatStore = create<ChatState>()(
           return { messages, updatedAt: Date.now(), isLoading: false }
         }),
 
+      markContentEnded: (messageId) =>
+        set((state) => {
+          if (!state.messages.some((m) => m.id === messageId)) return state
+          const messages = state.messages.map((msg) =>
+            msg.id === messageId ? { ...msg, contentEnded: true } : msg,
+          )
+          return { messages, updatedAt: Date.now() }
+        }),
+
+      // 用户主动打断时按消息 ID 收尾该轮（打断不是错误，不 setError）：
+      // - 无内容且未收到 contentEnd → 移除空占位（避免被 isFailed 渲染成失败态）
+      // - 已 contentEnded → 完整收尾、无中断标识
+      // - 其余 → interrupted: true
+      // 仅当该消息之后不存在更新的 assistant 轮次时才复位 isLoading（ownsLoading 守卫），
+      // 防止被取代旧流的异步清理清掉新流的加载状态。
+      interruptStreaming: (messageId) =>
+        set((state) => {
+          const idx = state.messages.findIndex((m) => m.id === messageId)
+          if (idx === -1) return state
+          const message = state.messages[idx]
+          const ownsLoading = !state.messages
+            .slice(idx + 1)
+            .some((m) => m.role === 'assistant')
+          let messages: ChatMessage[]
+          if (!message.content.trim() && !message.contentEnded) {
+            messages = state.messages.filter((m) => m.id !== messageId)
+          } else {
+            messages = [...state.messages]
+            messages[idx] = {
+              ...message,
+              isStreaming: false,
+              ...(message.contentEnded ? {} : { interrupted: true }),
+            }
+          }
+          return {
+            messages,
+            updatedAt: Date.now(),
+            ...(ownsLoading ? { isLoading: false } : {}),
+          }
+        }),
+
       setSessionId: (id) => set({ sessionId: id, updatedAt: Date.now() }),
 
       setError: (error) =>
@@ -162,12 +210,10 @@ export const useChatStore = create<ChatState>()(
       removeLastFailedPair: () =>
         set((state) => {
           const messages = [...state.messages]
-          // Remove the last assistant message (the failed one)
           const lastAssistantIdx = findLastAssistantIndex(messages)
           if (lastAssistantIdx !== -1) {
             messages.splice(lastAssistantIdx, 1)
           }
-          // Remove the last user message (the one that triggered the failed response)
           for (let i = messages.length - 1; i >= 0; i--) {
             if (messages[i].role === 'user') {
               messages.splice(i, 1)
@@ -222,8 +268,6 @@ export const useChatStore = create<ChatState>()(
     },
   ),
 )
-
-// --- Modal state (separate store, separate concerns) ---
 
 interface ChatModalState {
   isModalOpen: boolean
