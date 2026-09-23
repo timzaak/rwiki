@@ -77,17 +77,22 @@ Point both LLM and Embedding at OpenRouter with free models:
 [llm]
 api_key = "sk-or-..."         # OpenRouter API Key
 base_url = "https://openrouter.ai/api/v1"
-model = "meta-llama/llama-3.3-70b-instruct:free"
+model = "openrouter/free"     # router slug: auto-routes to the free models currently available
 
 [embedding]
 api_key = "sk-or-..."         # Same OpenRouter Key
 base_url = "https://openrouter.ai/api/v1"
-model = "nvidia/llama-nemotron-embed-vl-1b-v2"
+model = "nvidia/llama-nemotron-embed-vl-1b-v2:free"  # the ":free" suffix is required
+dimensions = 2048             # required: sizes the vector table to the model's output
 ```
 
-Both models above are free (`$0/M` tokens). You can swap the LLM for any other free model on OpenRouter, such as `google/gemma-3-27b:free` or `nvidia/nemotron-3-nano-30b-a3b:free`.
+Both models above are free (`$0/M` tokens). For the LLM, `openrouter/free` is a router slug that always points at whichever free models are currently live — specific `:free` chat model IDs get rotated out over time (e.g. `meta-llama/llama-3.3-70b-instruct:free` no longer exists), so pinning one is fragile.
+
+`dimensions` must match the embedding model's output size (2048 for the model above). OpenRouter embedding models are not in RWiki's built-in defaults, so leaving it unset sizes the vector table incorrectly — always set it for OpenRouter embeddings.
 
 Free model list: [openrouter.ai/collections/free-models](https://openrouter.ai/collections/free-models)
+
+OpenRouter rotates its free endpoints from time to time. If publishing a document fails with `No endpoints found`, pick another free embedding model from the list, or switch to a cheap paid one such as `qwen/qwen3-embedding-8b` (`$0.01/M` tokens — a full starter corpus embeds for well under a cent).
 
 When you need better quality later, switch to a paid model — same config structure, just change the `model` field.
 
