@@ -13,7 +13,6 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{header, Method, Request, StatusCode};
 use ipnet::IpNet;
-use rig::client::EmbeddingsClient;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
@@ -67,12 +66,10 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
     // Build a minimal embedding model so VectorStoreManager compiles.
     // We use a dummy OpenAI client with a fake key; embeddings are never called
     // for these auth tests.
-    let openai_client =
-        rig::providers::openai::Client::builder().api_key("sk-test-fake-key-for-auth-tests-only");
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect(
+        rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-auth-tests-only"),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -84,11 +81,8 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
         sqlite,

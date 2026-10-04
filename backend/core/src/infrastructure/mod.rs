@@ -8,6 +8,7 @@ pub mod openapi_parser;
 pub mod openapi_tokenizer;
 pub mod otel;
 pub mod reranker;
+pub mod rig_client;
 pub mod text_chunker;
 pub mod vector_store;
 pub mod xlsx_parser;

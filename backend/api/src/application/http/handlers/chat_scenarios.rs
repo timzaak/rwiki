@@ -33,7 +33,6 @@ use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -1033,7 +1032,7 @@ fn multi_query_all_empty_result_triggers_fallback_code_structure() {
 // LLM Mocking Strategy (carries over from the block above, lines 289-311):
 // The handler's `chat_inner` closure emits the `suggestions` SSE event inline
 // inside the `FinalResponse` match arm, immediately before `done`. The LLM
-// client is the concrete `rig::providers::openai::CompletionsClient` struct
+// client is the concrete `rig::providers::openai::OpenAI` struct
 // (not a trait), and integration tests against `localhost:0` are unreliable
 // for post-hoc assertions because the handler returns SSE before the inner
 // `tokio::spawn` task completes. Therefore, per the repo's established
@@ -1401,6 +1400,17 @@ fn low_recall_ensure_sqlite_vec_loaded() {
 /// The state is channel-aware: `channels_config` contains `LOW_RECALL_CHANNEL_ID` and a
 /// published document is seeded for that channel so public `/api/chat` requests
 /// can reach the low-recall bypass block.
+/// Start an UNPOOLED mockito server and leak it for the test binary's
+/// lifetime: callers return while background tasks still need the mock, so
+/// the server must outlive them. Unpooled (`new_with_opts_async`) is
+/// required — leaking a pooled `new_async` server would permanently hold
+/// one of mockito's process-wide 50 pool licenses and hang later tests.
+async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
+    Box::leak(Box::new(
+        mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await,
+    ))
+}
+
 async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) -> Arc<AppState> {
     low_recall_ensure_sqlite_vec_loaded();
 
@@ -1447,9 +1457,7 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
     let channels_config = ChannelsConfig { channels };
 
     // mockito embeddings mock so search_hybrid can embed the query offline.
-    // Box::leak keeps the server alive for the test's lifetime (idiom shared
-    // with rerank_scenarios.rs).
-    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    let embed_server = leak_unpooled_mock_server().await;
     // 1536-dim zero embedding matching text-embedding-3-small. A zero vector
     // will not strongly match the seeded chunk (whose embedding is never
     // computed here), so most queries return zero results — convenient for the
@@ -1471,13 +1479,11 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
         .create_async()
         .await;
 
-    let openai_client = rig::providers::openai::Client::builder()
-        .api_key("sk-test-fake-key-for-low-recall-tests-only")
-        .base_url(embed_server.url());
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-low-recall-tests-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -1489,11 +1495,8 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
         sqlite,
@@ -1943,7 +1946,7 @@ async fn build_channel_chat_app_state() -> Arc<AppState> {
 
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
-    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    let embed_server = leak_unpooled_mock_server().await;
     let dummy_embedding: Vec<f64> = vec![0.0; 1536];
     let embed_body = serde_json::json!({
         "object": "list",
@@ -1960,13 +1963,11 @@ async fn build_channel_chat_app_state() -> Arc<AppState> {
         .create_async()
         .await;
 
-    let openai_client = rig::providers::openai::Client::builder()
-        .api_key("sk-test-fake-key-for-channel-chat-tests-only")
-        .base_url(embed_server.url());
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-channel-chat-tests-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -1978,11 +1979,8 @@ async fn build_channel_chat_app_state() -> Arc<AppState> {
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     let state = Arc::new(AppState {
         sqlite,

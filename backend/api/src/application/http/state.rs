@@ -29,8 +29,8 @@ pub struct AppState {
     pub vector_store: Arc<VectorStoreManager>,
     /// 聊天会话存储 — 内存中的会话管理（tokio::sync::Mutex 支持 .await 跨锁持有）
     pub chat_sessions: Arc<Mutex<HashMap<String, ChatSession>>>,
-    /// LLM 客户端（OpenAI 兼容 Completions）
-    pub llm_client: openai::CompletionsClient,
+    /// LLM 客户端（OpenAI 兼容 Chat Completions）
+    pub llm_client: openai::OpenAI,
     /// LLM model name for building agents
     pub llm_model: String,
     /// API Token for Bearer Token authentication

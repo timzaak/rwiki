@@ -2,8 +2,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use jieba_rs::Jieba;
-use rig::embeddings::{Embedding, EmbeddingModel, EmbeddingsBuilder};
-use rig::OneOrMany;
 use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
@@ -370,22 +368,8 @@ impl VectorStoreManager {
         // reused = 复用缓存向量的 chunk 数
         let reused = reusable.len();
 
-        // new_chunks 走正常 embedding 流程（按 64 条分批，避免超出 API 限制）
-        let embedded: Vec<(DocumentChunk, OneOrMany<Embedding>)> = if !new_chunks.is_empty() {
-            let mut results = Vec::with_capacity(new_chunks.len());
-            for batch in new_chunks.chunks(64) {
-                let batch_results = EmbeddingsBuilder::new(self.embedding_model.clone())
-                    .documents(batch.to_vec())
-                    .map_err(|e| CoreError::ProcessingError(format!("文档分块嵌入失败: {e}")))?
-                    .build()
-                    .await
-                    .map_err(|e| CoreError::ProcessingError(format!("向量化失败: {e}")))?;
-                results.extend(batch_results);
-            }
-            results
-        } else {
-            Vec::new()
-        };
+        // new_chunks 走正常 embedding 流程（内部按 64 条分批，避免超出 API 限制）
+        let embedded = self.embedding_model.embed_documents(new_chunks).await?;
 
         let doc_id_str = document_id.to_string();
         let model_name_for_insert = self.model_name.clone();
@@ -459,7 +443,9 @@ impl VectorStoreManager {
 
                         let rowid = tx.last_insert_rowid();
 
-                        let emb = embeddings.first();
+                        let emb = embeddings
+                            .first()
+                            .expect("embedded chunk carries at least one vector");
                         let bytes = embedding_to_bytes(&emb.vec);
                         insert_vec.execute(rusqlite::params![rowid, bytes])?;
 
@@ -1628,7 +1614,6 @@ fn trim_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::client::EmbeddingsClient;
     use std::sync::Once;
 
     static SQLITE_VEC_INIT: Once = Once::new();
@@ -1678,25 +1663,20 @@ mod tests {
     /// SQL-only tests (get_neighbor_chunks / search_by_keyword are pure SQL).
     fn make_sql_only_store() -> VectorStoreManager {
         // Dummy OpenAI embedding model — never invoked by get_neighbor_chunks tests.
-        let client = rig::providers::openai::Client::builder()
-            .api_key("test-key-unused")
-            .build()
-            .expect("dummy OpenAI client should build without network");
+        let client = super::super::rig_client::connect(rig::providers::openai::OpenAIConfig::new(
+            "test-key-unused",
+        ));
         make_store(AppEmbeddingModel::new(
-            client.embedding_model("text-embedding-3-small"),
+            client.embedding("text-embedding-3-small", None),
         ))
     }
 
     /// Like `make_sql_only_store`, but point the OpenAI embedding client at `base_url`,
     /// so tests exercising the re-embedding path can mock `/embeddings` offline (mockito).
     fn make_store_with_embedding_base_url(base_url: &str) -> VectorStoreManager {
-        let client = rig::providers::openai::Client::builder()
-            .api_key("test-key-unused")
-            .base_url(base_url)
-            .build()
-            .expect("OpenAI client should build");
+        let client = super::super::rig_client::connect_at("test-key-unused", base_url);
         make_store(AppEmbeddingModel::new(
-            client.embedding_model("text-embedding-3-small"),
+            client.embedding("text-embedding-3-small", None),
         ))
     }
 

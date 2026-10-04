@@ -23,7 +23,6 @@ use super::vector_store::tokenize_fallback;
 use super::vector_store::RetrievalScope;
 use super::vector_store::SearchResult;
 use super::vector_store::VectorStoreManager;
-use rig::client::EmbeddingsClient;
 use std::sync::Once;
 
 static SQLITE_VEC_INIT: Once = Once::new();
@@ -60,11 +59,9 @@ fn make_sql_only_store() -> VectorStoreManager {
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     // Dummy OpenAI embedding model -- never invoked by get_neighbor_chunks tests.
-    let client = rig::providers::openai::Client::builder()
-        .api_key("test-key-unused")
-        .build()
-        .expect("dummy OpenAI client should build without network");
-    let dummy_model = client.embedding_model("text-embedding-3-small");
+    let dummy_model =
+        super::rig_client::connect(rig::providers::openai::OpenAIConfig::new("test-key-unused"))
+            .embedding("text-embedding-3-small", None);
 
     VectorStoreManager::new(
         sqlite,

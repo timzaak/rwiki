@@ -15,7 +15,6 @@ use std::sync::Once;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use rig::client::EmbeddingsClient;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -63,12 +62,10 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
         .expect("apply migrations");
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
-    let openai_client =
-        rig::providers::openai::Client::builder().api_key("sk-test-fake-key-for-static-tests-only");
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect(
+        rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-static-tests-only"),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -80,11 +77,8 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
         sqlite,

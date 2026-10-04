@@ -52,7 +52,7 @@ dotenv = "0.15"
 md5 = "0.7"
 
 # RAG / LLM
-rig = { version = "0.39.0", features = ["derive"] }
+rig = { version = "0.43.0", features = ["derive"] }
 calamine = "0.35"
 
 # MCP (Model Context Protocol) server

@@ -6,8 +6,6 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::Resource;
-use rig::client::EmbeddingsClient;
-use rig::embeddings::EmbeddingModel;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
@@ -235,21 +233,18 @@ async fn main() -> Result<()> {
         .as_deref()
         .filter(|k| !k.is_empty())
         .ok_or_else(|| anyhow::anyhow!("embedding.api_key required and non-empty"))?;
-    let mut builder = rig::providers::openai::Client::builder().api_key(api_key);
+    let mut embedding_config = rig::providers::openai::OpenAIConfig::new(api_key);
     if let Some(ref base_url) = config.embedding.base_url {
-        builder = builder.base_url(base_url);
+        embedding_config.base_url = base_url.clone();
     }
-    let client = builder.build()?;
+    let client = rwiki_core::infrastructure::rig_client::connect(embedding_config);
     let model_name = config
         .embedding
         .model
         .as_deref()
         .unwrap_or("text-embedding-3-small")
         .to_string();
-    let model = match config.embedding.dimensions {
-        Some(dims) => client.embedding_model_with_ndims(&model_name, dims),
-        None => client.embedding_model(&model_name),
-    };
+    let model = client.embedding(&model_name, config.embedding.dimensions);
     let embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(model);
     tracing::info!("Embedding model: {}", model_name);
@@ -361,10 +356,10 @@ async fn main() -> Result<()> {
     // }
 
     // 创建 LLM 客户端
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key(&config.llm.api_key)
-        .base_url(&config.llm.base_url)
-        .build()?;
+    let llm_client = rwiki_core::infrastructure::rig_client::connect_at(
+        &config.llm.api_key,
+        config.llm.base_url.clone(),
+    );
 
     // 归一化空字符串为默认值（PRD 4.2: 配置值为空等同于未配置）
     let mut chat_config = config.chat.clone();

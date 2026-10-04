@@ -1,6 +1,4 @@
 use axum::{extract::State, Json};
-use rig::client::CompletionClient;
-use rig::completion::Prompt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
@@ -257,9 +255,7 @@ pub async fn eval_query(
         summary.as_deref(),
         &context_text,
     );
-    let agent = state
-        .llm_client
-        .agent(&state.llm_model)
+    let agent = rig::AgentBuilder::new(state.llm_client.chat(&state.llm_model))
         .preamble(&preamble)
         .build();
 
@@ -267,7 +263,8 @@ pub async fn eval_query(
     let answer = agent
         .prompt(&req.query)
         .await
-        .map_err(|e| ApiError::internal(format!("LLM generation failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("LLM generation failed: {e}")))?
+        .output;
     let generate_ms = generate_start.elapsed().as_millis() as u64;
 
     let contexts: Vec<String> = search_results.iter().map(|r| r.content.clone()).collect();

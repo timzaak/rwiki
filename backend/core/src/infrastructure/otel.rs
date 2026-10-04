@@ -1,11 +1,12 @@
 //! OpenTelemetry GenAI semantic-convention attribute keys, shared across the
-//! rerank and embedding funnels.
+//! rerank funnel.
 //!
-//! Defined inline (no `opentelemetry-semantic-conventions` crate) to match the
-//! project's hand-written string style. rig 0.38.1 emits a gen_ai span for
-//! chat but NOT for embeddings, and has no rerank support at all, so we add
-//! the gen_ai span ourselves in those two funnels to keep ARMS grouping
-//! consistent.
+//! Defined inline (no `opentelemetry-semantic-conventions` crate) to match
+//! the project's hand-written string style. rig (>= 0.43) emits gen_ai spans
+//! natively for every operation it drives (chat, embeddings, ...), so those
+//! funnels need no hand-rolled span. Rerank has no rig funnel here (the
+//! reranker calls its provider directly), so the gen_ai span is added in the
+//! reranker itself to keep ARMS grouping consistent.
 //!
 //! NOTE: the OpenTelemetry GenAI semantic conventions define no `rerank`
 //! operation; `gen_ai.operation.name = "rerank"` is a deliberate rwiki

@@ -12,7 +12,6 @@ use std::sync::Once;
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::routing::post;
-use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
 
 use crate::application::http::create_api_routes;
@@ -116,13 +115,11 @@ async fn test_app_state() -> Arc<AppState> {
 
     let (mock_base_url, _abort_handle) = start_mock_embedding_server().await;
 
-    let openai_client = rig::providers::openai::Client::builder()
-        .api_key("sk-test-fake-key-for-faq-upload-tests-only")
-        .base_url(&mock_base_url);
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-faq-upload-tests-only",
+        mock_base_url.clone(),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -134,11 +131,8 @@ async fn test_app_state() -> Arc<AppState> {
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
         sqlite,

@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request};
-use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
 
 use rwiki_core::config::RerankConfig;
@@ -79,8 +78,12 @@ async fn test_app_state_with_reranker(
 
     // Start a mockito server for the embedding API so search_hybrid can
     // embed the query without hitting the real OpenAI endpoint.
-    // Box::leak keeps the server alive for the test's lifetime (acceptable in tests).
-    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    // Unpooled (new_with_opts_async) + leak: the helper returns while
+    // background retrieval still needs the mock; pooled new_async leaks
+    // would exhaust mockito's 50-permit pool and hang later tests.
+    let embed_server = Box::leak(Box::new(
+        mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await,
+    ));
     // Return a dummy 1536-dim embedding (all zeros) matching text-embedding-3-small.
     let dummy_embedding: Vec<f64> = vec![0.0; 1536];
     let embed_body = serde_json::json!({
@@ -98,13 +101,11 @@ async fn test_app_state_with_reranker(
         .create_async()
         .await;
 
-    let openai_client = rig::providers::openai::Client::builder()
-        .api_key("sk-test-fake-key-for-rerank-tests-only")
-        .base_url(embed_server.url());
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-rerank-tests-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -116,11 +117,8 @@ async fn test_app_state_with_reranker(
         ),
     );
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url("http://localhost:0")
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
         sqlite,

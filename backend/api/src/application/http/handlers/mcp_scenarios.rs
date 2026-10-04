@@ -14,7 +14,6 @@ use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use rig::client::EmbeddingsClient;
 use tower::ServiceExt;
 
 use crate::application::http::create_api_routes;
@@ -73,6 +72,17 @@ fn mcp_test_channels_config() -> rwiki_core::config::ChannelsConfig {
 /// with mockito so the full pipeline (rewrite → retrieval → generation) runs
 /// offline: embeddings return a 1536-dim zero vector; completions return a
 /// rewrite-JSON payload that doubles as the generated answer text.
+/// Start an UNPOOLED mockito server and leak it for the test binary's
+/// lifetime: callers return while background tasks still need the mock, so
+/// the server must outlive them. Unpooled (`new_with_opts_async`) is
+/// required — leaking a pooled `new_async` server would permanently hold
+/// one of mockito's process-wide 50 pool licenses and hang later tests.
+async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
+    Box::leak(Box::new(
+        mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await,
+    ))
+}
+
 async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState> {
     ensure_sqlite_vec_loaded();
 
@@ -116,7 +126,7 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     // Mockito embeddings mock so query embedding works offline.
-    let embed_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    let embed_server = leak_unpooled_mock_server().await;
     let embed_body = serde_json::json!({
         "object": "list",
         "data": [{"object": "embedding", "embedding": vec![0.0f64; 1536], "index": 0}],
@@ -132,13 +142,11 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
         .create_async()
         .await;
 
-    let openai_client = rig::providers::openai::Client::builder()
-        .api_key("sk-test-fake-key-for-mcp-scenarios-only")
-        .base_url(embed_server.url());
-    let embedding_model = openai_client
-        .build()
-        .expect("build openai client")
-        .embedding_model("text-embedding-3-small");
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-mcp-scenarios-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
     let app_embedding_model =
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
 
@@ -152,7 +160,7 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
 
     // Mockito LLM mock: serves the rewrite payload (JSON with queries) for the
     // rewrite stage and doubles as the non-streaming generation answer.
-    let llm_server = Box::leak(Box::new(mockito::Server::new_async().await));
+    let llm_server = leak_unpooled_mock_server().await;
     let _llm_mock = llm_server
         .mock("POST", "/chat/completions")
         .with_status(200)
@@ -175,11 +183,8 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
         .create_async()
         .await;
 
-    let llm_client = rig::providers::openai::CompletionsClient::builder()
-        .api_key("sk-test-fake")
-        .base_url(llm_server.url())
-        .build()
-        .expect("build LLM client");
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
 
     Arc::new(AppState {
         sqlite,

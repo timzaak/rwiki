@@ -12,8 +12,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Router;
-use rig::client::CompletionClient;
-use rig::completion::Prompt;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::tool;
@@ -287,15 +285,14 @@ async fn run_qa(state: &AppState, params: &QaToolParams) -> Result<QaToolResult,
     );
 
     // 非流式完整回答（eval 先例）
-    let agent = state
-        .llm_client
-        .agent(&state.llm_model)
+    let agent = rig::AgentBuilder::new(state.llm_client.chat(&state.llm_model))
         .preamble(&preamble)
         .build();
     let answer = agent
         .prompt(query)
         .await
-        .map_err(|e| internal_error("llm generation", e))?;
+        .map_err(|e| internal_error("llm generation", e))?
+        .output;
 
     let references = results
         .iter()

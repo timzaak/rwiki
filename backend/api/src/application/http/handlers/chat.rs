@@ -5,9 +5,7 @@ use axum::{
 };
 use futures::StreamExt;
 use opentelemetry::KeyValue;
-use rig::client::CompletionClient;
-use rig::completion::Prompt;
-use rig::streaming::StreamingChat;
+use rig::streaming::{Item as StreamItem, StreamEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -516,7 +514,7 @@ fn preview_chars(value: &str, max_chars: usize) -> String {
 /// Execute query rewrite, returning a list of rewritten queries.
 /// Falls back to `original_query` on timeout or LLM error.
 pub(crate) async fn rewrite_query(
-    llm_client: &rig::providers::openai::CompletionsClient,
+    llm_client: &rig::providers::openai::OpenAI,
     llm_model: &str,
     message: &str,
     history: &[ChatMessage],
@@ -535,8 +533,7 @@ pub(crate) async fn rewrite_query(
          build_rewrite_prompt(history, message, content_language))
     };
 
-    let rewrite_agent = llm_client
-        .agent(llm_model)
+    let rewrite_agent = rig::AgentBuilder::new(llm_client.chat(llm_model))
         .preamble(rewrite_preamble)
         .max_tokens(200)
         .build();
@@ -547,7 +544,8 @@ pub(crate) async fn rewrite_query(
     )
     .await
     {
-        Ok(Ok(raw_response)) => {
+        Ok(Ok(response)) => {
+            let raw_response = response.output;
             let queries = parse_rewrite_response(&raw_response);
             let json_str = strip_markdown_fences(&raw_response);
             let fallback_reason = if has_valid_rewrite_json(&raw_response) {
@@ -607,7 +605,7 @@ const PA_PREAMBLE: &str =
 /// Reuses `strip_markdown_fences` via `parse_suggested_questions_response`.
 /// No new metrics field; failure logged via `tracing::warn!` only.
 pub(crate) async fn generate_post_answer_suggestions(
-    llm_client: &rig::providers::openai::CompletionsClient,
+    llm_client: &rig::providers::openai::OpenAI,
     llm_model: &str,
     user_message: &str,
     assistant_text: &str,
@@ -615,8 +613,7 @@ pub(crate) async fn generate_post_answer_suggestions(
 ) -> Vec<String> {
     let prompt = build_post_answer_prompt(user_message, assistant_text, context_xml);
 
-    let agent = llm_client
-        .agent(llm_model)
+    let agent = rig::AgentBuilder::new(llm_client.chat(llm_model))
         .preamble(PA_PREAMBLE)
         .max_tokens(POST_ANSWER_MAX_TOKENS as u64)
         .build();
@@ -627,7 +624,7 @@ pub(crate) async fn generate_post_answer_suggestions(
     )
     .await
     {
-        Ok(Ok(raw)) => parse_suggested_questions_response(&raw),
+        Ok(Ok(raw)) => parse_suggested_questions_response(&raw.output),
         Ok(Err(e)) => {
             tracing::warn!("post-answer suggestions failed: {e}");
             Vec::new()
@@ -1057,9 +1054,7 @@ async fn chat_inner(
         let preamble = build_preamble(system_prompt, summary.as_deref(), &context_text);
 
         // Build per-request agent with context in preamble
-        let agent = state
-            .llm_client
-            .agent(&state.llm_model)
+        let agent = rig::AgentBuilder::new(state.llm_client.chat(&state.llm_model))
             .preamble(&preamble)
             .build();
 
@@ -1133,18 +1128,19 @@ async fn chat_inner(
                         return;
                     }
 
-                    // Stream LLM response using stream_chat (with original user message)
+                    // Stream LLM response using agent runner stream (with original user message)
                     let llm_started_at = Instant::now();
                     let mut first_text_chunk_seen = false;
-                    let mut stream = agent.stream_chat(user_message.clone(), chat_history).await;
+                    let mut stream = agent
+                        .prompt(user_message.clone())
+                        .history(chat_history)
+                        .stream();
                     let mut assistant_text = String::new();
 
                     while let Some(item) = stream.next().await {
                         match item {
                             Ok(rig::agent::MultiTurnStreamItem::StreamAssistantItem(
-                                rig::streaming::StreamedAssistantContent::Text(
-                                    rig::message::Text { text, .. },
-                                ),
+                                StreamItem::Event(StreamEvent::Text { text, .. }),
                             )) => {
                                 if !first_text_chunk_seen {
                                     first_text_chunk_seen = true;
@@ -1291,15 +1287,17 @@ async fn chat_inner(
                                     existing_summary.as_deref(),
                                     &old_messages,
                                 );
-                                let compact_agent = llm_client
-                        .agent(&llm_model)
-                        .preamble(
-                            "请将以下对话历史压缩为一段简洁的摘要，保留关键信息、事实和上下文。",
-                        )
-                        .max_tokens(300)
-                        .build();
+                                let compact_agent = rig::AgentBuilder::new(
+                                    llm_client.chat(&llm_model),
+                                )
+                                .preamble(
+                                    "请将以下对话历史压缩为一段简洁的摘要，保留关键信息、事实和上下文。",
+                                )
+                                .max_tokens(300)
+                                .build();
                                 match compact_agent.prompt(&prompt).await {
-                                    Ok(new_summary) => {
+                                    Ok(response) => {
+                                        let new_summary = response.output;
                                         if let Some(session) =
                                             sessions.lock().await.get_mut(&session_id)
                                         {
