@@ -1,32 +1,45 @@
 import { Link } from "@tanstack/react-router";
 import { HomeLayout } from "fumadocs-ui/layouts/home";
-import { baseOptions } from "@/lib/layout.shared";
-import { gitConfig } from "@/lib/shared";
-import { type HomeTexts } from "@/lib/home-texts";
 import {
   Activity,
-  Database,
-  Code,
-  FileStack,
-  Sparkles,
   Cloud,
-  UploadCloud,
+  Code,
+  Database,
+  FileStack,
   FileText,
   MessageSquare,
+  Sparkles,
+  UploadCloud,
 } from "lucide-react";
+import type { HomeTexts } from "@/lib/home-texts";
+import { baseOptions } from "@/lib/layout.shared";
+import { gitConfig } from "@/lib/shared";
 
 const GITHUB_URL = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
 const ICONS = [Activity, Database, Code, FileStack, Sparkles, Cloud];
 
 function GitHubIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+      aria-hidden="true"
+    >
       <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
     </svg>
   );
 }
 
-export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: string; docsLink: { to: string; params: Record<string, string> } }) {
+export function HomePage({
+  texts,
+  docsLink,
+  lang,
+}: {
+  texts: HomeTexts;
+  lang: string;
+  docsLink: { to: string; params: Record<string, string> };
+}) {
   return (
     <HomeLayout {...baseOptions(lang)}>
       <div className="relative overflow-hidden selection:bg-amber-200 selection:text-amber-900 dark:selection:bg-amber-800 dark:selection:text-amber-100">
@@ -34,7 +47,8 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
         <div
           className="absolute inset-0 pointer-events-none opacity-[0.035] dark:opacity-[0.06]"
           style={{
-            backgroundImage: "radial-gradient(circle, currentColor 1px, transparent 1px)",
+            backgroundImage:
+              "radial-gradient(circle, currentColor 1px, transparent 1px)",
             backgroundSize: "24px 24px",
           }}
         />
@@ -48,7 +62,10 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
             {/* Badge */}
             <div
               className="inline-flex items-center gap-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/70 dark:border-amber-800/40 text-amber-800 dark:text-amber-300 px-4 py-1.5 rounded-full text-sm font-medium mb-8"
-              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "0ms" }}
+              style={{
+                animation: "fade-up 0.6s ease-out both",
+                animationDelay: "0ms",
+              }}
             >
               <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
               {texts.badge}
@@ -56,15 +73,23 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
 
             <h1
               className="text-5xl md:text-7xl font-serif font-bold text-stone-900 dark:text-stone-100 leading-[1.05] mb-6 tracking-tight"
-              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "80ms" }}
+              style={{
+                animation: "fade-up 0.6s ease-out both",
+                animationDelay: "80ms",
+              }}
             >
               {texts.heroTitleBefore}{" "}
-              <em className="text-amber-700 dark:text-amber-400 italic">{texts.heroTitleEm}</em>
+              <em className="text-amber-700 dark:text-amber-400 italic">
+                {texts.heroTitleEm}
+              </em>
             </h1>
 
             <p
               className="text-lg md:text-xl text-stone-500 dark:text-stone-400 mb-10 max-w-2xl mx-auto leading-relaxed"
-              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "160ms" }}
+              style={{
+                animation: "fade-up 0.6s ease-out both",
+                animationDelay: "160ms",
+              }}
             >
               {texts.heroDesc1}
               <br className="hidden md:block" />
@@ -73,7 +98,10 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
 
             <div
               className="flex flex-col sm:flex-row items-center justify-center gap-4 flex-wrap"
-              style={{ animation: "fade-up 0.6s ease-out both", animationDelay: "240ms" }}
+              style={{
+                animation: "fade-up 0.6s ease-out both",
+                animationDelay: "240ms",
+              }}
             >
               <a
                 href={GITHUB_URL}
@@ -97,7 +125,10 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
           {/* Terminal Block */}
           <div
             className="relative mt-20 max-w-2xl mx-auto"
-            style={{ animation: "fade-up 0.7s ease-out both", animationDelay: "350ms" }}
+            style={{
+              animation: "fade-up 0.7s ease-out both",
+              animationDelay: "350ms",
+            }}
           >
             <div className="absolute inset-0 bg-gradient-to-r from-amber-300/20 via-orange-200/20 to-amber-300/20 blur-2xl rounded-3xl transform scale-y-75 translate-y-4" />
 
@@ -106,12 +137,17 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
                 <div className="w-3 h-3 rounded-full bg-red-400/70" />
                 <div className="w-3 h-3 rounded-full bg-yellow-400/70" />
                 <div className="w-3 h-3 rounded-full bg-green-400/70" />
-                <span className="ml-3 text-stone-500 text-xs font-mono">terminal</span>
+                <span className="ml-3 text-stone-500 text-xs font-mono">
+                  terminal
+                </span>
               </div>
               <div className="px-5 py-5 md:py-6 bg-stone-900/50 font-mono text-sm md:text-base overflow-x-auto">
-                <span className="text-amber-400 select-none mr-2 font-semibold">$</span>
+                <span className="text-amber-400 select-none mr-2 font-semibold">
+                  $
+                </span>
                 <span className="text-stone-200">
-                  docker run -d -p 8080:8080 -v rwiki-data:/app/data ghcr.io/timzaak/rwiki
+                  docker run -d -p 8080:8080 -v rwiki-data:/app/data
+                  ghcr.io/timzaak/rwiki
                 </span>
                 <span className="inline-block w-[7px] h-[18px] bg-amber-400/90 ml-0.5 animate-pulse rounded-[1px]" />
               </div>
@@ -234,7 +270,9 @@ export function HomePage({ texts, docsLink, lang }: { texts: HomeTexts; lang: st
           <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-900 dark:text-stone-100 mb-3 tracking-tight">
             {texts.ctaTitle}
           </h2>
-          <p className="text-xl text-stone-500 dark:text-stone-400 mb-10">{texts.ctaDesc}</p>
+          <p className="text-xl text-stone-500 dark:text-stone-400 mb-10">
+            {texts.ctaDesc}
+          </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 flex-wrap">
             <a
@@ -287,7 +325,9 @@ function FeatureCard({
       <h3 className="font-semibold text-stone-900 dark:text-stone-100 tracking-tight text-[15px]">
         {title}
       </h3>
-      <p className="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">{desc}</p>
+      <p className="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">
+        {desc}
+      </p>
     </div>
   );
 }
@@ -343,10 +383,14 @@ function TableRow({
       <td className="px-8 py-5 border-r border-stone-50 dark:border-stone-800/60">
         <div className="flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-          <span className="text-stone-800 dark:text-stone-200 font-medium">{rwiki}</span>
+          <span className="text-stone-800 dark:text-stone-200 font-medium">
+            {rwiki}
+          </span>
         </div>
       </td>
-      <td className="px-8 py-5 text-stone-500 dark:text-stone-500">{typical}</td>
+      <td className="px-8 py-5 text-stone-500 dark:text-stone-500">
+        {typical}
+      </td>
     </tr>
   );
 }

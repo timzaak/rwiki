@@ -22,6 +22,7 @@ import { ClientAPIPage } from "@/components/api-page";
 import { useMDXComponents } from "@/components/mdx";
 import { i18n } from "@/lib/i18n";
 import { baseOptions } from "@/lib/layout.shared";
+import { canonicalLink, docsDescriptions, docsTitle, seoMeta } from "@/lib/seo";
 import { gitConfig } from "@/lib/shared";
 import { slugsToMarkdownPath, source } from "@/lib/source";
 
@@ -44,12 +45,30 @@ export const Route = createFileRoute("/$lang/docs/$")({
     }
     return data;
   },
+  // Kept after `loader` so TS resolves TLoaderFn before typing head's ctx —
+  // declaring head first breaks the circular inference and types loaderData
+  // as `never`.
+  head: ({ loaderData }) =>
+    loaderData
+      ? {
+          meta: seoMeta({
+            title: docsTitle(loaderData.title, loaderData.locale),
+            description:
+              loaderData.description ??
+              docsDescriptions[loaderData.locale] ??
+              docsDescriptions.en,
+            path: loaderData.url,
+            locale: loaderData.locale,
+          }),
+          links: [canonicalLink(loaderData.url)],
+        }
+      : {},
 });
 
 const loader = createServerFn({
   method: "GET",
 })
-  .inputValidator((input: { locale: string; slugs: string[] }) => input)
+  .validator((input: { locale: string; slugs: string[] }) => input)
   .middleware([staticFunctionMiddleware])
   .handler(async ({ data: { locale, slugs } }) => {
     const page = source.getPage(slugs, locale);
@@ -62,15 +81,19 @@ const loader = createServerFn({
         type: "openapi" as const,
         title: page.data.title,
         description: page.data.description,
+        url: page.url,
         locale,
         pageTree,
-        props: await page.data.getClientAPIPageProps(),
+        props: await page.data.getOpenAPIPageProps(),
       };
     }
 
     return {
       type: "docs" as const,
       path: page.path,
+      url: page.url,
+      title: page.data.title,
+      description: page.data.description,
       locale,
       markdownUrl: slugsToMarkdownPath(page.slugs, locale).url,
       pageTree,

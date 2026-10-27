@@ -59,7 +59,11 @@ export const en: HomeTexts = {
   tableRows: [
     { label: "Database", rwiki: "SQLite", typical: "Vector DB + Postgres" },
     { label: "Dependencies", rwiki: "None", typical: "Multiple containers" },
-    { label: "Deployment", rwiki: "Single binary, drop-in", typical: "Complex setup scripts" },
+    {
+      label: "Deployment",
+      rwiki: "Single binary, drop-in",
+      typical: "Complex setup scripts",
+    },
     { label: "Setup", rwiki: "5 minutes", typical: "Requires expertise" },
   ],
   ctaTitle: "Open source, Apache 2.0.",

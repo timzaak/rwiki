@@ -1,5 +1,5 @@
-import { CodeBlock, Pre } from "fumadocs-ui/components/codeblock";
 import { renderMermaidSVG } from "beautiful-mermaid";
+import { CodeBlock, Pre } from "fumadocs-ui/components/codeblock";
 
 export async function Mermaid({ chart }: { chart: string }) {
   try {
@@ -10,6 +10,7 @@ export async function Mermaid({ chart }: { chart: string }) {
       transparent: true,
     });
 
+    // biome-ignore lint/security/noDangerouslySetInnerHtml: svg comes from mermaid rendering repo-bundled chart sources, not user input
     return <div dangerouslySetInnerHTML={{ __html: svg }} />;
   } catch {
     return (

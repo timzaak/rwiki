@@ -5,7 +5,15 @@ import mdx from "fumadocs-mdx/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 
-const OPENAPI_SLUGS = ["chat", "delete_document", "health_check", "list_documents", "publish_document", "unpublish_document", "upload_document"];
+const OPENAPI_SLUGS = [
+  "chat",
+  "delete_document",
+  "health_check",
+  "list_documents",
+  "publish_document",
+  "unpublish_document",
+  "upload_document",
+];
 
 function openapiPages() {
   return OPENAPI_SLUGS.flatMap((slug) => [
