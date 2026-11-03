@@ -1,9 +1,13 @@
 //! MCP endpoint scenario tests.
 //!
-//! Drives `create_api_routes` with oneshot requests against `POST /mcp`,
-//! covering the full externally visible contract of the MCP server:
-//! - Auth: 401 without/with invalid Bearer token (same boundary as doc routes)
-//! - Toggle: `[mcp]` section absent → 404 (route not mounted)
+//! Drives `create_api_routes` with oneshot requests against the per-channel
+//! public entries `POST /mcp/{channelId}`, covering the full externally
+//! visible contract of the MCP server:
+//! - Access: public — no credentials required, a Bearer header changes nothing
+//! - Addressing: one entry per configured channel; unconfigured channels and
+//!   the legacy channel-less `/mcp` are unmatched paths (404); the tool
+//!   `channelId` parameter overrides the entry's channel
+//! - Toggle: `[mcp]` section absent → 404 (entries not mounted)
 //! - Protocol: initialize handshake, tools/list discovery, tools/call dispatch
 //! - Tools: rwiki_qa / rwiki_search happy paths, business errors (isError),
 //!   topK bounds, empty results, per-call independence (stateless server)
@@ -209,21 +213,29 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
     })
 }
 
-/// Build a JSON-RPC 2.0 POST /mcp request with the MCP-required Accept header.
+/// Entry path of a configured channel, e.g. "/mcp/help_center".
+fn entry_path(channel: &str) -> String {
+    format!("/mcp/{channel}")
+}
+
+/// Build a JSON-RPC 2.0 POST request to an MCP channel entry with the
+/// MCP-required Accept header. No Authorization header: the endpoint is
+/// public; the token-carrying test adds the header explicitly.
 ///
 /// The Host header is set explicitly because the Streamable HTTP service
 /// rejects requests without one (oneshot-built requests carry no Host).
-fn mcp_jsonrpc_request(method: &str, params: serde_json::Value, id: i64) -> Request<Body> {
+fn mcp_jsonrpc_request(
+    path: &str,
+    method: &str,
+    params: serde_json::Value,
+    id: i64,
+) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
-        .uri("/mcp")
+        .uri(path)
         .header(header::HOST, "localhost")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .header(
-            header::AUTHORIZATION,
-            format!("Bearer {MCP_TEST_API_TOKEN}"),
-        )
         .body(Body::from(
             serde_json::to_string(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -280,12 +292,13 @@ fn parse_rpc_body(body: &str) -> serde_json::Value {
     serde_json::from_str(body).expect("parse JSON-RPC body")
 }
 
-/// Perform the initialize handshake (real MCP clients always initialize
-/// before listing or calling tools), then return the app for reuse.
-async fn initialize_first(app: &axum::Router) {
+/// Perform the initialize handshake against a channel entry (real MCP clients
+/// always initialize before listing or calling tools), then return the app
+/// for reuse.
+async fn initialize_first(app: &axum::Router, path: &str) {
     let (status, body) = send(
         app.clone(),
-        mcp_jsonrpc_request("initialize", initialize_params(), 1),
+        mcp_jsonrpc_request(path, "initialize", initialize_params(), 1),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "initialize must succeed: {body}");
@@ -315,86 +328,26 @@ fn tool_result_text(rpc: &serde_json::Value) -> (bool, String) {
 // Scenario tests
 // ---------------------------------------------------------------------------
 
-// User Story: As an Agent tool integrator (US-INTG-010), I want MCP requests without a
-// valid API token to be rejected, so knowledge base content is never exposed
-// to unauthorized callers.
-// Covers: /mcp sits behind the same auth_middleware boundary as doc routes.
+// User Story: As an Agent tool integrator (US-INTG-010), I want to connect with just the
+// channel entry URL — no token or credentials — and complete the MCP
+// initialize handshake, so my MCP client can use the service without any
+// credential setup.
+// Covers: the channel entry is public (no Authorization header) and initialize
+// returns serverInfo (name rwiki) and the tools capability.
 
 #[tokio::test]
-async fn mcp_without_token_returns_401() {
-    let state = mcp_app_state(true, false).await;
-    let app = create_api_routes(state);
-
-    let mut req = mcp_jsonrpc_request("initialize", initialize_params(), 1);
-    req.headers_mut().remove(header::AUTHORIZATION);
-
-    let (status, _body) = send(app, req).await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "POST /mcp without Authorization must return 401"
-    );
-}
-
-// User Story: As an Agent tool integrator (US-INTG-010), I want an invalid Bearer token to
-// be rejected without distinguishing the failure reason, so token guessing
-// yields no useful signal.
-// Covers: auth_middleware 401 on invalid token, before any MCP protocol work.
-
-#[tokio::test]
-async fn mcp_with_invalid_token_returns_401() {
-    let state = mcp_app_state(true, false).await;
-    let app = create_api_routes(state);
-
-    let mut req = mcp_jsonrpc_request("initialize", initialize_params(), 1);
-    req.headers_mut().insert(
-        header::AUTHORIZATION,
-        axum::http::HeaderValue::from_static("Bearer wrong-token"),
-    );
-
-    let (status, _body) = send(app, req).await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "POST /mcp with a wrong Bearer token must return 401"
-    );
-}
-
-// User Story: As an Admin (US-INTG-013), I want MCP to stay off when the `[mcp]` config
-// section is omitted, so deployments without Agent integration keep their
-// existing behavior and attack surface.
-// Covers: section-presence toggle — /mcp is not mounted when mcp_config is None.
-
-#[tokio::test]
-async fn mcp_disabled_returns_404_when_section_absent() {
-    let state = mcp_app_state(false, false).await;
-    let app = create_api_routes(state);
-
-    let (status, _body) = send(
-        app,
-        mcp_jsonrpc_request("initialize", initialize_params(), 1),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "POST /mcp with [mcp] section omitted must return 404 (route not mounted)"
-    );
-}
-
-// User Story: As an Agent tool integrator (US-INTG-010), I want to connect with a valid
-// token and complete the MCP initialize handshake, so my MCP client can use
-// the service.
-// Covers: initialize returns serverInfo (name rwiki) and tools capability.
-
-#[tokio::test]
-async fn mcp_initialize_returns_server_info() {
+async fn mcp_initialize_succeeds_without_credentials() {
     let state = mcp_app_state(true, false).await;
     let app = create_api_routes(state);
 
     let (status, body) = send(
         app,
-        mcp_jsonrpc_request("initialize", initialize_params(), 1),
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "initialize",
+            initialize_params(),
+            1,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "initialize must return 200: {body}");
@@ -422,6 +375,211 @@ async fn mcp_initialize_returns_server_info() {
     );
 }
 
+// User Story: As an Agent tool integrator (US-INTG-010), I want requests that still carry
+// an (even invalid) Authorization header to be processed unchanged, so old
+// client configs with a token keep working without edits.
+// Covers: a Bearer header is neither required nor inspected — the serverInfo
+// response matches the credential-less one.
+
+#[tokio::test]
+async fn mcp_with_bearer_token_is_processed_unchanged() {
+    let state = mcp_app_state(true, false).await;
+    let app = create_api_routes(state);
+
+    let (status, bare_body) = send(
+        app.clone(),
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "initialize",
+            initialize_params(),
+            1,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "bare initialize must return 200");
+
+    let mut req = mcp_jsonrpc_request(
+        &entry_path(HIT_CHANNEL),
+        "initialize",
+        initialize_params(),
+        2,
+    );
+    req.headers_mut().insert(
+        header::AUTHORIZATION,
+        axum::http::HeaderValue::from_static("Bearer wrong-token"),
+    );
+    let (status, token_body) = send(app, req).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "initialize with an invalid Bearer token must still return 200: {token_body}"
+    );
+
+    let bare = parse_rpc_body(&bare_body);
+    let with_token = parse_rpc_body(&token_body);
+    assert_eq!(
+        bare.get("result"),
+        with_token.get("result"),
+        "a carried token must not change the response"
+    );
+}
+
+// User Story: As an Agent tool integrator (US-INTG-010), I want every configured channel
+// to expose its own MCP entry, so I can organize connections per channel.
+// Covers: each channel id configured in [channels] mounts its own
+// POST /mcp/{channelId} endpoint.
+
+#[tokio::test]
+async fn mcp_each_configured_channel_has_its_own_entry() {
+    let state = mcp_app_state(true, false).await;
+    let app = create_api_routes(state);
+
+    for channel in [HIT_CHANNEL, NO_DOCS_CHANNEL] {
+        let (status, body) = send(
+            app.clone(),
+            mcp_jsonrpc_request(&entry_path(channel), "initialize", initialize_params(), 1),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "configured channel {channel} must have its own working entry: {body}"
+        );
+    }
+}
+
+// User Story: As an Agent tool integrator (US-INTG-010), I want the entry of a channel
+// that is not configured to be unavailable, so no tools or knowledge content
+// leak through made-up channel paths.
+// Covers: POST /mcp/ghost_channel is an unmatched path → 404 with no
+// serverInfo or tool list in the body.
+
+#[tokio::test]
+async fn mcp_unconfigured_channel_entry_returns_404() {
+    let state = mcp_app_state(true, false).await;
+    let app = create_api_routes(state);
+
+    let (status, body) = send(
+        app,
+        mcp_jsonrpc_request(
+            &entry_path("ghost_channel"),
+            "initialize",
+            initialize_params(),
+            1,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unconfigured channel entry must be an unmatched path: {body}"
+    );
+    assert!(
+        !body.contains("serverInfo") && !body.contains("rwiki_qa"),
+        "no protocol or knowledge content may leak: {body}"
+    );
+}
+
+// User Story: As an Agent tool integrator (US-INTG-010), I want the legacy channel-less
+// entry to be gone, so addressing has exactly one shape.
+// Covers: POST /mcp (legacy entry) is an unmatched path → 404.
+
+#[tokio::test]
+async fn mcp_legacy_entry_without_channel_returns_404() {
+    let state = mcp_app_state(true, false).await;
+    let app = create_api_routes(state);
+
+    let (status, _body) = send(
+        app,
+        mcp_jsonrpc_request("/mcp", "initialize", initialize_params(), 1),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "legacy channel-less entry must be an unmatched path"
+    );
+}
+
+// User Story: As an Agent tool integrator (US-INTG-010), I want the tool's channelId
+// parameter to decide which channel is searched regardless of the entry I
+// connected to, so one connection can query any configured channel.
+// Covers: entry channel and retrieval channel are independent — searching
+// help_center content via the empty_channel entry returns it, and the
+// reverse direction returns empty results (both directions matter).
+
+#[tokio::test]
+async fn mcp_tool_channel_param_overrides_entry_channel() {
+    let state = mcp_app_state(true, true).await;
+    let app = create_api_routes(state);
+    initialize_first(&app, &entry_path(NO_DOCS_CHANNEL)).await;
+
+    // Both directions matter: the channelId parameter must win over the
+    // entry's segment — searching the seeded docs via the document-less
+    // entry, and NOT falling back to the seeded entry's docs when the
+    // parameter targets the document-less channel.
+    for (entry, param, id, expect_empty) in [
+        (NO_DOCS_CHANNEL, HIT_CHANNEL, 2, false),
+        (HIT_CHANNEL, NO_DOCS_CHANNEL, 3, true),
+    ] {
+        let (status, body) = send(
+            app.clone(),
+            mcp_jsonrpc_request(
+                &entry_path(entry),
+                "tools/call",
+                tools_call_params(
+                    "rwiki_search",
+                    serde_json::json!({"query": "what is rust", "channelId": param}),
+                ),
+                id,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "search via entry {entry}: {body}");
+        let (is_error, text) = tool_result_text(&parse_rpc_body(&body));
+        assert!(!is_error, "search must not be an error: {body}");
+        let payload: serde_json::Value =
+            serde_json::from_str(&text).expect("SearchToolResult JSON");
+        let results = payload
+            .get("results")
+            .and_then(|r| r.as_array())
+            .unwrap_or_else(|| panic!("results must be an array: {text}"));
+        assert_eq!(
+            results.is_empty(),
+            expect_empty,
+            "results must come from the param channel {param}, not the entry {entry}: {text}"
+        );
+    }
+}
+
+// User Story: As an Admin (US-INTG-013), I want MCP to stay off when the `[mcp]` config
+// section is omitted, so deployments without Agent integration keep their
+// existing behavior and attack surface.
+// Covers: section-presence toggle — channel entries are not mounted when
+// mcp_config is None.
+
+#[tokio::test]
+async fn mcp_disabled_returns_404_when_section_absent() {
+    let state = mcp_app_state(false, false).await;
+    let app = create_api_routes(state);
+
+    let (status, _body) = send(
+        app,
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "initialize",
+            initialize_params(),
+            1,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "channel entry with [mcp] section omitted must return 404 (entries not mounted)"
+    );
+}
+
 // User Story: As an Agent tool integrator (US-INTG-010), I want to discover the exact tool
 // list (knowledge QA + knowledge search) after connecting, so my agent knows
 // what it can call.
@@ -431,11 +589,16 @@ async fn mcp_initialize_returns_server_info() {
 async fn mcp_tools_list_returns_both_tools() {
     let state = mcp_app_state(true, false).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
-        mcp_jsonrpc_request("tools/list", serde_json::json!({}), 2),
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "tools/list",
+            serde_json::json!({}),
+            2,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "tools/list must return 200: {body}");
@@ -476,11 +639,12 @@ async fn mcp_tools_list_returns_both_tools() {
 async fn mcp_call_with_unconfigured_channel_returns_tool_error() {
     let state = mcp_app_state(true, false).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_qa",
@@ -513,11 +677,12 @@ async fn mcp_call_with_unconfigured_channel_returns_tool_error() {
 async fn mcp_qa_channel_without_published_docs_returns_tool_error() {
     let state = mcp_app_state(true, false).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_qa",
@@ -553,11 +718,12 @@ async fn mcp_qa_channel_without_published_docs_returns_tool_error() {
 async fn mcp_qa_returns_answer_with_references() {
     let state = mcp_app_state(true, true).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_qa",
@@ -610,11 +776,12 @@ async fn mcp_qa_returns_answer_with_references() {
 async fn mcp_search_returns_sorted_chunks_with_source() {
     let state = mcp_app_state(true, true).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_search",
@@ -677,7 +844,7 @@ async fn mcp_search_returns_sorted_chunks_with_source() {
 async fn mcp_search_returns_empty_results_without_error() {
     let state = mcp_app_state(true, true).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     // NO_DOCS_CHANNEL is configured but has no documents; the search tool does
     // not pre-check published docs, so the channel-scoped retrieval simply
@@ -685,6 +852,7 @@ async fn mcp_search_returns_empty_results_without_error() {
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_search",
@@ -718,11 +886,12 @@ async fn mcp_search_returns_empty_results_without_error() {
 async fn mcp_search_rejects_out_of_range_top_k() {
     let state = mcp_app_state(true, false).await;
     let app = create_api_routes(state);
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     let (status, body) = send(
         app,
         mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
             "tools/call",
             tools_call_params(
                 "rwiki_search",
@@ -748,7 +917,8 @@ async fn mcp_search_rejects_out_of_range_top_k() {
 
 // User Story: As an Agent tool integrator (US-INTG-010), I want the stateless server to
 // reject the SSE push-stream channel, because no server-side session exists.
-// Covers: GET /mcp returns 405 in stateless (NeverSessionManager) mode.
+// Covers: GET on a channel entry returns 405 in stateless
+// (NeverSessionManager) mode.
 
 #[tokio::test]
 async fn mcp_get_returns_405() {
@@ -757,13 +927,9 @@ async fn mcp_get_returns_405() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/mcp")
+        .uri(entry_path(HIT_CHANNEL))
         .header(header::HOST, "localhost")
         .header(header::ACCEPT, "text/event-stream")
-        .header(
-            header::AUTHORIZATION,
-            format!("Bearer {MCP_TEST_API_TOKEN}"),
-        )
         .body(Body::empty())
         .expect("build request");
 
@@ -771,7 +937,7 @@ async fn mcp_get_returns_405() {
     assert_eq!(
         status,
         StatusCode::METHOD_NOT_ALLOWED,
-        "GET /mcp must return 405 (stateless server has no push stream)"
+        "GET on a channel entry must return 405 (stateless server has no push stream)"
     );
 }
 
@@ -785,12 +951,13 @@ async fn mcp_get_returns_405() {
 async fn mcp_repeated_calls_are_independent() {
     let state = mcp_app_state(true, true).await;
     let app = create_api_routes(state.clone());
-    initialize_first(&app).await;
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
 
     for (id, query) in [(2, "what is rust"), (3, "how does ownership work")] {
         let (status, body) = send(
             app.clone(),
             mcp_jsonrpc_request(
+                &entry_path(HIT_CHANNEL),
                 "tools/call",
                 tools_call_params(
                     "rwiki_qa",

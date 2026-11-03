@@ -114,6 +114,7 @@ Use Caddy to serve docs-web and the backend under a single domain. Both Caddy an
 | `/health` | Backend container | Health check endpoint |
 | `/swagger*` | Backend container | Swagger UI (if enabled) |
 | `/widget/*` | Backend container | Static assets (chat widget JS) |
+| `/mcp/*` | Backend container | MCP endpoints (public, one per configured channel — see [MCP](/en/docs/mcp)) |
 | `/*` | docs-web static files | Documentation site (SPA) |
 
 ### Build & Deploy
@@ -162,6 +163,9 @@ your-domain.com {
         reverse_proxy rwiki:8080
     }
     handle /widget/* {
+        reverse_proxy rwiki:8080
+    }
+    handle /mcp/* {
         reverse_proxy rwiki:8080
     }
     handle {

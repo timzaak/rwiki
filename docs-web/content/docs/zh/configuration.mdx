@@ -438,8 +438,9 @@ cp dist/rwiki-chat.js ../docs-web/public/
 控制知识库 MCP Server：把问答与检索以 MCP 工具暴露给 Claude Code、Cursor 等 Agent 客户端。
 
 ```toml
-# 段存在即启用（无字段），省略整段则关闭，/mcp 路由不挂载。
-# 鉴权复用 [api] 段：Bearer Token + 可选 IP 白名单。
+# 段存在即启用（无字段），省略整段则关闭，/mcp/<channelId> 入口不挂载。
+# 入口公开免鉴权（无需 Token 与 IP 白名单），每个已配置频道一个入口
+# POST /mcp/<channelId>。
 [mcp]
 ```
 

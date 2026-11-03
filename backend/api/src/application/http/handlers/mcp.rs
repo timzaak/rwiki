@@ -1,9 +1,10 @@
 //! MCP Server 工具模块：把知识库问答与检索能力以 MCP（Model Context
 //! Protocol）只读工具的形式暴露给 Agent 客户端（Claude Code、Cursor 等）。
 //!
-//! 传输为 Streamable HTTP（`POST /mcp`，无状态会话），鉴权复用
-//! `auth_middleware`（Bearer API Token + 可选 IP 白名单），由 `mcp_router`
-//! 装配并按 `[mcp]` 配置段（section presence）条件挂载。
+//! 传输为 Streamable HTTP（无状态会话），入口公开免鉴权（不要求凭据，
+//! 携带的 Token 不解析不拒绝）并按已配置频道寻址（`POST /mcp/{channelId}`，
+//! 每频道一个入口），由 `mcp_router` 装配并按 `[mcp]` 配置段
+//! （section presence）条件挂载。
 //!
 //! 工具面仅两个只读工具，回答口径与公开聊天同源：复用 chat.rs 的
 //! HTTP 无关管线函数，单轮语义（无历史、无摘要注入）。
@@ -11,6 +12,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::response::IntoResponse;
 use axum::Router;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -23,7 +25,6 @@ use rwiki_core::infrastructure::vector_store::RetrievalScope;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::application::http::middleware::auth_middleware;
 use crate::application::http::state::AppState;
 
 use super::chat::{build_preamble, format_context_xml, rewrite_query, search_and_rerank};
@@ -362,10 +363,16 @@ async fn run_search(
 // 路由装配
 // ---------------------------------------------------------------------------
 
-/// 构建 /mcp 子路由：无状态 Streamable HTTP + auth_middleware（与 doc_router 同构）。
+/// 构建 MCP 入口路由：每个已配置频道一个公开入口 `POST /mcp/{channelId}`，
+/// 无状态 Streamable HTTP，免鉴权（与公开聊天 `/api/chat` 同级暴露）。
+///
+/// 单条参数路由覆盖全部频道入口，`require_configured_entry` 中间件把
+/// 未配置频道的请求挡在 MCP 协议处理之外（404，与部署的 fallback 形态
+/// 无关）；不含频道标识的旧入口为未匹配路径。入口频道段仅作寻址，
+/// 工具检索频道由入参 channelId 决定。
 ///
 /// 无状态会话（`NeverSessionManager`）：服务端不下发 `Mcp-Session-Id`、
-/// 不保留任何 MCP 调用间状态；`GET /mcp`（服务端推送流）返回 405。
+/// 不保留任何 MCP 调用间状态；`GET`（服务端推送流）返回 405。
 pub fn mcp_router(state: Arc<AppState>) -> Router {
     let config = StreamableHttpServerConfig::default()
         // 单轮语义要求对**所有**协议版本无状态：默认
@@ -375,10 +382,11 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         // 单请求-响应优先回 application/json（更通用的客户端兼容形态），
         // 需要流式时自动回退 text/event-stream。
         .with_json_response(true)
-        // 远程 MCP 客户端以部署方任意主机名接入；端点已由 auth_middleware
-        // （Bearer Token + 可选 IP 白名单）保护，rmcp 默认的 loopback-only
-        // Host 白名单（面向本地浏览器服务的 DNS rebinding 防护）会拒绝合法
-        // 远程客户端，故关闭。
+        // 公开端点，与 /api/chat 同级，不做 Host 校验：rmcp 默认的
+        // loopback-only Host 白名单是面向"绑定本机的浏览器可达服务"的
+        // DNS rebinding 防护；本端点面向远程 Agent 客户端经部署方任意
+        // 主机名/反向代理接入，启用会拒绝全部合法远程客户端。端点无
+        // Cookie 等环境凭据可被 rebinding 劫持，仅消费已发布公开内容。
         .disable_allowed_hosts();
 
     let handler_state = state.clone();
@@ -388,6 +396,25 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         config,
     );
     Router::new()
-        .nest_service("/mcp", service)
-        .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+        .route_service("/mcp/{channel_id}", service)
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            require_configured_entry,
+        ))
+}
+
+/// 入口频道段有效性校验：仅已配置频道开放入口，其余一律 404，
+/// 不进入 MCP 协议处理（PRD 4.1 入口寻址规则：未配置频道的入口不可用，
+/// 不完成协议握手、不返回工具清单）。
+async fn require_configured_entry(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(channel_id): axum::extract::Path<String>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if state.channels_config.channels.contains_key(&channel_id) {
+        next.run(req).await
+    } else {
+        axum::http::StatusCode::NOT_FOUND.into_response()
+    }
 }

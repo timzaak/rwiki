@@ -2,35 +2,49 @@
 
 > 角色定义以 `docs/user-stories/_roles.md` 为准。
 
-## 故事 1：把知识库接入 MCP 客户端 [US-INTG-010]
+## 故事 1：无需凭据即可把频道知识库接入 MCP 客户端 [US-INTG-010]
 
 **优先级**: P0
 
 **【用户故事】**
 **作为**：Agent Integrator
-**我希望**：RWiki 提供 MCP 服务端能力，持有 API Token 即可把知识库接入 MCP 客户端
-**从而**：Agent 工具无需自建 HTTP 封装，就能直接调用知识库问答与检索能力
+**我希望**：只凭某个频道的 MCP 入口地址，不提供任何 Token 或凭据，就能把该频道的公开知识库接入 MCP 客户端
+**从而**：Agent 工具无需申请、保管和配置密钥，就能直接调用公开文档知识库的问答与检索能力
 
 **【验收标准】**
 
-**场景 1：连接成功并发现工具**
+**场景 1：仅凭频道入口地址连接成功并发现工具**
 ```gherkin
-Given 服务已启用 MCP 能力，且集成者持有有效 API Token
-When 集成者在 MCP 客户端中使用该 Token 添加 RWiki 的 MCP 服务
+Given 服务已启用 MCP 能力，且配置中存在频道 help_center
+When 集成者在 MCP 客户端中添加 help_center 频道的 MCP 入口地址，不提供任何 Token 或凭据
 Then 客户端连接成功，并展示 RWiki 提供的工具清单（知识库问答、知识检索）
 ```
 
-**场景 2：鉴权失败**
+**场景 2：沿用旧配置携带 Token 仍可连接**
 ```gherkin
-Given 集成者未携带 Token 或携带无效 Token
-When MCP 客户端尝试连接或调用任一工具
-Then 请求被拒绝并提示未授权，且不返回任何知识库内容
+Given 集成者沿用早前的客户端配置，请求中仍携带 API Token
+When 客户端连接某已配置频道的 MCP 入口地址
+Then 连接同样成功，携带的 Token 不影响结果
 ```
 
-**场景 3：能力未启用**
+**场景 3：频道未配置时入口不可用**
+```gherkin
+Given 配置中不存在频道 foo
+When 集成者在 MCP 客户端中添加 foo 频道的 MCP 入口地址
+Then 客户端连接失败，入口不可用，不展示任何工具
+```
+
+**场景 4：无频道的旧入口已下线**
+```gherkin
+Given 集成者使用早前不含频道标识的旧 MCP 入口地址
+When 客户端尝试连接
+Then 连接失败，入口不可用
+```
+
+**场景 5：能力未启用**
 ```gherkin
 Given 服务配置中未启用 MCP 能力
-When MCP 客户端尝试连接该服务的 MCP 入口
+When MCP 客户端尝试连接任一频道的 MCP 入口地址
 Then 连接失败，MCP 能力不可用
 ```
 

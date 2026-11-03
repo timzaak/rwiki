@@ -4,7 +4,7 @@ description: 把知识库问答与检索暴露为 MCP 工具，供 Claude Code�
 icon: Bot
 ---
 
-RWiki 可以把知识库问答和检索能力以 MCP（Model Context Protocol）工具的形式暴露出去。Claude Code、Cursor 这类 Agent 客户端凭 API Token 连接后，Agent 就能直接查你的知识库：要么拿到一段带来源引用的完整回答，要么拿到按相关性排序的原始知识片段。
+RWiki 可以把知识库问答和检索能力以 MCP（Model Context Protocol）工具的形式暴露出去。Claude Code、Cursor 这类 Agent 客户端只要拿到频道入口地址就能连接——不需要任何凭据——Agent 就能直接查你的知识库：要么拿到一段带来源引用的完整回答，要么拿到按相关性排序的原始知识片段。
 
 回答口径和 Web 聊天同源。同一个问题、同一个频道，MCP 问答和页面聊天走同一条管线（查询改写、混合检索、rerank），引用同一批已发布文档。
 
@@ -18,28 +18,28 @@ RWiki 可以把知识库问答和检索能力以 MCP（Model Context Protocol）
 [mcp]
 ```
 
-省略整段则关闭：`/mcp` 路由不挂载，对客户端表现为入口不存在，其余功能不受影响。
+省略整段则关闭：`/mcp/<channelId>` 入口不挂载，对客户端表现为入口不存在，其余功能不受影响。
 
-MCP 没有独立的鉴权配置，复用 `[api]` 段：客户端请求必须带 `Authorization: Bearer <API_TOKEN>` 请求头；如果配置了 `api.allowed_ip_ranges`，来源 IP 还需在白名单内。Token 缺失或无效时请求直接被拒，不返回任何知识库内容。
+MCP 入口公开免鉴权：不需要 Token，也不套 IP 白名单。请求里仍带着 `Authorization` 头也照常处理——Token 既不必需也不会被解析。
+
+每个已配置频道各有一个入口 `POST /mcp/<channelId>`。频道标识只能包含 ASCII 字母、数字、`-` 和 `_`（启动时强制校验，不合规的标识会导致启动失败并指明该标识），因为标识会进入 URL。入口地址中的频道段只用于寻址：每次工具调用仍带 `channelId` 参数，由参数决定实际检索的频道。
 
 ## 接入客户端
 
-Claude Code 一条命令接入（`<host>:<port>` 换成你的服务地址）：
+Claude Code 一条命令接入（`<host>:<port>` 换成你的服务地址，`<channelId>` 换成已配置的频道）：
 
 ```bash
-claude mcp add --transport http rwiki http://<host>:<port>/mcp \
-  --header "Authorization: Bearer <API_TOKEN>"
+claude mcp add --transport http rwiki http://<host>:<port>/mcp/<channelId>
 ```
 
-Cursor、MCP Inspector 等其他支持 Streamable HTTP 传输的客户端，配置要素相同：端点地址 `http://<host>:<port>/mcp`，请求头带 Bearer Token。
+Cursor、MCP Inspector 等其他支持 Streamable HTTP 传输的客户端，只需要端点地址 `http://<host>:<port>/mcp/<channelId>`。
 
 不接客户端也能手动验证。先对端点发一个 initialize 握手：
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8080/mcp/help_center \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Authorization: Bearer <API_TOKEN>" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.0.0"}}}'
 ```
 
@@ -73,10 +73,9 @@ curl -X POST http://localhost:8080/mcp \
 手动调用一次检索（接在握手之后）：
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8080/mcp/help_center \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Authorization: Bearer <API_TOKEN>" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rwiki_search","arguments":{"query":"支持的部署方式","channelId":"help_center","topK":5}}}'
 ```
 

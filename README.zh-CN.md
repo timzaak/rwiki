@@ -49,7 +49,7 @@ RWiki 只做一件事 — 知识库问答 — 并把基础设施压缩到一个�
 - **Rerank 重排（可选）** — 在混合搜索后对候选片段做语义重排，提升检索精度。支持 OpenRouter、智谱 BigModel、阿里云 DashScope。通过 `[rerank]` 配置段开启（未配置时零开销）；失败时自动降级为融合结果。
 - **查询改写与扩展** — 自动查询改写与多查询扩展，处理模糊提问
 - **可嵌入聊天组件** — 单个 JS 文件，Shadow DOM，两行 HTML 嵌入任意网站
-- **MCP Server（可选）** — 将知识库问答与检索以只读 MCP 工具（`rwiki_qa`、`rwiki_search`）暴露给 Claude Code、Cursor 等 Agent 客户端，Streamable HTTP 传输。通过 `[mcp]` 配置段开启（未配置时 `/mcp` 路由不挂载）
+- **MCP Server（可选）** — 将知识库问答与检索以只读 MCP 工具（`rwiki_qa`、`rwiki_search`）暴露给 Claude Code、Cursor 等 Agent 客户端，Streamable HTTP 传输，每个已配置频道一个公开入口（`/mcp/<channelId>`，无需凭据）。通过 `[mcp]` 配置段开启（未配置时入口不挂载）
 - **多格式导入** — Markdown 文件、XLSX 表格、OpenAPI 规格
 - **API 文档助手** — 上传 OpenAPI 规格，向 API 提问
 - **LLM 无关** — 支持 OpenAI、OpenRouter、BigModel 等任何 OpenAI 兼容接口
@@ -97,11 +97,10 @@ npm run dev   # http://localhost:3000，/api 代理到后端
 
 ### MCP Server（可选）
 
-将知识库问答与检索以只读 MCP 工具（`rwiki_qa`、`rwiki_search`）暴露给 Claude Code、Cursor 等 Agent 客户端。在 `config.toml` 添加 `[mcp]` 段即启用（省略则 `/mcp` 路由不挂载）；鉴权复用 `[api]` 段的 API Token 与 IP 白名单。
+将知识库问答与检索以只读 MCP 工具（`rwiki_qa`、`rwiki_search`）暴露给 Claude Code、Cursor 等 Agent 客户端。在 `config.toml` 添加 `[mcp]` 段即启用（省略则入口不挂载）。入口公开免鉴权（无需 Token 与 IP 白名单），按频道寻址：每个已配置频道一个入口 `POST /mcp/<channelId>`（频道标识仅可含字母、数字、`-`、`_`，启动时强制校验）。
 
 ```bash
-claude mcp add --transport http rwiki http://localhost:8080/mcp \
-  --header "Authorization: Bearer <API_TOKEN>"
+claude mcp add --transport http rwiki http://localhost:8080/mcp/<channelId>
 ```
 
 ## AI 构建

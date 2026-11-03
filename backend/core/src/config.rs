@@ -481,6 +481,38 @@ impl ChannelsConfig {
         Ok(normalized)
     }
 
+    /// 频道标识格式规则：非空且仅含 ASCII 字母、数字、连字符、下划线。
+    ///
+    /// 频道标识会成为 URL 路径段（主站 `/c/{channelId}` 频道页与 MCP 入口
+    /// `/mcp/{channelId}`），必须在配置加载阶段保证其为安全的单一路径段
+    /// （docs/prd/integration/support-multiple-website.md §4.1/§5.1）。
+    fn is_valid_channel_id(id: &str) -> bool {
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }
+
+    /// 启动校验：所有频道标识必须符合 `is_valid_channel_id` 规则。
+    ///
+    /// 返回 anyhow 启动错误（与 `validate_historical_rows_have_channel_id` 同风格），
+    /// 错误信息指明首个（字典序）不合规标识，保证 HashMap 迭代顺序不影响报错内容。
+    /// 该校验不以 `[mcp]` 段是否存在为条件。
+    pub fn validate_channel_id_formats(&self) -> Result<(), anyhow::Error> {
+        match self
+            .channels
+            .keys()
+            .filter(|id| !Self::is_valid_channel_id(id))
+            .min()
+        {
+            Some(id) => Err(anyhow::anyhow!(
+                "Invalid channel id {id:?} in [channels]: channel ids may only contain \
+                 ASCII letters, digits, '-' and '_'."
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// 解析频道系统提示词：频道级配置存在且非空时优先，否则回退到全局提示词。
     pub fn resolved_system_prompt<'a>(
         &'a self,
@@ -1207,6 +1239,113 @@ mod tests {
         assert!(
             config.mcp.is_some(),
             "present empty [mcp] section should mean MCP is enabled"
+        );
+    }
+
+    fn channels_config_with_ids(ids: &[&str]) -> ChannelsConfig {
+        ChannelsConfig {
+            channels: ids
+                .iter()
+                .map(|id| {
+                    (
+                        (*id).to_string(),
+                        ChannelConfig {
+                            name: format!("channel {id}"),
+                            system_prompt: None,
+                            suggested_questions: None,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    // Covers: US-INTG-014 场景 1 — channel ids containing characters outside the
+    // URL-safe set (slash, space, non-ASCII, dot, empty) must fail startup
+    // validation with the offending id and the allowed rule in the message.
+    #[test]
+    fn channel_id_format_rejects_non_url_safe_ids() {
+        for id in ["docs/v2", "help center", "频道", "a.b", ""] {
+            let config = channels_config_with_ids(&[id]);
+            let err = config
+                .validate_channel_id_formats()
+                .expect_err("non-url-safe channel id should be rejected");
+            assert!(
+                err.to_string().contains(&format!("{id:?}")),
+                "error for {id:?} should name the offending id: {err}"
+            );
+            assert!(
+                err.to_string().contains("ASCII letters"),
+                "error for {id:?} should state the allowed rule: {err}"
+            );
+        }
+    }
+
+    // Covers: US-INTG-014 场景 2 — ids built only from ASCII letters, digits,
+    // '-' and '_' pass validation so regular bare-key configs start unchanged.
+    #[test]
+    fn channel_id_format_accepts_url_safe_ids() {
+        let config = channels_config_with_ids(&["help_center", "docs-v2", "A9", "a_b-c123"]);
+        config
+            .validate_channel_id_formats()
+            .expect("url-safe channel ids should pass validation");
+    }
+
+    // Covers: the reported offender must be deterministic despite HashMap
+    // iteration order — validation reports the lexicographically first invalid id.
+    #[test]
+    fn channel_id_format_reports_first_invalid_deterministically() {
+        let config = channels_config_with_ids(&["zeta/1", "alpha/2"]);
+        let err = config
+            .validate_channel_id_formats()
+            .expect_err("invalid ids should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "Invalid channel id \"alpha/2\" in [channels]: channel ids may only contain \
+             ASCII letters, digits, '-' and '_'."
+        );
+    }
+
+    // Covers: US-INTG-014 场景 3 — a quoted TOML key can carry an invalid id
+    // past bare-key restrictions, and validation fires regardless of whether
+    // the [mcp] section exists.
+    #[test]
+    fn channel_id_format_reachable_via_quoted_toml_key_without_mcp_section() {
+        let toml_str = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+
+            [channels."docs/v2"]
+            name = "docs v2"
+
+            [api]
+        "#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("config with quoted channel key should deserialize");
+        assert!(
+            config.mcp.is_none(),
+            "config without [mcp] section should mean MCP is disabled"
+        );
+        let err = config
+            .channels
+            .validate_channel_id_formats()
+            .expect_err("quoted invalid channel id should be rejected at startup");
+        assert!(
+            err.to_string().contains("docs/v2"),
+            "error should name the offending id: {err}"
         );
     }
 

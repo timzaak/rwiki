@@ -49,7 +49,7 @@ Rules, verified at startup:
 - **At least one channel** — empty `[channels]` fails to start.
 - **Unique `channelId`** — duplicates fail to start.
 - **No null `channel_id` rows** — if historical rows in `documents`, `chat_feedback`, or `low_recall_records` have a null `channel_id`, startup fails and tells you to backfill first.
-- **`channelId` format** — URL-safe string (letters, digits, hyphen, underscore), defined by the operator in config.
+- **`channelId` format** — URL-safe string (letters, digits, hyphen, underscore), enforced at startup: any other character (e.g. a quoted key like `[channels."docs/v2"]`) fails to start with an error naming the id. The id is a URL path segment (channel pages and MCP entries `/mcp/<channelId>`), so it must stay a single safe path segment.
 
 Each channel optionally sets its own `system_prompt` and `suggested_questions`. When a channel doesn't configure them, the global `[chat]` values apply. See [Configuration → Chat](/en/docs/configuration#chat).
 

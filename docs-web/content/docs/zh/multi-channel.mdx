@@ -49,7 +49,7 @@ name = "Developer Docs"
 - **至少一个频道** —— `[channels]` 为空时启动失败。
 - **`channelId` 唯一** —— 重复时启动失败。
 - **无空 `channel_id` 历史行** —— 若 `documents`、`chat_feedback`、`low_recall_records` 中存在 `channel_id` 为空的行，启动失败并提示先回填。
-- **`channelId` 格式** —— URL-safe 字符串（字母、数字、连字符、下划线），由运营方在配置中定义。
+- **`channelId` 格式** —— URL-safe 字符串（字母、数字、连字符、下划线），启动时强制校验：含其他字符的标识（如引用键 `[channels."docs/v2"]`）会导致启动失败并指明该标识。频道标识会进入 URL 路径段（主站频道页与 MCP 入口 `/mcp/<channelId>`），因此必须保持为单一安全路径段。
 
 每个频道可选地配置 `system_prompt` 和 `suggested_questions`。未配置时使用全局 `[chat]` 的值。详见[配置 → Chat](/zh/docs/configuration#chat)。
 

@@ -57,7 +57,10 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             "/api/low-recall/records",
             get(handlers::low_recall::list_low_recall_records),
         )
-        .layer(axum::middleware::from_fn_with_state(
+        // route_layer（而非 layer）：鉴权只作用于匹配到的受保护路由，
+        // 不包裹未匹配路径的 fallback——layer 会把默认 404 也套进
+        // auth_middleware，使未知路径返回 401，泄露鉴权边界的存在。
+        .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::application::http::middleware::auth_middleware,
         ))
@@ -77,8 +80,10 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
         .layer(cors)
         .with_state(state.clone());
 
-    // MCP Server：`[mcp]` 段存在即挂载 /mcp（受 auth_middleware 保护），
-    // 省略时完全不挂载，现有行为不变（省略即关闭惯例）。
+    // MCP Server：`[mcp]` 段存在即为每个已配置频道挂载公开入口
+    // /mcp/{channelId}（免鉴权，见 handlers/mcp.rs），省略时完全不挂载，
+    // 现有行为不变（省略即关闭惯例）。注意：此 merge 在 .layer(cors) 之后，
+    // MCP 入口不在 CORS 层内（MCP 客户端为非浏览器服务间调用）。
     let app = if state.mcp_config.is_some() {
         app.merge(handlers::mcp::mcp_router(state.clone()))
     } else {

@@ -319,6 +319,10 @@ async fn main() -> Result<()> {
         ));
     }
 
+    // 校验频道标识格式（URL-safe 单一路径段：主站 /c/{channelId} 与 MCP 入口
+    // /mcp/{channelId} 均以频道标识作路径段；不以 [mcp] 是否启用为条件）
+    config.channels.validate_channel_id_formats()?;
+
     // 校验历史数据中不存在 channel_id 为空的行（documents / chat_feedback / low_recall_records）
     rwiki_core::config::validate_historical_rows_have_channel_id(
         &sqlite,

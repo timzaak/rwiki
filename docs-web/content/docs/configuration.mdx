@@ -439,8 +439,9 @@ Controls the knowledge base MCP server, which exposes QA and search as MCP tools
 
 ```toml
 # Presence of the section enables the server (it has no fields).
-# Omit the section to disable it; the /mcp route is not mounted.
-# Authentication reuses the [api] section: Bearer token + optional IP allowlist.
+# Omit the section to disable it; no /mcp/<channelId> endpoint is mounted.
+# Endpoints are public (no token, no IP allowlist); each configured channel
+# gets its own endpoint POST /mcp/<channelId>.
 [mcp]
 ```
 

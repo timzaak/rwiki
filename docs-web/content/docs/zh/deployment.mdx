@@ -114,6 +114,7 @@ docker run -d -p 8080:8080 \
 | `/health` | 后端容器 | 健康检查 |
 | `/swagger*` | 后端容器 | Swagger UI（需配置开启） |
 | `/widget/*` | 后端容器 | 静态资源（聊天 widget JS） |
+| `/mcp/*` | 后端容器 | MCP 入口（公开免鉴权，每个已配置频道一个，见 [MCP](/zh/docs/mcp)） |
 | `/*` | docs-web 静态文件 | 文档站（SPA） |
 
 ### 构建与部署
@@ -162,6 +163,9 @@ your-domain.com {
         reverse_proxy rwiki:8080
     }
     handle /widget/* {
+        reverse_proxy rwiki:8080
+    }
+    handle /mcp/* {
         reverse_proxy rwiki:8080
     }
     handle {

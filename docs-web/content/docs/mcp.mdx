@@ -4,7 +4,7 @@ description: Expose knowledge base QA and search as MCP tools for agent clients 
 icon: Bot
 ---
 
-RWiki can expose its knowledge base QA and search capabilities as MCP (Model Context Protocol) tools. Agent clients such as Claude Code and Cursor connect with an API token, and the agent can then query your knowledge base directly: either a complete answer with source references, or relevance-sorted raw knowledge chunks.
+RWiki can expose its knowledge base QA and search capabilities as MCP (Model Context Protocol) tools. Agent clients such as Claude Code and Cursor connect with just a channel endpoint URL — no credentials required — and the agent can then query your knowledge base directly: either a complete answer with source references, or relevance-sorted raw knowledge chunks.
 
 Answers come from the same pipeline as the web chat. Same question, same channel: MCP QA and the page chat run through the same query rewrite, hybrid retrieval, and rerank steps, citing the same set of published documents.
 
@@ -18,28 +18,28 @@ Add an `[mcp]` section to `config.toml`. The section has no fields:
 [mcp]
 ```
 
-Omit the section to disable the server: the `/mcp` route is not mounted, so clients see no endpoint, and everything else keeps working as before.
+Omit the section to disable the server: the `/mcp/<channelId>` endpoints are not mounted, so clients see no endpoint, and everything else keeps working as before.
 
-MCP has no separate authentication settings. It reuses the `[api]` section: requests must carry an `Authorization: Bearer <API_TOKEN>` header, and if `api.allowed_ip_ranges` is configured, the source IP must be allowlisted. A missing or invalid token gets the request rejected before any knowledge base content is returned.
+MCP endpoints are public: no token and no IP allowlist. A request that still carries an `Authorization` header is processed unchanged — the token is neither required nor inspected.
+
+Each configured channel gets its own endpoint, `POST /mcp/<channelId>`. Channel ids may only contain ASCII letters, digits, `-` and `_` (enforced at startup, so an unsafe id fails the launch with a clear error), because the id becomes part of the URL. The channel segment in the URL only addresses the entry: every tool call still takes a `channelId` parameter, which decides the channel being searched.
 
 ## Connecting a client
 
-Claude Code connects with one command (replace `<host>:<port>` with your server address):
+Claude Code connects with one command (replace `<host>:<port>` with your server address and `<channelId>` with a configured channel):
 
 ```bash
-claude mcp add --transport http rwiki http://<host>:<port>/mcp \
-  --header "Authorization: Bearer <API_TOKEN>"
+claude mcp add --transport http rwiki http://<host>:<port>/mcp/<channelId>
 ```
 
-Other clients that support the Streamable HTTP transport (Cursor, MCP Inspector) need the same two things: the endpoint URL `http://<host>:<port>/mcp`, and the Bearer token header.
+Other clients that support the Streamable HTTP transport (Cursor, MCP Inspector) only need the endpoint URL `http://<host>:<port>/mcp/<channelId>`.
 
 You can also verify the endpoint by hand. Send an initialize handshake first:
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8080/mcp/help_center \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Authorization: Bearer <API_TOKEN>" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0.0.0"}}}'
 ```
 
@@ -73,10 +73,9 @@ The result is a `results` array where each chunk carries `title`, `section`, `co
 A manual search call, sent after the handshake:
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8080/mcp/help_center \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Authorization: Bearer <API_TOKEN>" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rwiki_search","arguments":{"query":"supported deployment options","channelId":"help_center","topK":5}}}'
 ```
 
