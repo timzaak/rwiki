@@ -5,6 +5,9 @@
  * 未知/错误态。所有主站聊天、推荐问题、反馈请求的 channelId 均由
  * `ChannelIdProvider` 向下透传（`use-chat-stream` / `use-feedback` 消费）。
  *
+ * 搜索框（SearchBox）只在 ready 分支渲染：频道校验中或频道不存在时不出现，
+ * 且不发任何搜索请求。
+ *
  * 未知频道态不渲染 FloatingButton / Provider / ModalMount，且不发任何
  * chat / suggestions / feedback 请求。
  */
@@ -16,6 +19,7 @@ import { listChannels, suggestions } from '@/lib/api-generated'
 import { FloatingButton } from '@/components/chat/floating-button'
 import { DefaultChatStreamProvider } from '@/components/chat/chat-stream-context'
 import { ChannelIdProvider } from '@/components/chat/channel-id-context'
+import { SearchBox } from '@/components/search/search-box'
 import { useChatModalStore } from '@/stores/chat-store'
 import { Button } from '@/components/ui/button'
 
@@ -99,6 +103,9 @@ function ChannelRoute() {
   return (
     <ChannelIdProvider channelId={[channelId]}>
       <DefaultChatStreamProvider>
+        <main className="mx-auto w-full max-w-2xl px-4 pt-16">
+          <SearchBox key={channelId} channelId={channelId} />
+        </main>
         <Outlet />
         <FloatingButton visible />
         <ChannelChatModalMount channelId={channelId} />

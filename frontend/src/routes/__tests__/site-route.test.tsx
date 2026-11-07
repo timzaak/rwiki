@@ -28,6 +28,10 @@ import { client } from '@/lib/api-generated/client.gen'
  *    does NOT prove "no request"; a leak would still render channel-not-found
  *    but also fire chat/suggestions/feedback).
  *  - listChannels 500 → `channel-error` + a retry control that re-hits `/api/channels`.
+ *  - US-CORE-041: known channel (ready) renders `search-input` and fires ZERO
+ *    `/api/search` requests on mount (submit-only trigger — no search on
+ *    typing/entry); unknown channel and degraded listChannels render no
+ *    `search-input` and fire no `/api/search` request either.
  *
  * Router assembly mirrors `routes/admin/__tests__/admin.test.tsx`:
  * createMemoryHistory + RouterProvider + an explicit `/c/$channelId` child route
@@ -39,6 +43,7 @@ const CHANNELS_URL = `${BASE_URL}/api/channels`
 const SUGGESTIONS_URL = `${BASE_URL}/api/chat/suggestions`
 const CHAT_URL = `${BASE_URL}/api/chat`
 const FEEDBACK_URL = `${BASE_URL}/api/chat/feedback`
+const SEARCH_URL = `${BASE_URL}/api/search`
 
 // Dynamically import the route component. FE-D02 regenerated routeTree.gen.ts
 // to register `/c/$channelId`; if this import fails at runtime it means FE-D02
@@ -52,6 +57,7 @@ let channelsCallCount: number
 let suggestionsCallCount: number
 let chatCallCount: number
 let feedbackCallCount: number
+let searchCallCount: number
 let lastSuggestionsUrl: string
 
 function installChannelsHandler(channels: Array<{ id: string; name: string }>) {
@@ -110,6 +116,15 @@ function installFeedbackCounter() {
   )
 }
 
+function installSearchCounter() {
+  server.use(
+    http.post(SEARCH_URL, () => {
+      searchCallCount += 1
+      return HttpResponse.json({ results: [] })
+    }),
+  )
+}
+
 function renderChannelRoute(initialPath: string) {
   const rootRoute = createRootRoute({
     // Root renders <Outlet/> so the matched `/c/$channelId` subtree mounts.
@@ -137,6 +152,7 @@ beforeEach(() => {
   suggestionsCallCount = 0
   chatCallCount = 0
   feedbackCallCount = 0
+  searchCallCount = 0
   lastSuggestionsUrl = ''
   vi.clearAllMocks()
 })
@@ -154,6 +170,7 @@ describe('/c/$channelId — known channel (ready)', () => {
     installSuggestionsHandler()
     installChatCounter()
     installFeedbackCounter()
+    installSearchCounter()
 
     renderChannelRoute('/c/channel-a')
 
@@ -161,6 +178,11 @@ describe('/c/$channelId — known channel (ready)', () => {
     // branch (not a happy-path text assertion).
     const button = await screen.findByTestId('floating-chat-button')
     expect(button).toBeVisible()
+
+    // US-CORE-041: search box mounts in the ready branch, but mounting
+    // alone must not fire any search request (submit-only trigger).
+    expect(await screen.findByTestId('search-input')).toBeVisible()
+    expect(searchCallCount).toBe(0)
 
     // Ready branch: not-found / error / loading must be absent.
     expect(screen.queryByTestId('channel-not-found')).toBeNull()
@@ -185,6 +207,7 @@ describe('/c/$channelId — unknown channel (no-request negative contract)', () 
     installSuggestionsHandler()
     installChatCounter()
     installFeedbackCounter()
+    installSearchCounter()
 
     renderChannelRoute('/c/unknown')
 
@@ -193,6 +216,8 @@ describe('/c/$channelId — unknown channel (no-request negative contract)', () 
 
     // No chat chrome.
     expect(screen.queryByTestId('floating-chat-button')).toBeNull()
+    // No search box either (ready-only mount).
+    expect(screen.queryByTestId('search-input')).toBeNull()
 
     // LOAD-BEARING: visibility of channel-not-found does NOT prove "no request".
     // A leak would render channel-not-found AND fire a request. Assert via MSW
@@ -200,6 +225,7 @@ describe('/c/$channelId — unknown channel (no-request negative contract)', () 
     expect(chatCallCount).toBe(0)
     expect(suggestionsCallCount).toBe(0)
     expect(feedbackCallCount).toBe(0)
+    expect(searchCallCount).toBe(0)
   })
 })
 
@@ -229,6 +255,7 @@ describe('/c/$channelId — listChannels failure (graceful degradation)', () => 
     installSuggestionsHandler()
     installChatCounter()
     installFeedbackCounter()
+    installSearchCounter()
 
     renderChannelRoute('/c/channel-a')
 
@@ -241,8 +268,10 @@ describe('/c/$channelId — listChannels failure (graceful degradation)', () => 
     // Safety: no chat chrome, and zero chat/suggestions/feedback requests
     // (the no-request contract holds even under the degraded path).
     expect(screen.queryByTestId('floating-chat-button')).toBeNull()
+    expect(screen.queryByTestId('search-input')).toBeNull()
     expect(chatCallCount).toBe(0)
     expect(suggestionsCallCount).toBe(0)
     expect(feedbackCallCount).toBe(0)
+    expect(searchCallCount).toBe(0)
   })
 })
