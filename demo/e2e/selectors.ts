@@ -84,6 +84,25 @@ export const SELECTORS = {
     channelError: '[data-testid="channel-error"]',
     channelNotFound: '[data-testid="channel-not-found"]',
   },
+
+  /**
+   * 主站搜索相关选择器 — 对应 US-CORE-041。
+   *
+   * 来源：`frontend/src/components/search/search-box.tsx` / `search-dropdown.tsx`
+   * （仅 /c/$channelId ready 分支渲染，Widget 不含）。
+   * `search-result-item` / `search-result-link` 随列表条目重复出现，定位用 `.first()`。
+   */
+  search: {
+    input: '[data-testid="search-input"]',
+    submitButton: '[data-testid="search-submit-button"]',
+    dropdown: '[data-testid="search-dropdown"]',
+    resultList: '[data-testid="search-result-list"]',
+    resultItem: '[data-testid="search-result-item"]',
+    resultLink: '[data-testid="search-result-link"]',
+    loading: '[data-testid="search-loading"]',
+    empty: '[data-testid="search-empty"]',
+    error: '[data-testid="search-error"]',
+  },
 }
 
 /**

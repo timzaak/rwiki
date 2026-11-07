@@ -29,6 +29,14 @@ RWIKI_URL = "https://rwiki.fornetcode.com"
 # upload/publish/list or the KB stays empty and RAG fails.
 DEMO_CHANNEL_ID = "help_center"
 
+# Seed-format version: bump whenever the seeding transformation of uploaded
+# docs changes, so demo-start resets a demo KB seeded by an older format
+# instead of skipping those files as "already published" (DB path comes from
+# backend/config/demo.toml [sqlite], relative to the backend cwd).
+SEED_FORMAT_VERSION = "2"
+DEMO_DB_DIR = REPO_ROOT / "backend" / "data" / "demo"
+DEMO_DB_PATH = DEMO_DB_DIR / "rwiki.db"
+
 
 def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
     """Inject or update the `link` field in frontmatter with the docs channel URL."""
@@ -39,11 +47,13 @@ def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
         # Already has frontmatter — find closing ---
         end = text.find("\n---", 3)
         if end != -1:
-            fm = text[: end + 4]
-            rest = text[end + 4 :]
-            # Replace existing link or add it before closing ---
-            if "link:" in fm:
-                lines = fm.splitlines()
+            # fm excludes the closing ---; the close itself stays in text.
+            fm = text[:end]
+            lines = fm.splitlines()
+            # Line-level check: a bare `"link:" in fm` substring would misfire
+            # on keys like permalink: and silently skip the injection.
+            has_link = any(line.strip().startswith("link:") for line in lines)
+            if has_link:
                 lines = [
                     (
                         f"link: {doc_link}"
@@ -52,10 +62,11 @@ def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
                     )
                     for line in lines
                 ]
-                fm = "\n".join(lines) + "\n"
-            else:
-                fm = fm.rstrip() + f"\nlink: {doc_link}\n"
-            return (fm + rest).encode("utf-8")
+                return ("\n".join(lines) + "\n---\n" + text[end + 4 :]).encode("utf-8")
+            # Insert just before the closing ---: appending after it leaks the
+            # link into the chunk body as plain text, and rebuilding the close
+            # would fuse with a rest that has no leading newline (---- closings).
+            return (fm + f"\nlink: {doc_link}" + text[end:]).encode("utf-8")
 
     # No frontmatter — add one
     frontmatter = f"---\nlink: {doc_link}\n---\n"
@@ -212,6 +223,31 @@ def _upload_and_publish_openapi(
     return True
 
 
+def _reset_stale_demo_db() -> None:
+    """Delete the demo KB when it was seeded by an older seed format.
+
+    Seeding skips already-published filenames, so without this reset a
+    changed injection would never reach docs published by the old logic.
+    """
+    marker = DEMO_DB_DIR / "seed-version"
+    version = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    if version == SEED_FORMAT_VERSION:
+        return
+    if DEMO_DB_PATH.exists():
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                (DEMO_DB_DIR / (DEMO_DB_PATH.name + suffix)).unlink(missing_ok=True)
+        except OSError as e:
+            print(f"WARNING: could not reset stale demo KB ({e}); continuing")
+            return
+        print(
+            f"Reset demo KB (seed format {version or 'unknown'} -> "
+            f"{SEED_FORMAT_VERSION}); all documents will be re-seeded"
+        )
+    DEMO_DB_DIR.mkdir(parents=True, exist_ok=True)
+    marker.write_text(SEED_FORMAT_VERSION + "\n", encoding="utf-8")
+
+
 def seed_tutorials(base_url: str) -> bool:
     """Upload tutorial .mdx files from docs-web/content/docs/."""
     if not TUTORIALS_DIR.exists():
@@ -314,6 +350,9 @@ def main() -> int:
 
     # Jaeger (before backend so OTLP endpoint is available)
     _start_jaeger()
+
+    # Reset before the backend opens the DB.
+    _reset_stale_demo_db()
 
     # Backend
     cargo = require_executable("cargo")
