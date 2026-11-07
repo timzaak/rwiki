@@ -21,6 +21,7 @@ use utoipa::OpenApi;
 /// - /api/documents/{documentId}/unpublish — 取消发布文档（需鉴权）
 /// - /api/chat — SSE 流式聊天（无需鉴权，仅检索已发布内容）
 /// - /api/chat/scoped — SSE 流式聊天（需鉴权，可按 documentIds 限定集合检索）
+/// - /api/search — 公开频道级知识片段搜索（无需鉴权，不经 LLM 生成）
 /// - /swagger — Swagger UI（仅 enable_openapi = true 时可用）
 /// - 其他路径 — 代理到前端静态文件
 pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
@@ -76,6 +77,7 @@ pub fn create_api_routes(state: std::sync::Arc<AppState>) -> Router {
             "/api/chat/feedback",
             post(handlers::feedback::submit_feedback),
         )
+        .route("/api/search", post(handlers::search::search_chunks))
         .merge(doc_router)
         .layer(cors)
         .with_state(state.clone());

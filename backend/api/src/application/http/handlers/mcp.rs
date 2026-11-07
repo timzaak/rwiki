@@ -6,8 +6,9 @@
 //! 每频道一个入口），由 `mcp_router` 装配并按 `[mcp]` 配置段
 //! （section presence）条件挂载。
 //!
-//! 工具面仅两个只读工具，回答口径与公开聊天同源：复用 chat.rs 的
-//! HTTP 无关管线函数，单轮语义（无历史、无摘要注入）。
+//! 工具面仅两个只读工具，回答口径与公开聊天同源：检索编排（改写 +
+//! 混合检索 + 最终排序）复用 core 统一模块 `domain::search`，prompt
+//! 组装复用 chat.rs 的 HTTP 无关函数，单轮语义（无历史、无摘要注入）。
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,17 +28,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::application::http::state::AppState;
 
-use super::chat::{build_preamble, format_context_xml, rewrite_query, search_and_rerank};
+use rwiki_core::domain::search::{rewrite_query, search_and_rerank};
 
-/// 检索工具 topK 上限（防 Agent 滥用；缺省 = retrieval.max_context_chunks）
-const MCP_MAX_TOP_K: u32 = 20;
+use super::chat::{build_preamble, format_context_xml};
+
+/// 检索 topK 上限（防 Agent 滥用；缺省 = clamp(retrieval.max_context_chunks, 1, MAX_TOP_K)）。
+/// 公开搜索 `/api/search` 与 MCP `rwiki_search` 经 `resolve_top_k` 共用同一口径。
+const MAX_TOP_K: u32 = 20;
 
 /// 工具执行期内部失败的统一对外文案；底层错误细节仅进 tracing。
-const INTERNAL_ERROR_MESSAGE: &str = "知识库服务内部错误";
+/// 公开搜索 `/api/search` 复用同一文案。
+pub(crate) const INTERNAL_ERROR_MESSAGE: &str = "知识库服务内部错误";
 
-// ---------------------------------------------------------------------------
+/// 解析检索 topK（`/api/search` 与 `rwiki_search` 共用）：
+/// 显式请求优先；缺省收敛到 [1, MAX_TOP_K]——max_context_chunks 是聊天上下文
+/// 预算，无上下限校验，配置越界（>20 或 0）时缺省请求不应因运维配置被拒。
+/// 显式值以 i64 承接：负数与超出 u32 的整数同 0/>20 一样报同一越界文案
+/// （HTTP 侧 DTO 用 i64 反序列化，避免框架提取层把这些整数拒绝成 422）；
+/// 彻底的类型垃圾（浮点/字符串）仍由 HTTP 提取层 422 拒绝。
+pub(crate) fn resolve_top_k(
+    requested: Option<i64>,
+    default_source: usize,
+) -> Result<usize, String> {
+    let top_k: u32 = match requested {
+        None => default_source.clamp(1, MAX_TOP_K as usize) as u32,
+        Some(v) if (0..=u32::MAX as i64).contains(&v) => v as u32,
+        Some(_) => return Err(format!("topK 必须在 1 到 {MAX_TOP_K} 之间")),
+    };
+    if top_k == 0 || top_k > MAX_TOP_K {
+        return Err(format!("topK 必须在 1 到 {MAX_TOP_K} 之间"));
+    }
+    Ok(top_k as usize)
+}
+
 // 工具入参/返回结构（serde camelCase 对外；不纳入 OpenAPI）
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -73,7 +97,8 @@ struct SearchToolParams {
     query: String,
     /// Target channel identifier (must be configured in [channels]).
     channel_id: String,
-    /// Max number of chunks to return (1..=20; defaults to retrieval config).
+    /// Max number of chunks to return (1..=20; defaults to the retrieval
+    /// config, capped to 1..=20).
     top_k: Option<u32>,
 }
 
@@ -94,10 +119,6 @@ struct SearchChunkItem {
     score: f64,
     document_id: String,
 }
-
-// ---------------------------------------------------------------------------
-// ServerHandler 与工具定义
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct McpTools {
@@ -191,10 +212,6 @@ async fn execute_tool<T: Serialize>(
     finish(outcome)
 }
 
-// ---------------------------------------------------------------------------
-// 工具执行流程
-// ---------------------------------------------------------------------------
-
 /// 校验 channelId：trim、非空、已配置；错误文案与公开聊天逐字一致。
 fn validate_channel<'a>(state: &'a AppState, channel_id: &'a str) -> Result<&'a str, String> {
     state
@@ -207,7 +224,8 @@ fn validate_channel<'a>(state: &'a AppState, channel_id: &'a str) -> Result<&'a 
 }
 
 /// 工具入口公共校验：query trim 非空 + channelId 已配置。
-fn validate_query_and_channel<'a>(
+/// 公开搜索 `/api/search` 复用同一校验与文案（ApiError 映射在调用侧）。
+pub(crate) fn validate_query_and_channel<'a>(
     state: &'a AppState,
     query: &'a str,
     channel_id: &'a str,
@@ -221,7 +239,8 @@ fn validate_query_and_channel<'a>(
 }
 
 /// 单轮改写：无历史（history = []）+ content_language 过滤。
-async fn rewrite_single_turn(state: &AppState, query: &str) -> Vec<String> {
+/// 公开搜索 `/api/search` 复用同一单轮语义。
+pub(crate) async fn rewrite_single_turn(state: &AppState, query: &str) -> Vec<String> {
     let content_language = state
         .chat_config
         .content_language
@@ -318,13 +337,25 @@ async fn run_search(
 ) -> Result<SearchToolResult, String> {
     let (query, channel_id) = validate_query_and_channel(state, &params.query, &params.channel_id)?;
 
-    let top_k = params
-        .top_k
-        .unwrap_or(state.retrieval_config.max_context_chunks as u32);
-    if top_k == 0 || top_k > MCP_MAX_TOP_K {
-        return Err(format!("topK 必须在 1 到 {MCP_MAX_TOP_K} 之间"));
+    let top_k = resolve_top_k(
+        params.top_k.map(i64::from),
+        state.retrieval_config.max_context_chunks,
+    )?;
+
+    // 全局空库（尚无任何已索引 chunk）时检索原语会报错；与「无文档与无
+    // 命中统一返回空列表」的既定语义一致，短路为空结果并省掉注定无用的
+    // 改写 + embedding 调用。预检查自身失败按内部错误处理（isError 固定
+    // 文案），不当作「空库」静默放行。
+    if state
+        .vector_store
+        .is_empty()
+        .await
+        .map_err(|e| internal_error("is_empty precheck", e))?
+    {
+        return Ok(SearchToolResult {
+            results: Vec::new(),
+        });
     }
-    let top_k = top_k as usize;
 
     let rewritten_queries = rewrite_single_turn(state, query).await;
 
@@ -358,10 +389,6 @@ async fn run_search(
 
     Ok(SearchToolResult { results })
 }
-
-// ---------------------------------------------------------------------------
-// 路由装配
-// ---------------------------------------------------------------------------
 
 /// 构建 MCP 入口路由：每个已配置频道一个公开入口 `POST /mcp/{channelId}`，
 /// 无状态 Streamable HTTP，免鉴权（与公开聊天 `/api/chat` 同级暴露）。

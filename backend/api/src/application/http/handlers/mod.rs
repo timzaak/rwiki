@@ -6,6 +6,7 @@ pub mod eval;
 pub mod feedback;
 pub mod low_recall;
 pub mod mcp;
+pub mod search;
 
 #[cfg(test)]
 mod chat_scenarios;
@@ -45,6 +46,9 @@ mod mcp_scenarios;
 
 #[cfg(test)]
 mod rerank_scenarios;
+
+#[cfg(test)]
+mod search_scenarios;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use rwiki_core::domain::health::HealthStatus;

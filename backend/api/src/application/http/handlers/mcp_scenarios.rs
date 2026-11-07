@@ -28,10 +28,6 @@ const HIT_CHANNEL: &str = "help_center";
 const NO_DOCS_CHANNEL: &str = "empty_channel";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
 static SQLITE_VEC_INIT: Once = Once::new();
@@ -323,10 +319,6 @@ fn tool_result_text(rpc: &serde_json::Value) -> (bool, String) {
         .to_string();
     (is_error, text)
 }
-
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: As an Agent tool integrator (US-INTG-010), I want to connect with just the
 // channel entry URL — no token or credentials — and complete the MCP
@@ -977,4 +969,225 @@ async fn mcp_repeated_calls_are_independent() {
         sessions_empty,
         "MCP calls must not create or retain server-side chat sessions"
     );
+}
+// User Story: US-INTG-015 —— 不传 topK 时 MCP 缺省值与公开搜索接口同口径收敛
+// 到 [1, MAX_TOP_K]（mcp.rs 共享常量），retrieval 配置越界不再让缺省调用报错。
+// Covers: run_search 缺省 topK clamp；回到「缺省 = 原配置值」时本用例因
+//         isError("topK 必须在 1 到 20 之间") 失败。
+#[tokio::test]
+async fn mcp_search_default_top_k_is_capped_by_limit() {
+    ensure_sqlite_vec_loaded();
+
+    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    rwiki_core::infrastructure::migration::migrations(1536)
+        .to_latest(&mut conn)
+        .expect("apply migrations");
+    conn.execute(
+        "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
+         VALUES (?1, ?2, 'published', ?3, ?4)",
+        rusqlite::params![
+            "doc-mcp-cap",
+            "cap-seed.md",
+            "2026-01-01T00:00:00.000Z",
+            HIT_CHANNEL
+        ],
+    )
+    .expect("seed documents");
+    // 25 independent single-chunk pages with strictly increasing distance to
+    // the query vector e1, so the KNN top-20 is fixed and asserting the cap
+    // is meaningful (the 21st..25th chunks are recallable but must be cut).
+    for i in 0..25 {
+        let theta = i as f64 * 0.01;
+        conn.execute(
+            "INSERT INTO chunk_metadata \
+             (document_id, chunk_id, content, title, page_id, sub_index, chunk_count) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 1)",
+            rusqlite::params![
+                "doc-mcp-cap",
+                format!("cap-sub-{i:02}"),
+                format!("cap content {i:02}"),
+                format!("Cap Page {i:02}"),
+                format!("cap-page-{i:02}")
+            ],
+        )
+        .expect("seed chunk_metadata");
+        let rowid = conn.last_insert_rowid();
+        let mut embedding = vec![0.0f32; 1536];
+        embedding[0] = theta.cos() as f32;
+        embedding[1] = theta.sin() as f32;
+        let mut blob = Vec::with_capacity(1536 * 4);
+        for &v in &embedding {
+            blob.extend_from_slice(&v.to_le_bytes());
+        }
+        conn.execute(
+            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
+            rusqlite::params![rowid, blob],
+        )
+        .expect("seed vec_chunks");
+    }
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    // Embeddings mock returns the unit vector e1 (axis 0) so query embedding
+    // works offline and the KNN order matches the seeded angles.
+    let embed_server = leak_unpooled_mock_server().await;
+    let mut e1 = vec![0.0f64; 1536];
+    e1[0] = 1.0;
+    let embed_body = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": e1, "index": 0}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    })
+    .to_string();
+    let _embed_mock = embed_server
+        .mock("POST", "/embeddings")
+        .with_status(200)
+        .with_body(&embed_body)
+        .expect_at_most(50)
+        .create_async()
+        .await;
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-mcp-cap-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
+    let app_embedding_model =
+        rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
+    let vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            sqlite.clone(),
+            app_embedding_model,
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+
+    // LLM mock for the rewrite stage (same payload as mcp_app_state).
+    let llm_server = leak_unpooled_mock_server().await;
+    let _llm_mock = llm_server
+        .mock("POST", "/chat/completions")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "id": "chatcmpl-mcp-cap",
+                "object": "chat.completion",
+                "created": 1700000000u64,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "{\"queries\": [\"Rust systems programming\"]}"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            })
+            .to_string(),
+        )
+        .expect_at_most(50)
+        .create_async()
+        .await;
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
+
+    // max_context_chunks = 50 (> MAX_TOP_K): an unclamped default would
+    // reject the call with a topK range error.
+    let state = Arc::new(AppState {
+        sqlite,
+        enable_openapi: false,
+        vector_store,
+        chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        llm_client,
+        llm_model: "test-model".to_string(),
+        api_token: MCP_TEST_API_TOKEN.to_string(),
+        api_allowed_ip_ranges: Vec::new(),
+        chat_config: rwiki_core::config::ChatConfig::default(),
+        static_dir: None,
+        allowed_origins: vec![],
+        retrieval_config: rwiki_core::config::RetrievalConfig {
+            max_context_chunks: 50,
+            ..rwiki_core::config::RetrievalConfig::default()
+        },
+        reranker: None,
+        rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config: None,
+        mcp_config: Some(rwiki_core::config::McpConfig::default()),
+        channels_config: mcp_test_channels_config(),
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let app = create_api_routes(state);
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
+
+    let (status, body) = send(
+        app,
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "tools/call",
+            tools_call_params(
+                "rwiki_search",
+                serde_json::json!({"query": "zzzzz-no-match-marker", "channelId": HIT_CHANNEL}),
+            ),
+            2,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "search call must return 200: {body}"
+    );
+    let (is_error, text) = tool_result_text(&parse_rpc_body(&body));
+    assert!(
+        !is_error,
+        "default topK must be clamped instead of rejected on config=50: {body}"
+    );
+    let payload: serde_json::Value = serde_json::from_str(&text).expect("SearchToolResult JSON");
+    let results = payload
+        .get("results")
+        .and_then(|r| r.as_array())
+        .expect("results must be an array");
+    assert!(
+        results.len() <= 20,
+        "default topK is capped at MAX_TOP_K (20), got {}: {text}",
+        results.len()
+    );
+}
+
+// User Story: US-INTG-015 —— 全局空库（尚无任何已索引 chunk）时 MCP 检索返回
+// 空结果而非内部错误，与「无文档与无命中统一返回空列表」的声明一致。
+// Covers: run_search 全局空库短路；去掉短路时检索原语报错 →
+//         isError("知识库服务内部错误")，本用例失败。
+#[tokio::test]
+async fn mcp_search_empty_knowledge_base_returns_empty_results() {
+    let state = mcp_app_state(true, false).await;
+    let app = create_api_routes(state);
+    initialize_first(&app, &entry_path(HIT_CHANNEL)).await;
+
+    let (status, body) = send(
+        app,
+        mcp_jsonrpc_request(
+            &entry_path(HIT_CHANNEL),
+            "tools/call",
+            tools_call_params(
+                "rwiki_search",
+                serde_json::json!({"query": "what is rust", "channelId": HIT_CHANNEL}),
+            ),
+            2,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "search call must return 200: {body}"
+    );
+    let (is_error, text) = tool_result_text(&parse_rpc_body(&body));
+    assert!(
+        !is_error,
+        "globally empty KB must be an empty result, not an internal error: {body}"
+    );
+    let payload: serde_json::Value = serde_json::from_str(&text).expect("SearchToolResult JSON");
+    let results = payload
+        .get("results")
+        .and_then(|r| r.as_array())
+        .expect("results must be an array");
+    assert!(results.is_empty(), "empty KB must return []: {text}");
 }

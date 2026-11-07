@@ -40,8 +40,9 @@ flowchart LR
     N --> R{Rerank 精排}
     R -->|已启用| S[重排结果]
     R -->|未启用或失败| T[原始结果]
-    S --> O[构建 preamble]
-    T --> O
+    S --> U[标题加权与最终排序]
+    T --> U
+    U --> O[构建 preamble]
     O --> P[LLM 流式生成]
     P --> Q[SSE 事件流]
 ```
@@ -89,8 +90,9 @@ flowchart LR
    - **优雅降级**：网络错误、超时、鉴权失败、响应解析失败等任何异常发生时，直接使用 RRF 融合的原始结果，用户无感知，仅记录 warn 级别日志
    - **跳过条件**：未配置 `[rerank]` 段（默认）时不初始化 reranker，整个阶段被跳过，零开销
    - 候选数量由 `top_n` 控制（默认 20），仅将截断后的 top-N 文档内容发送给 rerank API
-7. **上下文组装**：检索结果格式化为结构化 XML，包裹在 `<documents>` 块中。每个结果生成一个 `<document index="N">` 元素，包含 `<title>`、`<section>`、`<link>`、`<locale>`、`<content>` 标签。这给 LLM 提供了清晰的、机器可解析的上下文，支持按编号引用来源
-8. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`。默认系统提示词指示 LLM 使用 `[Source N]` 格式引用来源，其中 N 对应上下文 XML 中的 document index
+7. **最终排序**：融合与 rerank 之后，所在 page 标题包含查询（或其改写）任一关键词的片段获得固定 +0.005 加分；随后按 page 排序——page 之间按页内最高得分排列，同一 page 内保持 `sub_index` 顺序（无论 rerank 是否执行）；对全部检索入口（chat、MCP、eval、`/api/search`）一致生效
+8. **上下文组装**：检索结果格式化为结构化 XML，包裹在 `<documents>` 块中。每个结果生成一个 `<document index="N">` 元素，包含 `<title>`、`<section>`、`<link>`、`<locale>`、`<content>` 标签。这给 LLM 提供了清晰的、机器可解析的上下文，支持按编号引用来源
+9. **流式生成**：通过 SSE 事件推送到前端，事件类型包括 `session`、`chunk`、`done`、`error`。默认系统提示词指示 LLM 使用 `[Source N]` 格式引用来源，其中 N 对应上下文 XML 中的 document index
 
 ### 指标
 

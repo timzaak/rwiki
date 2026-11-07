@@ -1,10 +1,11 @@
 //! Chat handler pure helper function scenario tests.
 //!
-//! Verifies the pub(crate) prompt-building helpers extracted from the
-//! chat handler: `build_rewrite_prompt`, `build_first_turn_rewrite_prompt`,
-//! `build_preamble`, `build_compact_prompt`, and `parse_rewrite_response`.
-//! These are pure functions with no LLM or I/O dependencies, so they are
-//! tested as plain synchronous unit tests.
+//! Verifies the pub(crate) prompt-building helpers of the chat handler:
+//! `build_preamble`, `build_compact_prompt`, `build_post_answer_prompt`, and
+//! `parse_suggested_questions_response`. These are pure functions with no LLM
+//! or I/O dependencies, so they are tested as plain synchronous unit tests.
+//! The rewrite prompt/parse helpers live in `rwiki_core::domain::search` and
+//! are tested there (`core/src/domain/search_scenarios.rs`).
 //!
 //! Also tests `ChatSession::get_sliding_window` and handler-level decision
 //! preconditions relevant to the multi-turn conversation hybrid memory and
@@ -13,19 +14,16 @@
 use rwiki_core::domain::chat::{ChatMessage, ChatSession};
 
 use super::chat::{
-    build_compact_prompt, build_first_turn_rewrite_prompt, build_post_answer_prompt,
-    build_preamble, build_rewrite_prompt, parse_rewrite_response,
+    build_compact_prompt, build_post_answer_prompt, build_preamble,
     parse_suggested_questions_response,
 };
 
-// ---------------------------------------------------------------------------
 // Imports for low-recall bypass-write integration scenarios (US-CORE-038).
 // These tests construct a full AppState (in-memory sqlite + migrations + a
 // seeded chunk_metadata row + a mockito-backed embeddings endpoint) and drive
 // the chat endpoint through the Axum test harness (`create_api_routes` +
 // `oneshot`), mirroring the integration-test idiom established in
 // `rerank_scenarios.rs` / `feedback_scenarios.rs`.
-// ---------------------------------------------------------------------------
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,81 +60,6 @@ const LOW_RECALL_DOC_ID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
 const EMPTY_CHANNEL: &str = "empty_channel";
-
-// ---------------------------------------------------------------------------
-// build_rewrite_prompt scenarios
-// ---------------------------------------------------------------------------
-
-// User Story: As a user engaged in a multi-turn conversation (US-CORE-011),
-// I want my follow-up questions to be rewritten into standalone queries so
-// that the RAG search engine can retrieve relevant context even when my
-// question refers to earlier dialogue.
-// Covers: build_rewrite_prompt includes full history and user message in the
-//         prompt template so the LLM can resolve pronouns and ellipses.
-
-#[test]
-fn rewrite_prompt_includes_history_and_user_message() {
-    let history = vec![
-        ChatMessage {
-            role: "user".into(),
-            content: "What is Rust?".into(),
-            interrupted: false,
-        },
-        ChatMessage {
-            role: "assistant".into(),
-            content: "Rust is a systems programming language.".into(),
-            interrupted: false,
-        },
-    ];
-    let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
-
-    assert!(
-        prompt.contains("user: What is Rust?"),
-        "prompt must include user role entries from history"
-    );
-    assert!(
-        prompt.contains("assistant: Rust is a systems programming language."),
-        "prompt must include assistant role entries from history"
-    );
-    assert!(
-        prompt.contains("当前用户追问: How does it handle memory?"),
-        "prompt must include the current user follow-up question"
-    );
-    assert!(
-        prompt.contains("改写"),
-        "prompt must instruct the LLM to rewrite the query"
-    );
-}
-
-// User Story: As a user starting a new conversation (US-CORE-011), the system
-// should skip rewriting because there is no history to contextualize the query.
-// This test verifies that the rewrite prompt is still structurally valid with
-// empty history, which the handler uses to decide whether rewriting is needed.
-// Covers: build_rewrite_prompt with empty history produces a parseable prompt;
-//         handler can use history emptiness as a precondition to skip LLM call.
-
-#[test]
-fn rewrite_prompt_with_empty_history_produces_query_only_structure() {
-    let history: Vec<ChatMessage> = vec![];
-    let prompt = build_rewrite_prompt(&history, "What is Rust?", None);
-
-    assert!(
-        prompt.contains("当前用户追问: What is Rust?"),
-        "prompt must include the user message even when history is empty"
-    );
-    assert!(
-        prompt.contains("对话历史:\n\n"),
-        "empty history should produce an empty history section, confirming \
-         the handler can detect no prior turns"
-    );
-    // Semantic intent: when history is empty, rewriting is unnecessary because
-    // the query is already standalone. The handler checks history.is_empty()
-    // before calling build_rewrite_prompt, so this test documents the boundary.
-}
-
-// ---------------------------------------------------------------------------
-// build_preamble scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: As a user resuming a conversation (US-CORE-012), I want the
 // assistant to remember previously discussed topics via the summary, so that
@@ -219,10 +142,6 @@ fn preamble_with_empty_rag_context_produces_valid_structure() {
         "preamble must include context header even when rag_context is empty"
     );
 }
-
-// ---------------------------------------------------------------------------
-// build_compact_prompt scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: As a user in a long conversation (US-CORE-012), I want old
 // messages to be compressed into a summary so the LLM context window is not
@@ -314,9 +233,7 @@ fn compact_prompt_with_empty_old_messages_produces_valid_prompt() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Handler decision precondition: sliding window + empty history
-// ---------------------------------------------------------------------------
 
 // User Story: As a user on my first message (US-CORE-011), the system should
 // use the original query directly for RAG search without rewriting. This test
@@ -337,12 +254,9 @@ fn new_session_sliding_window_is_empty_confirming_no_rewrite_needed() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Degradation scenarios: rewrite fallback + compact fallback
-// ---------------------------------------------------------------------------
 //
 // LLM Mocking Strategy
-// ---------------------
 // The handler's degradation logic is inline (not extracted into helper
 // functions), so we cannot test fallback behavior via Approach A (direct
 // helper invocation with error inputs). Approach B (integration test with
@@ -360,85 +274,6 @@ fn new_session_sliding_window_is_empty_confirming_no_rewrite_needed() {
 //
 // This strategy is endorsed by the task item (BE-T03) and the design doc
 // section 5.1 (test strategy rows 5-6).
-
-// User Story: As a user in a multi-turn conversation (US-CORE-011), when the
-// LLM call for query rewriting fails (timeout, network error, etc.), the system
-// must fall back to using my original message for RAG search so I still get
-// relevant results without perceiving an error.
-// Covers: Handler degradation path for rewriting failure.
-//         Verification strategy:
-//         (a) build_rewrite_prompt produces a valid prompt when history is
-//             non-empty (confirmed by tests above).
-//         (b) Code-structure check: the handler wraps the rewrite LLM call in
-//             `match rewrite_agent.prompt(&rewrite_prompt).await { Ok(r) => r, Err(_) => original }`
-//             so any LLM failure falls back to the original user message.
-
-#[test]
-fn query_rewriting_failure_fallback_code_structure_verified() {
-    // This test documents the degradation contract at the code-structure level.
-    //
-    // The handler (chat.rs lines 156-173) implements rewriting fallback as:
-    //
-    //   let search_query = if history.is_empty() {
-    //       req.message.clone()                          // no history, skip rewrite
-    //   } else {
-    //       let rewrite_prompt = build_rewrite_prompt(&history, &req.message);
-    //       match rewrite_agent.prompt(&rewrite_prompt).await {
-    //           Ok(rewritten) => rewritten,               // success: use rewritten query
-    //           Err(e) => {
-    //               tracing::warn!("query rewriting failed: {e}, falling back...");
-    //               req.message.clone()                   // FAILURE: use original query
-    //           }
-    //       }
-    //   };
-    //
-    // Key guarantees verified by code inspection:
-    // 1. When history is empty, the original message is used directly (no LLM call).
-    //    -> Covered by new_session_sliding_window_is_empty_confirming_no_rewrite_needed
-    // 2. When history is non-empty and LLM succeeds, the rewritten query is used.
-    //    -> Covered by rewrite_prompt_includes_history_and_user_message (prompt structure)
-    // 3. When history is non-empty and LLM fails, the original message is used.
-    //    -> This is the degradation path. The match Err arm returns req.message.clone().
-    //       No panic, no error propagated to user. A tracing::warn is emitted.
-    //
-    // Domain-level assertion: build_rewrite_prompt itself is infallible (returns
-    // String, not Result), so the only failure point is the LLM call, and the
-    // match guarantees fallback.
-
-    let history = vec![
-        ChatMessage {
-            role: "user".into(),
-            content: "What is Rust?".into(),
-            interrupted: false,
-        },
-        ChatMessage {
-            role: "assistant".into(),
-            content: "Rust is a systems programming language.".into(),
-            interrupted: false,
-        },
-    ];
-    let original_query = "How does it handle memory?";
-
-    // The prompt builder never fails -- it always produces a String.
-    let prompt = build_rewrite_prompt(&history, original_query, None);
-    assert!(
-        !prompt.is_empty(),
-        "build_rewrite_prompt must always produce a non-empty prompt, \
-         ensuring the only failure point is the LLM call itself"
-    );
-    assert!(
-        prompt.contains(original_query),
-        "the original query must be embedded in the prompt so that even \
-         if the LLM response is unusable, the handler's Err arm can fall \
-         back to the original query"
-    );
-
-    // The handler's fallback: original query is always available because
-    // the match Err arm returns req.message.clone(), which is the same
-    // string we passed to build_rewrite_prompt.
-    // No further domain assertion needed -- the code structure guarantees
-    // the original query is preserved and used on failure.
-}
 
 // User Story: As a user in a long conversation (US-CORE-012), when the LLM
 // call for summary compression fails, the system must preserve all original
@@ -567,477 +402,17 @@ fn compact_history_success_path_trims_and_sets_summary() {
     );
 }
 
-// ===========================================================================
-// Query Rewrite Pipeline scenario tests (US-CORE-019, US-CORE-020, US-CORE-022)
-// ===========================================================================
-//
-// These tests cover the query rewrite feature: first-turn prompt construction,
-// modified multi-turn prompt with JSON constraint, parse_rewrite_response
-// degradation chain, and handler-level rewrite decision logic.
-
-// ---------------------------------------------------------------------------
-// build_first_turn_rewrite_prompt scenarios
-// ---------------------------------------------------------------------------
-
-// User Story: US-CORE-019 -- As a user submitting a short or ambiguous first
-// query, I want it to be expanded into a more specific, searchable form so
-// that relevant documents are found even when my original query is vague.
-// Covers: build_first_turn_rewrite_prompt embeds the user message, instructs
-//         JSON output format, and references the max queries limit so the
-//         LLM returns structured multi-query output.
-
-#[test]
-fn first_turn_rewrite_prompt_includes_user_message_and_json_constraint() {
-    let prompt = build_first_turn_rewrite_prompt("k8s", None);
-
-    assert!(
-        prompt.contains("用户查询: k8s"),
-        "first-turn prompt must embed the user message for LLM context"
-    );
-    assert!(
-        prompt.contains("JSON"),
-        "first-turn prompt must instruct JSON output format"
-    );
-    assert!(
-        prompt.contains("queries"),
-        "first-turn prompt must reference the queries array structure"
-    );
-    // REWRITE_MAX_QUERIES is 2 (private const in chat.rs); verify the value
-    // appears in the prompt text.
-    assert!(
-        prompt.contains("最多生成 2 条查询"),
-        "first-turn prompt must reference the max queries limit (REWRITE_MAX_QUERIES=2)"
-    );
-}
-
-// User Story: US-CORE-019 -- Edge case: the prompt builder must not panic on
-// empty input even though the handler validates message non-emptiness upstream
-// (chat.rs line 204: `if req.message.trim().is_empty()`).
-// Covers: build_first_turn_rewrite_prompt is infallible for any string input,
-//         including empty strings. The function returns a non-empty String with
-//         the JSON format instruction intact.
-
-#[test]
-fn first_turn_rewrite_prompt_with_empty_user_message_produces_valid_structure() {
-    let prompt = build_first_turn_rewrite_prompt("", None);
-
-    assert!(
-        !prompt.is_empty(),
-        "first-turn prompt must produce a non-empty string even for empty input"
-    );
-    assert!(
-        prompt.contains("JSON"),
-        "first-turn prompt must contain JSON format instruction regardless of input"
-    );
-    assert!(
-        prompt.contains("用户查询: "),
-        "first-turn prompt must contain the user query header even with empty body"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Modified build_rewrite_prompt with JSON constraint scenarios
-// ---------------------------------------------------------------------------
-
-// User Story: US-CORE-011 -- As a user in a multi-turn conversation, I want
-// my follow-up questions rewritten into standalone queries with structured
-// JSON output so the system can generate multiple search variants.
-// Covers: The modified multi-turn rewrite prompt now appends a JSON output
-//         format constraint so the LLM returns structured output for multi-query
-//         generation, while still containing history content and user message.
-
-#[test]
-fn rewrite_prompt_includes_json_output_format_constraint() {
-    let history = vec![
-        ChatMessage {
-            role: "user".into(),
-            content: "What is Kubernetes?".into(),
-            interrupted: false,
-        },
-        ChatMessage {
-            role: "assistant".into(),
-            content: "Kubernetes is a container orchestration platform.".into(),
-            interrupted: false,
-        },
-    ];
-    let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
-
-    assert!(
-        prompt.contains("JSON"),
-        "modified rewrite prompt must include JSON format constraint"
-    );
-    assert!(
-        prompt.contains("queries"),
-        "modified rewrite prompt must reference the queries array structure"
-    );
-    assert!(
-        prompt.contains("How does it handle memory?"),
-        "modified rewrite prompt must still include the user message"
-    );
-}
-
-// User Story: US-CORE-011 (regression) -- The JSON constraint must not break
-// the core purpose of multi-turn rewrite: resolving pronouns and ellipses
-// using conversation history.
-// Covers: Modified build_rewrite_prompt retains full history context for
-//         coreference resolution. Both history entries and the user message
-//         must be present alongside the JSON format instruction.
-
-#[test]
-fn rewrite_prompt_retains_history_context_for_coreference_resolution() {
-    let history = vec![
-        ChatMessage {
-            role: "user".into(),
-            content: "What is Rust?".into(),
-            interrupted: false,
-        },
-        ChatMessage {
-            role: "assistant".into(),
-            content: "Rust is a systems programming language.".into(),
-            interrupted: false,
-        },
-    ];
-    let prompt = build_rewrite_prompt(&history, "it", None);
-
-    // Verify history is preserved for pronoun resolution
-    assert!(
-        prompt.contains("user: What is Rust?"),
-        "prompt must include user history for coreference resolution"
-    );
-    assert!(
-        prompt.contains("assistant: Rust is a systems programming language."),
-        "prompt must include assistant history for context"
-    );
-    // Verify user message is present
-    assert!(
-        prompt.contains("当前用户追问: it"),
-        "prompt must include the current ambiguous user message"
-    );
-    // Verify JSON constraint is still appended
-    assert!(
-        prompt.contains("JSON"),
-        "prompt must include JSON format instruction alongside history"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// parse_rewrite_response degradation chain scenarios
-// ---------------------------------------------------------------------------
-
-// User Story: US-CORE-019 -- Normal case: LLM returns valid JSON with queries
-// array, and the parser extracts the queries correctly.
-// Covers: parse_rewrite_response correctly parses a well-formed JSON response
-//         with a "queries" array containing multiple query strings.
-
-#[test]
-fn parse_rewrite_valid_json_array_parsed_correctly() {
-    let raw = r#"{"queries": ["How to deploy Kubernetes", "Kubernetes deployment guide"]}"#;
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result,
-        vec!["How to deploy Kubernetes", "Kubernetes deployment guide"],
-        "valid JSON with queries array must be parsed into exact query list"
-    );
-}
-
-// User Story: US-CORE-019 -- LLM wraps JSON in a markdown code fence with
-// language tag. The parser must strip the fence and parse the inner JSON.
-// Covers: parse_rewrite_response strips ```json ... ``` fences before parsing.
-
-#[test]
-fn parse_rewrite_json_with_markdown_fence_stripped() {
-    let raw = "```json\n{\"queries\": [\"query1\"]}\n```";
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result,
-        vec!["query1"],
-        "JSON wrapped in ```json fence must be stripped and parsed correctly"
-    );
-}
-
-// User Story: US-CORE-019 -- LLM wraps JSON in a plain code fence without
-// language tag. The parser must strip the fence and parse the inner JSON.
-// Covers: parse_rewrite_response strips ``` ... ``` fences (no language tag).
-
-#[test]
-fn parse_rewrite_json_with_plain_fence_stripped() {
-    let raw = "```\n{\"queries\": [\"query1\"]}\n```";
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result,
-        vec!["query1"],
-        "JSON wrapped in plain ``` fence must be stripped and parsed correctly"
-    );
-}
-
-// User Story: US-CORE-022 -- LLM returns valid JSON but with an empty queries
-// array. The system must fall back gracefully so the user still gets results.
-// Covers: parse_rewrite_response degrades to raw trimmed output as single query
-//         when the queries array is empty.
-
-#[test]
-fn parse_rewrite_empty_queries_array_degrades_to_raw_output() {
-    let raw = "{\"queries\": []}";
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result.len(),
-        1,
-        "empty queries array must degrade to single raw output"
-    );
-    assert_eq!(
-        result[0], raw,
-        "degraded output must be the trimmed raw input"
-    );
-}
-
-// User Story: US-CORE-022 -- LLM returns valid JSON but with wrong schema
-// (no "queries" key). The system must fall back gracefully.
-// Covers: parse_rewrite_response degrades to raw trimmed output as single query
-//         when the JSON object lacks the "queries" field.
-
-#[test]
-fn parse_rewrite_missing_queries_field_degrades_to_raw_output() {
-    let raw = "{\"result\": \"something\"}";
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result.len(),
-        1,
-        "missing queries field must degrade to single raw output"
-    );
-    assert_eq!(
-        result[0], raw,
-        "degraded output must be the trimmed raw input"
-    );
-}
-
-// User Story: US-CORE-022 -- LLM ignores the JSON instruction entirely and
-// returns plain text. The system must still function by using the text as-is.
-// Covers: parse_rewrite_response degrades to the entire plain text output
-//         as a single query when JSON parsing fails.
-
-#[test]
-fn parse_rewrite_pure_text_degrades_to_single_query() {
-    let raw = "This is not JSON at all";
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result,
-        vec!["This is not JSON at all"],
-        "plain text must degrade to single query equal to trimmed raw input"
-    );
-}
-
-// User Story: US-CORE-019 -- LLM generates more queries than allowed by the
-// REWRITE_MAX_QUERIES constant (2). The parser must truncate to prevent
-// excessive downstream search calls.
-// Covers: parse_rewrite_response truncates to at most REWRITE_MAX_QUERIES (2)
-//         entries, keeping the first ones.
-
-#[test]
-fn parse_rewrite_truncates_queries_exceeding_max() {
-    let raw = r#"{"queries": ["q1", "q2", "q3", "q4"]}"#;
-    let result = parse_rewrite_response(raw);
-
-    // REWRITE_MAX_QUERIES = 2 (defined in chat.rs)
-    assert_eq!(
-        result.len(),
-        2,
-        "queries exceeding REWRITE_MAX_QUERIES (2) must be truncated"
-    );
-    assert_eq!(
-        result[0], "q1",
-        "first query must be preserved after truncation"
-    );
-    assert_eq!(
-        result[1], "q2",
-        "second query must be preserved after truncation"
-    );
-}
-
-// User Story: US-CORE-022 -- LLM returns queries with empty or whitespace-only
-// strings. These are useless for search and must be filtered out.
-// Covers: parse_rewrite_response filters out empty and whitespace-only query
-//         strings, keeping only meaningful non-empty entries.
-
-#[test]
-fn parse_rewrite_filters_empty_strings_from_queries() {
-    let raw = r#"{"queries": ["valid query", "", "  ", "another"]}"#;
-    let result = parse_rewrite_response(raw);
-
-    assert_eq!(
-        result,
-        vec!["valid query", "another"],
-        "empty and whitespace-only query strings must be filtered out"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Handler-level code-structure tests for rewrite decision paths
-// ---------------------------------------------------------------------------
-
-// User Story: US-CORE-019 -- As a user submitting a first-turn query (no
-// history), the handler must rewrite my query instead of skipping. Design doc
-// 5.5: the handler no longer has an `if history.is_empty()` skip branch.
-// First-turn queries now go through build_first_turn_rewrite_prompt.
-// Covers: build_first_turn_rewrite_prompt is infallible and always produces
-//         a valid prompt, confirming the handler can unconditionally call it
-//         on first turn without any skip logic.
-
-#[test]
-fn first_turn_rewrite_triggers_code_structure_verified() {
-    // Simulate the handler's first-turn path: history is empty, so the
-    // handler calls build_first_turn_rewrite_prompt instead of skipping.
-    let user_message = "k8s";
-    let history: Vec<ChatMessage> = vec![];
-
-    // The handler code (chat.rs lines 232-238) does:
-    //   let (rewrite_preamble, rewrite_prompt) = if history.is_empty() {
-    //       ("...", build_first_turn_rewrite_prompt(&req.message))
-    //   } else { ... };
-    //
-    // Key guarantee: build_first_turn_rewrite_prompt is infallible (returns
-    // String, not Result), so the handler can always call it without guards.
-    let prompt = build_first_turn_rewrite_prompt(user_message, None);
-
-    assert!(
-        !prompt.is_empty(),
-        "build_first_turn_rewrite_prompt must always produce a non-empty prompt, \
-         confirming the handler can unconditionally call it on first turn"
-    );
-    assert!(
-        prompt.contains(user_message),
-        "prompt must contain the original user message so the rewrite LLM can \
-         expand it into a more specific query"
-    );
-
-    // Domain guarantee verified: history is empty, handler enters the first-turn
-    // branch, and build_first_turn_rewrite_prompt produces a valid prompt.
-    assert!(
-        history.is_empty(),
-        "empty history confirms handler takes the first-turn rewrite branch"
-    );
-}
-
-// User Story: US-CORE-022 -- When the rewrite LLM call fails (timeout, network
-// error, etc.), the handler falls back to vec![req.message.clone()]. This test
-// verifies that the original query is always recoverable from the prompt.
-// Covers: build_first_turn_rewrite_prompt embeds the original query in its
-//         output, so the handler's Err/Timeout match arms can always fall back
-//         to the original message. The code structure (chat.rs lines 247-264)
-//         guarantees: Ok(Err(e)) => vec![req.message.clone()],
-//         Err(_) => vec![req.message.clone()].
-
-#[test]
-fn rewrite_llm_failure_fallback_preserves_original_query_code_structure() {
-    let user_message = "deploy";
-
-    // The prompt builder embeds the original query.
-    let prompt = build_first_turn_rewrite_prompt(user_message, None);
-
-    assert!(
-        prompt.contains(user_message),
-        "first-turn prompt must contain the original query ('deploy'), \
-         confirming the handler's Err/Timeout arms can fall back to req.message.clone()"
-    );
-
-    // The handler's fallback guarantees (code structure, chat.rs lines 253-264):
-    //   Ok(Ok(raw_response)) => parse_rewrite_response(&raw_response),
-    //   Ok(Err(e)) => {
-    //       tracing::warn!("query rewriting failed: {e}, falling back to original query");
-    //       vec![req.message.clone()]          // <-- original query preserved
-    //   }
-    //   Err(_) => {
-    //       tracing::warn!("query rewriting timed out, falling back to original query");
-    //       vec![req.message.clone()]          // <-- original query preserved
-    //   }
-    //
-    // The handler always has access to req.message (the original user input)
-    // regardless of the rewrite outcome. No domain assertion needed beyond
-    // confirming the prompt builder is infallible.
-    assert!(
-        !prompt.is_empty(),
-        "build_first_turn_rewrite_prompt is infallible -- the only failure \
-         point is the LLM call, and the handler's match arms guarantee fallback"
-    );
-}
-
-// User Story: US-CORE-022 -- When all rewrite queries return empty search
-// results, the handler falls back to search_with_expansion(&req.message, ...).
-// The original message must be preserved throughout the rewrite pipeline.
-// Covers: The code structure (chat.rs lines 283-285) checks
-//         `if results.is_empty()` after search_multi_query and retries with
-//         the original message. parse_rewrite_response is infallible for any
-//         input, ensuring the pipeline never loses the original query.
-
-#[test]
-fn multi_query_all_empty_result_triggers_fallback_code_structure() {
-    // The handler code (chat.rs lines 267-295):
-    //   let search_results = if search_queries.len() == 1 {
-    //       state.vector_store.search_with_expansion(&search_queries[0], ...)
-    //   } else {
-    //       let results = state.vector_store.search_multi_query(&search_queries, ..., RRF_K).await?;
-    //       if results.is_empty() {
-    //           tracing::warn!("all rewrite queries returned empty, falling back");
-    //           state.vector_store.search_with_expansion(&req.message, ...)  // <-- fallback
-    //       } else {
-    //           results
-    //       }
-    //   };
-    //
-    // Key contract: req.message is preserved throughout the pipeline.
-    // parse_rewrite_response never fails -- it always returns at least
-    // one query (the raw trimmed output as fallback).
-
-    // Verify parse_rewrite_response is infallible for any input:
-    let cases = vec![
-        "plain text",
-        "{}",
-        "[]",
-        "{\"queries\": []}",
-        "```invalid",
-        "{\"queries\": [\"  \"]}",
-    ];
-
-    for input in cases {
-        let result = parse_rewrite_response(input);
-        assert!(
-            !result.is_empty(),
-            "parse_rewrite_response must never return empty Vec -- got empty for input: {:?}",
-            input
-        );
-        for query in &result {
-            assert!(
-                !query.is_empty(),
-                "parse_rewrite_response must never return empty strings -- got empty query for input: {:?}",
-                input
-            );
-        }
-    }
-
-    // Domain guarantee: the handler always has req.message available for the
-    // fallback path. parse_rewrite_response is infallible, so search_queries
-    // is always non-empty. If search_multi_query returns empty results, the
-    // handler retries with req.message (the original user input).
-}
-
-// ===========================================================================
 // Post-answer suggestions SSE ordering + degradation scenarios (US-CORE-037)
-// ===========================================================================
 //
-// LLM Mocking Strategy (carries over from the block above, lines 289-311):
+// LLM Mocking Strategy (carries over from the block above):
 // The handler's `chat_inner` closure emits the `suggestions` SSE event inline
 // inside the `FinalResponse` match arm, immediately before `done`. The LLM
 // client is the concrete `rig::providers::openai::OpenAI` struct
 // (not a trait), and integration tests against `localhost:0` are unreliable
 // for post-hoc assertions because the handler returns SSE before the inner
 // `tokio::spawn` task completes. Therefore, per the repo's established
-// convention (see `query_rewriting_failure_fallback_code_structure_verified`
-// and `compact_failure_preserves_all_messages_domain_level` above), the
+// convention (see `compact_failure_preserves_all_messages_domain_level`
+// above), the
 // ordering/degradation contracts for the post-answer `suggestions` event are
 // verified via code-structure + pure-fn anchors. No mock-LLM harness is
 // introduced.
@@ -1264,7 +639,7 @@ fn post_answer_suggestions_never_emitted_on_main_answer_error_code_structure() {
     //     arm could run, and the suggestions code is not present in the Err arm.
     //
     // This mirrors the established code-structure idiom
-    // (`query_rewriting_failure_fallback_code_structure_verified`):
+    // (see `compact_failure_preserves_all_messages_domain_level`):
     // there is no mock-LLM harness, so the suggestion-free Err arm is verified
     // by documenting the handler structure rather than by executing it.
 
@@ -1348,12 +723,10 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
     );
 }
 
-// ===========================================================================
 // Low-recall bypass-write trigger scenario tests (US-CORE-038)
-// ===========================================================================
 //
-// These scenarios cover the detached `tokio::spawn` bypass-write block that
-// BE-D04 added to `chat_inner` (chat.rs ~845-897):
+// These scenarios cover the detached `tokio::spawn` bypass-write block in
+// `chat_inner`:
 //
 //   - gated on `RetrievalScope::Published` (public `/api/chat` only, NOT scoped)
 //   - gated on `state.low_recall_config.is_some()`
@@ -1367,10 +740,6 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
 // bypass write. The detached `tokio::spawn` is async, so before asserting on
 // `low_recall_records` row counts the tests `tokio::time::sleep` briefly to
 // yield and let the spawn complete (BE-T02 spec).
-
-// ---------------------------------------------------------------------------
-// Test helpers (low-recall integration scenarios)
-// ---------------------------------------------------------------------------
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -1652,9 +1021,7 @@ fn low_recall_scoped_chat_request(
         .expect("build request")
 }
 
-// ---------------------------------------------------------------------------
 // Scenario 1: low_recall enabled + low score (or zero-result) → records row
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-038 -- As an operator, I want every public `/api/chat`
 // query whose top-1 retrieved relevance is below the configured threshold to
@@ -1717,9 +1084,7 @@ async fn low_recall_enabled_logs_low_score_record() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Scenario 2: low_recall disabled (None) → no records
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-038 (scenario 5) -- As an operator who has NOT
 // configured `[low_recall]`, I expect the feature to be completely inert:
@@ -1759,9 +1124,7 @@ async fn low_recall_disabled_does_not_record() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Scenario 3: zero-result query → row with top_score IS NULL
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-038 -- As an operator, the most important blind-spot
 // signal is a query that retrieves NOTHING ("完全未命中"). These must always
@@ -1816,9 +1179,7 @@ async fn low_recall_logs_zero_result_with_null_top_score() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Scenario 4: scoped chat (Collection scope) → no records
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-038 (operator-data-hygiene boundary) -- Scoped chat
 // (`/api/chat/scoped`) is an evaluation tool for draft batches; its "low
@@ -1864,9 +1225,7 @@ async fn low_recall_skips_scoped_chat() {
     );
 }
 
-// ===========================================================================
 // Multi-channel public chat scenario tests (BE-T03)
-// ===========================================================================
 //
 // Covers the channel-scoped behavior introduced by `support-multiple-website`:
 // configured-channel validation, channel-scoped retrieval, channel-level prompt
@@ -2081,10 +1440,6 @@ fn channel_chat_request(message: &str, session_id: &str, channel_id: &str) -> Re
         .expect("build request")
 }
 
-// ---------------------------------------------------------------------------
-// Configured-channel validation scenarios
-// ---------------------------------------------------------------------------
-
 // User Story: support-multiple-website — Widget and main-channel chat must declare
 // a `channelId`. A request without one is rejected before any retrieval or LLM
 // work is performed.
@@ -2203,10 +1558,6 @@ async fn chat_valid_channel_id_succeeds_when_published_docs_exist() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Multi-channel scenarios
-// ---------------------------------------------------------------------------
-
 /// Build a public `/api/chat` POST request carrying multiple channelIds.
 fn multi_channel_chat_request(
     message: &str,
@@ -2298,10 +1649,6 @@ async fn chat_with_empty_channel_id_array_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Channel-scoped retrieval scenario
-// ---------------------------------------------------------------------------
-
 // User Story: support-multiple-website — Retrieval must only consider documents
 // that belong to the requested channel and are published.
 // Covers: `RetrievalScope::Channel` applied through `search_hybrid` filters out
@@ -2337,10 +1684,6 @@ async fn channel_scoped_retrieval_returns_only_that_channels_published_documents
         results.iter().map(|r| &r.document_id).collect::<Vec<_>>()
     );
 }
-
-// ---------------------------------------------------------------------------
-// Channel-level system prompt scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — A channel may override the global system
 // prompt; channels without an override must continue to use the global prompt.
@@ -2392,10 +1735,6 @@ fn channel_specific_system_prompt_overrides_global_and_unconfigured_channel_fall
         "preamble must start with the resolved channel-specific prompt"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Session isolation scenario
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — The same `sessionId` used in two
 // different channels must not share conversation history, otherwise context from
@@ -2456,10 +1795,6 @@ async fn cross_channel_session_lookup_does_not_share_history() {
         "CHANNEL_A session history must be preserved"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Low-recall write attribution scenario
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — When a channel-scoped chat query triggers
 // the low-recall bypass, the written record must carry the current `channelId` so
@@ -2671,19 +2006,9 @@ fn interrupted_flag_participates_uniformly_and_never_leaks_into_prompts() {
     normal_history[1].interrupted = false;
 
     assert_eq!(
-        build_rewrite_prompt(&interrupted_history, "那个月的产品明细呢", None),
-        build_rewrite_prompt(&normal_history, "那个月的产品明细呢", None),
-        "rewrite prompt must not depend on the interrupted flag"
-    );
-    assert_eq!(
         build_compact_prompt(Some("旧摘要"), &interrupted_history),
         build_compact_prompt(Some("旧摘要"), &normal_history),
         "compact prompt must not depend on the interrupted flag"
-    );
-    assert!(
-        build_rewrite_prompt(&interrupted_history, "那个月的产品明细呢", None)
-            .contains("3 月销售额为"),
-        "interrupted partial answer must still feed rewrite context for follow-up resolution"
     );
 
     let mut session = ChatSession::new("chat-interrupt-window".to_string());
@@ -2693,5 +2018,237 @@ fn interrupted_flag_participates_uniformly_and_never_leaks_into_prompts() {
         session.get_sliding_window(6).len(),
         2,
         "interrupted rounds must stay inside the sliding window"
+    );
+}
+
+/// AppState for the page-ranking low-recall scenario: design-vector seeds
+/// (page-a = a-sub0 at e2, page-b = b-sub0 at mid + b-sub1 at e1) with the
+/// embeddings mock returning e1, and the LLM pointed at an unreachable
+/// address so the rewrite degrades to the original query.
+async fn build_low_recall_app_state_with_design_vector_seeds(
+    low_recall_config: Option<LowRecallConfig>,
+) -> Arc<AppState> {
+    low_recall_ensure_sqlite_vec_loaded();
+
+    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    rwiki_core::infrastructure::migration::migrations(1536)
+        .to_latest(&mut conn)
+        .expect("apply migrations");
+
+    let created_at = "2026-01-01T00:00:00.000Z";
+    let seed_doc = |conn: &mut rusqlite::Connection, doc_id: &str, file_name: &str| {
+        conn.execute(
+            "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
+             VALUES (?1, ?2, 'published', ?3, ?4)",
+            rusqlite::params![doc_id, file_name, created_at, LOW_RECALL_CHANNEL_ID],
+        )
+        .expect("seed documents");
+    };
+    seed_doc(&mut conn, "doc-rank-a", "rank-a.md");
+    seed_doc(&mut conn, "doc-rank-b", "rank-b.md");
+
+    // KNN order against the mocked query vector e1 is fixed:
+    // b-sub1 (e1, rank 0) > b-sub0 (mid, rank 1) > a-sub0 (e2, rank 2).
+    // Titles share no lexical tokens with the test message, so the title
+    // bonus never fires and scores stay the raw RRF fusion scores.
+    let seed_chunk = |conn: &mut rusqlite::Connection,
+                      doc_id: &str,
+                      chunk_id: &str,
+                      page_id: &str,
+                      sub_index: i64,
+                      chunk_count: i64,
+                      title: &str,
+                      embedding: Vec<f32>| {
+        conn.execute(
+            "INSERT INTO chunk_metadata \
+             (document_id, chunk_id, content, title, page_id, sub_index, chunk_count) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                doc_id,
+                chunk_id,
+                format!("rank content {chunk_id}"),
+                title,
+                page_id,
+                sub_index,
+                chunk_count
+            ],
+        )
+        .expect("seed chunk_metadata");
+        let rowid = conn.last_insert_rowid();
+        let mut blob = Vec::with_capacity(1536 * 4);
+        for &v in &embedding {
+            blob.extend_from_slice(&v.to_le_bytes());
+        }
+        conn.execute(
+            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
+            rusqlite::params![rowid, blob],
+        )
+        .expect("seed vec_chunks");
+    };
+    let unit = |a: f64, b: f64| {
+        let mut v = vec![0.0f32; 1536];
+        v[0] = a as f32;
+        v[1] = b as f32;
+        v
+    };
+    let mid = 1.0f64 / 2.0f64.sqrt();
+    seed_chunk(
+        &mut conn,
+        "doc-rank-a",
+        "rank-a-sub0",
+        "rank-page-a",
+        0,
+        1,
+        "Alpha Page",
+        unit(0.0, 1.0),
+    );
+    seed_chunk(
+        &mut conn,
+        "doc-rank-b",
+        "rank-b-sub0",
+        "rank-page-b",
+        0,
+        2,
+        "Beta Page",
+        unit(mid, mid),
+    );
+    seed_chunk(
+        &mut conn,
+        "doc-rank-b",
+        "rank-b-sub1",
+        "rank-page-b",
+        1,
+        2,
+        "Beta Page",
+        unit(1.0, 0.0),
+    );
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+
+    let mut channels = HashMap::new();
+    channels.insert(
+        LOW_RECALL_CHANNEL_ID.to_string(),
+        ChannelConfig {
+            name: "Help Center".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+        },
+    );
+    let channels_config = ChannelsConfig { channels };
+
+    // Embeddings mock returns e1 so the KNN order matches the seed design.
+    let embed_server = leak_unpooled_mock_server().await;
+    let mut e1 = vec![0.0f64; 1536];
+    e1[0] = 1.0;
+    let embed_body = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": e1, "index": 0}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    })
+    .to_string();
+    let _embed_mock = embed_server
+        .mock("POST", "/embeddings")
+        .with_status(200)
+        .with_body(&embed_body)
+        .expect_at_most(20)
+        .create_async()
+        .await;
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-rank-low-recall-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
+    let app_embedding_model =
+        rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
+    let vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            sqlite.clone(),
+            app_embedding_model,
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+
+    // Unreachable LLM (same precedent as the zero-result low-recall tests):
+    // the rewrite call fails fast and degrades to the original query, so the
+    // single-query hybrid path runs on the marker message.
+    let llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
+
+    Arc::new(AppState {
+        sqlite,
+        enable_openapi: false,
+        vector_store,
+        chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        llm_client,
+        llm_model: "test-model".to_string(),
+        api_token: LOW_RECALL_TEST_API_TOKEN.to_string(),
+        api_allowed_ip_ranges: Vec::new(),
+        chat_config: ChatConfig::default(),
+        static_dir: None,
+        allowed_origins: vec![],
+        retrieval_config: rwiki_core::config::RetrievalConfig::default(),
+        reranker: None,
+        rerank_config: rwiki_core::config::RerankConfig::default(),
+        low_recall_config,
+        mcp_config: None,
+        channels_config,
+        metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
+        session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })
+}
+
+// User Story: US-CORE-038 —— low-recall 的 top_score 语义是「top-1 相关度」；
+// 最终排序按 page 粒度后列表首条（b-sub0）不再是最高分，top_score 必须取
+// 结果中的最高分（b-sub1 = 1/61），否则 rerank 未启用时会把 top_score 拉低
+// 到页内首条的 1/62、误记低召回。
+// Covers: page 级排序下 .first() 的取值缺陷；仍用 .first() 时本用例失败。
+#[tokio::test]
+async fn low_recall_top_score_is_max_score_under_page_ranking() {
+    let state = build_low_recall_app_state_with_design_vector_seeds(Some(LowRecallConfig {
+        threshold: 0.3,
+    }))
+    .await;
+    let app = create_api_routes(state.clone());
+
+    let before = count_low_recall_records(&state).await;
+
+    // Message shares no lexical tokens with the seeded titles ("Alpha Page" /
+    // "Beta Page"), so no title bonus interferes with the raw fusion scores.
+    let marker = "zzzzz-top-score-probe-marker";
+    let req = low_recall_chat_request(marker, "session-top-score-page-ranking");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert!(
+        resp.status().is_success(),
+        "chat must succeed while the low-recall bypass fires, got {}",
+        resp.status()
+    );
+
+    // The bypass write is a detached spawn; poll until the row lands.
+    let mut landed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        if count_low_recall_records(&state).await > before {
+            landed = true;
+            break;
+        }
+    }
+    assert!(landed, "the below-threshold top_score must record a row");
+
+    let top_score = read_top_score(&state, marker)
+        .await
+        .expect("row must exist")
+        .expect("top_score must be non-null for a non-empty result set");
+
+    // Vector-only RRF (k=60, rank 0-based): b-sub1 (rank 0) = 1/61 is the
+    // maximum; the page-ordered first row is b-sub0 (rank 1) = 1/62.
+    let expected_max = 1.0f64 / 61.0;
+    let page_first = 1.0f64 / 62.0;
+    assert!(
+        (top_score - expected_max).abs() < 1e-9,
+        "top_score must be the max fusion score 1/61 (b-sub1), got {top_score}"
+    );
+    assert!(
+        (top_score - page_first).abs() > 1e-9,
+        "top_score must NOT be the page-ordered first chunk's 1/62 (b-sub0)"
     );
 }

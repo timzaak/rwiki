@@ -20,25 +20,17 @@ use super::low_recall::LowRecallSource;
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
 use rwiki_core::domain::chat::{evict_expired_sessions, ChatMessage};
-use rwiki_core::infrastructure::metrics::RwikiMetrics;
-use rwiki_core::infrastructure::vector_store::{SearchResult, VectorStoreManager};
+use rwiki_core::domain::search::{
+    max_relevance_score, rewrite_query, search_and_rerank, strip_markdown_fences,
+};
+use rwiki_core::infrastructure::vector_store::SearchResult;
 
-/// Rewrite LLM call timeout (ms)
-const REWRITE_TIMEOUT_MS: u64 = 8000;
-/// Max number of query variants from rewrite
-const REWRITE_MAX_QUERIES: usize = 2;
-/// RRF fusion parameter k
-const RRF_K: u64 = 60;
 /// Post-answer suggestion LLM call timeout (ms)
 const POST_ANSWER_TIMEOUT_MS: u64 = 8000;
 /// Post-answer suggestion LLM call max output tokens
 const POST_ANSWER_MAX_TOKENS: usize = 200;
 /// Maximum number of post-answer suggested questions to emit
 const POST_ANSWER_MAX_QUESTIONS: usize = 3;
-
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
 
 /// Public chat request body: restricts retrieval to the given channelId(s),
 /// hitting only published documents of the specified channels.
@@ -156,10 +148,6 @@ struct SuggestionsEvent {
 struct ContentEndEvent {
     content_end: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Suggestions
-// ---------------------------------------------------------------------------
 
 /// Maximum number of suggested questions to return.
 const MAX_SUGGESTIONS: usize = 10;
@@ -306,10 +294,6 @@ pub async fn suggestions(
     Ok(Json(SuggestionsResponse { questions }))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// 构建系统提示词，拼接角色/规则模板、可选摘要与 RAG 上下文。
 /// 摘要（如有）插入在 system_prompt 与 RAG 上下文之间。
 pub(crate) fn build_preamble(
@@ -323,37 +307,6 @@ pub(crate) fn build_preamble(
     }
     parts.push(format!("\nContext:\n{rag_context}"));
     parts.join("\n")
-}
-
-/// 构建查询改写提示词。将对话历史与用户当前追问拼接，
-/// 引导 LLM 将追问改写为独立的、自包含的查询。
-pub(crate) fn build_rewrite_prompt(
-    history: &[ChatMessage],
-    user_message: &str,
-    content_language: Option<&str>,
-) -> String {
-    let history_text = history
-        .iter()
-        .map(|msg| format!("{}: {}", msg.role, msg.content))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut prompt = format!(
-        "对话历史:\n{history_text}\n\n当前用户追问: {user_message}\n\n\
-         请将用户的追问改写为一个独立的、自包含的查询。\n"
-    );
-    if let Some(lang) = content_language {
-        if !lang.is_empty() {
-            prompt.push_str(&format!(
-                "知识库文档主要使用 {lang} 语言。请将查询改写为 {lang}，以确保检索能命中相关文档。\n"
-            ));
-        }
-    }
-    prompt.push_str(&format!(
-        "输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
-         最多生成 {REWRITE_MAX_QUERIES} 条查询变体。如果只有一个查询，也用数组包裹。\n\
-         只输出 JSON，不要输出其他内容。"
-    ));
-    prompt
 }
 
 /// 构建摘要压缩提示词。将已有的摘要（如有）与待压缩的旧消息拼接，
@@ -373,83 +326,6 @@ pub(crate) fn build_compact_prompt(
         .join("\n");
     parts.push(format!("待压缩的对话历史:\n{messages_text}"));
     parts.join("\n\n")
-}
-
-/// Build the first-turn rewrite prompt. Extends short/ambiguous queries
-/// into more specific, searchable forms with JSON output constraint.
-pub(crate) fn build_first_turn_rewrite_prompt(
-    user_message: &str,
-    content_language: Option<&str>,
-) -> String {
-    let mut prompt = format!(
-        "用户查询: {user_message}\n\n\
-         请将这个查询改写为更具体、更可检索的形式。\n\
-         如果查询使用了非正式术语或缩写，替换为对应的正式术语。\n\
-         如果查询包含多个独立的子问题，将每个子问题分别列出。\n"
-    );
-    if let Some(lang) = content_language {
-        if !lang.is_empty() {
-            prompt.push_str(&format!(
-                "知识库文档主要使用 {lang} 语言。请将查询改写为 {lang}，以确保检索能命中相关文档。\n"
-            ));
-        }
-    }
-    prompt.push_str(&format!(
-        "输出严格的 JSON 格式：{{\"queries\": [\"改写1\", \"改写2\"]}}\n\
-         最多生成 {REWRITE_MAX_QUERIES} 条查询。如果只有一个查询，也用数组包裹。\n\
-         只输出 JSON，不要输出其他内容。"
-    ));
-    prompt
-}
-
-/// Strip optional ```json ... ``` or ``` ... ``` fences from a raw LLM response.
-fn strip_markdown_fences(raw: &str) -> &str {
-    let trimmed = raw.trim();
-    if trimmed.starts_with("```json") {
-        trimmed
-            .strip_prefix("```json")
-            .unwrap_or(trimmed)
-            .strip_suffix("```")
-            .unwrap_or(trimmed)
-            .trim()
-    } else if trimmed.starts_with("```") {
-        trimmed
-            .strip_prefix("```")
-            .unwrap_or(trimmed)
-            .strip_suffix("```")
-            .unwrap_or(trimmed)
-            .trim()
-    } else {
-        trimmed
-    }
-}
-
-/// Parse the LLM rewrite response into a list of queries.
-/// Three-level degradation:
-///   1. Parse JSON {"queries": [...]} (with optional ```json fence stripping)
-///   2. If JSON parse fails, use raw trimmed output as single query
-///   3. Caller handles LLM failure by providing original query
-pub(crate) fn parse_rewrite_response(raw: &str) -> Vec<String> {
-    let json_str = strip_markdown_fences(raw);
-
-    // 2. Try parsing JSON
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let Some(arr) = val.get("queries").and_then(|v| v.as_array()) {
-            let queries: Vec<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                .filter(|s| !s.is_empty())
-                .take(REWRITE_MAX_QUERIES)
-                .collect();
-            if !queries.is_empty() {
-                return queries;
-            }
-        }
-    }
-
-    // 3. Fallback: use entire output as single query
-    tracing::debug!("rewrite response is not valid JSON, using raw output as single query");
-    vec![raw.trim().to_string()]
 }
 
 /// Build the prompt for post-answer suggested questions generation.
@@ -507,95 +383,6 @@ fn preview_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Shared RAG pipeline functions (reused by eval handler)
-// ---------------------------------------------------------------------------
-
-/// Execute query rewrite, returning a list of rewritten queries.
-/// Falls back to `original_query` on timeout or LLM error.
-pub(crate) async fn rewrite_query(
-    llm_client: &rig::providers::openai::OpenAI,
-    llm_model: &str,
-    message: &str,
-    history: &[ChatMessage],
-    content_language: Option<&str>,
-    metrics: &RwikiMetrics,
-) -> Vec<String> {
-    let rewrite_start = Instant::now();
-    let is_first_turn = history.is_empty();
-    let (rewrite_preamble, rewrite_prompt) = if history.is_empty() {
-        (
-            "You are a query rewriting assistant. Expand short or vague queries into more specific, retrievable forms.",
-            build_first_turn_rewrite_prompt(message, content_language),
-        )
-    } else {
-        ("You are a query rewriting assistant. Based on conversation history, rewrite the user's follow-up into a standalone, self-contained query.",
-         build_rewrite_prompt(history, message, content_language))
-    };
-
-    let rewrite_agent = rig::AgentBuilder::new(llm_client.chat(llm_model))
-        .preamble(rewrite_preamble)
-        .max_tokens(200)
-        .build();
-
-    let queries = match tokio::time::timeout(
-        Duration::from_millis(REWRITE_TIMEOUT_MS),
-        rewrite_agent.prompt(&rewrite_prompt),
-    )
-    .await
-    {
-        Ok(Ok(response)) => {
-            let raw_response = response.output;
-            let queries = parse_rewrite_response(&raw_response);
-            let json_str = strip_markdown_fences(&raw_response);
-            let fallback_reason = if has_valid_rewrite_json(&raw_response) {
-                "none"
-            } else if serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
-                "empty_queries"
-            } else {
-                "invalid_json"
-            };
-            tracing::debug!(fallback_reason, "rewrite completed");
-            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-            metrics
-                .rewrite_duration
-                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-            if fallback_reason != "none" {
-                metrics
-                    .rewrite_fallback_count
-                    .add(1, &[KeyValue::new("fallback_reason", fallback_reason)]);
-            }
-            queries
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("query rewriting failed: {e}, falling back to original query");
-            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-            metrics
-                .rewrite_duration
-                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-            metrics
-                .rewrite_fallback_count
-                .add(1, &[KeyValue::new("fallback_reason", "llm_error")]);
-            vec![message.to_string()]
-        }
-        Err(_) => {
-            tracing::warn!(
-                "query rewriting timed out after {REWRITE_TIMEOUT_MS}ms, falling back to original query"
-            );
-            let elapsed_ms = rewrite_start.elapsed().as_secs_f64() * 1000.0;
-            metrics
-                .rewrite_duration
-                .record(elapsed_ms, &[KeyValue::new("is_first_turn", is_first_turn)]);
-            metrics.rewrite_timeout_count.add(1, &[]);
-            metrics
-                .rewrite_fallback_count
-                .add(1, &[KeyValue::new("fallback_reason", "timeout")]);
-            vec![message.to_string()]
-        }
-    };
-    queries
-}
-
 /// Preamble for the post-answer suggestion generator.
 const PA_PREAMBLE: &str =
     "You are an assistant that generates follow-up questions. Output only strict JSON.";
@@ -636,158 +423,6 @@ pub(crate) async fn generate_post_answer_suggestions(
     }
 }
 
-/// Execute hybrid search + optional rerank, returning final search results.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn search_and_rerank(
-    vector_store: &VectorStoreManager,
-    reranker: &Option<rwiki_core::infrastructure::reranker::RerankerProvider>,
-    rerank_config: &rwiki_core::config::RerankConfig,
-    original_query: &str,
-    search_queries: &[String],
-    top_k_per_query: usize,
-    max_total_context_chunks: usize,
-    metrics: &RwikiMetrics,
-    scope: &rwiki_core::infrastructure::vector_store::RetrievalScope,
-) -> Result<Vec<SearchResult>, ApiError> {
-    let retrieval_start = Instant::now();
-    let search_type = if search_queries.len() == 1 {
-        "hybrid"
-    } else {
-        "multi_query_hybrid"
-    };
-
-    let results = if search_queries.len() == 1 {
-        vector_store
-            .search_hybrid(
-                &search_queries[0],
-                top_k_per_query,
-                1,
-                3,
-                max_total_context_chunks,
-                RRF_K,
-                scope,
-            )
-            .await
-    } else {
-        let results = vector_store
-            .search_multi_query_hybrid(
-                search_queries,
-                top_k_per_query,
-                1,
-                3,
-                max_total_context_chunks,
-                RRF_K,
-                scope,
-            )
-            .await?;
-        if results.is_empty() {
-            tracing::warn!("all rewrite queries returned empty, falling back to original query");
-            vector_store
-                .search_hybrid(
-                    original_query,
-                    top_k_per_query,
-                    1,
-                    3,
-                    max_total_context_chunks,
-                    RRF_K,
-                    scope,
-                )
-                .await
-        } else {
-            Ok(results)
-        }
-    };
-
-    let search_results = match results {
-        Ok(results) => {
-            let elapsed_ms = retrieval_start.elapsed().as_secs_f64() * 1000.0;
-            metrics
-                .retrieval_duration
-                .record(elapsed_ms, &[KeyValue::new("search_type", search_type)]);
-            metrics
-                .retrieval_results_count
-                .record(results.len() as f64, &[]);
-            if results.is_empty() {
-                metrics.retrieval_empty_count.add(1, &[]);
-            }
-            results
-        }
-        Err(e) => {
-            return Err(ApiError::internal(e.to_string()));
-        }
-    };
-
-    // US-CORE-034: 同一内容的 chunk 在不同文档下只保留得分最高的一个，避免重复召回。
-    // 在 rerank 之前执行，保证 reranker 不会看到重复内容。
-    let search_results = dedupe_by_content(search_results);
-
-    // Rerank
-    let search_results = if let Some(reranker) = reranker {
-        let truncated: Vec<&SearchResult> =
-            search_results.iter().take(rerank_config.top_n).collect();
-        let documents: Vec<String> = truncated.iter().map(|r| r.content.clone()).collect();
-        let provider_str = match rerank_config.provider {
-            rwiki_core::config::RerankProviderType::OpenRouter => "openrouter",
-            rwiki_core::config::RerankProviderType::BigModel => "bigmodel",
-            rwiki_core::config::RerankProviderType::DashScope => "dashscope",
-        };
-        let rerank_start = Instant::now();
-
-        match reranker
-            .rerank(original_query, &documents, rerank_config.top_n)
-            .await
-        {
-            Ok(rerank_results) => {
-                tracing::debug!("rerank returned {} results", rerank_results.len());
-                let elapsed_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
-                metrics
-                    .rerank_duration
-                    .record(elapsed_ms, &[KeyValue::new("provider", provider_str)]);
-                rerank_results
-                    .into_iter()
-                    .filter_map(|rr| truncated.get(rr.index).map(|r| (r, rr.relevance_score)))
-                    .map(|(r, score)| {
-                        let mut result = (*r).clone();
-                        result.score = score;
-                        result
-                    })
-                    .collect()
-            }
-            Err(e) => {
-                tracing::warn!("Rerank failed, degrading to RRF fusion results: {e}");
-                metrics.rerank_error_count.add(1, &[]);
-                search_results
-            }
-        }
-    } else {
-        search_results
-    };
-
-    Ok(search_results)
-}
-
-/// 折叠内容完全相同的 chunk，仅保留得分最高的一个。
-/// 保持稳定：以首次出现的位置为准（US-CORE-034: 避免同一内容重复召回）。
-fn dedupe_by_content(results: Vec<SearchResult>) -> Vec<SearchResult> {
-    let mut out: Vec<SearchResult> = Vec::with_capacity(results.len());
-    let mut index: HashMap<String, usize> = HashMap::new();
-    for r in results {
-        match index.get(&r.content).copied() {
-            Some(i) => {
-                // 同一内容已存在，仅在得分更高时原地替换
-                if r.score > out[i].score {
-                    out[i] = r;
-                }
-            }
-            None => {
-                index.insert(r.content.clone(), out.len());
-                out.push(r);
-            }
-        }
-    }
-    out
-}
-
 /// Format search results into XML context string for LLM consumption.
 pub(crate) fn format_context_xml(results: &[SearchResult]) -> String {
     format!(
@@ -800,25 +435,6 @@ pub(crate) fn format_context_xml(results: &[SearchResult]) -> String {
             .join("\n")
     )
 }
-
-/// Check whether raw response contains valid JSON with at least one non-empty query.
-fn has_valid_rewrite_json(raw: &str) -> bool {
-    let json_str = strip_markdown_fences(raw);
-    serde_json::from_str::<serde_json::Value>(json_str)
-        .ok()
-        .and_then(|val| {
-            val.get("queries").and_then(|v| v.as_array()).map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .any(|s| !s.trim().is_empty())
-            })
-        })
-        .unwrap_or(false)
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
 
 /// Build a session storage key that scopes memory sessions by channel(s).
 ///
@@ -885,8 +501,14 @@ async fn chat_inner(
         return Err(ApiError::bad_request("消息不能为空"));
     }
 
-    // Check knowledge base is not empty
-    if state.vector_store.is_empty().await {
+    // Check knowledge base is not empty（预检查自身失败向上抛 500，不当
+    // 作「空库」误报 503）
+    if state
+        .vector_store
+        .is_empty()
+        .await
+        .map_err(ApiError::from)?
+    {
         state
             .metrics
             .chat_error_count
@@ -994,14 +616,28 @@ async fn chat_inner(
         };
         if let Some(channel_id_for_low_recall) = low_recall_channel_id {
             if let Some(lr_cfg) = state.low_recall_config.as_ref() {
-                let top_score = search_results.first().map(|r| r.score); // None = 完全未命中
+                // threshold 语义是 top-1 检索相关度（config 文档）；最终排序按
+                // page 粒度（列表首条未必最高分），且 TITLE_MATCH_BONUS 是排序
+                // 加权而非相关度（虽已写入对外得分），故取剔除 bonus 后的最高
+                // 相关度。None = 完全未命中（零命中必记的口径不变）。
+                let mut rank_queries: Vec<&str> = vec![&message];
+                rank_queries.extend(search_queries.iter().map(String::as_str));
+                let top_score = max_relevance_score(&search_results, &rank_queries);
                 let should_log = top_score.is_none_or(|s| s < lr_cfg.threshold); // 无结果必记
                 if should_log {
                     let query = message.clone();
                     let session_id = session_id.clone();
                     let result_count = search_results.len() as i64;
-                    // top-K 来源摘要（取前 5）
-                    let sources: Vec<LowRecallSource> = search_results
+                    // top-K 来源摘要：按相关度取前 5（与 top_score 同口径；
+                    // page 粒度排序后列表序是 page 顺序，直接 take(5) 会漏掉
+                    // 最高分来源）
+                    let mut by_score: Vec<_> = search_results.iter().collect();
+                    by_score.sort_by(|a, b| {
+                        b.score
+                            .partial_cmp(&a.score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let sources: Vec<LowRecallSource> = by_score
                         .iter()
                         .take(5)
                         .map(|r| LowRecallSource {
@@ -1340,10 +976,6 @@ async fn chat_inner(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Handlers (thin wrappers over chat_inner)
-// ---------------------------------------------------------------------------
-
 /// Public SSE chat endpoint (no authentication required).
 ///
 /// Retrieves published content for the configured `channelId` only (RetrievalScope::Channel).
@@ -1429,10 +1061,6 @@ pub async fn chat_scoped(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1500,62 +1128,6 @@ mod tests {
             tags: vec![],
             section: section.map(|s| s.to_string()),
         }
-    }
-
-    // --- dedupe_by_content tests (US-CORE-034) ---
-
-    /// Helper: build a SearchResult with a custom score. Only content/score matter for dedup.
-    fn make_result_with_score(content: &str, score: f64) -> SearchResult {
-        SearchResult {
-            chunk_id: format!("chunk-{score}"),
-            content: content.to_string(),
-            score,
-            document_id: "test-doc".to_string(),
-            page_id: "test-page-id".to_string(),
-            sub_index: None,
-            chunk_count: None,
-            title: "T".to_string(),
-            locale: None,
-            link: None,
-            tags: vec![],
-            section: None,
-        }
-    }
-
-    // Covers: US-CORE-034 场景1 —— 同一内容只保留得分最高者，且首次出现位置稳定，
-    // 第三条不同内容必须存活。若保留了两条相同内容或丢掉了更高分都会失败。
-    #[test]
-    fn dedupe_by_content_collapses_identical_content_keeping_highest_score() {
-        let input = vec![
-            make_result_with_score("shared chunk content", 0.5),
-            make_result_with_score("shared chunk content", 0.9),
-            make_result_with_score("distinct content", 0.3),
-        ];
-
-        let out = dedupe_by_content(input);
-
-        assert_eq!(out.len(), 2, "identical content must collapse to one entry");
-
-        // 首条目是首次出现的内容，得分取两者中更高的 0.9
-        assert_eq!(
-            out[0].content, "shared chunk content",
-            "first-occurrence content must survive"
-        );
-        assert!(
-            (out[0].score - 0.9).abs() < f64::EPSILON,
-            "must keep the HIGHER score (0.9), got {}",
-            out[0].score
-        );
-
-        // 第三条不同内容存活，位于第二位
-        assert_eq!(
-            out[1].content, "distinct content",
-            "distinct content must survive"
-        );
-        assert!(
-            (out[1].score - 0.3).abs() < f64::EPSILON,
-            "distinct content score must be untouched"
-        );
     }
 
     // --- format_context_block tests ---
@@ -1955,52 +1527,6 @@ mod tests {
         );
     }
 
-    // --- build_rewrite_prompt tests ---
-
-    #[test]
-    fn build_rewrite_prompt_includes_history_and_user_message() {
-        let history = vec![
-            ChatMessage {
-                role: "user".into(),
-                content: "What is Rust?".into(),
-                interrupted: false,
-            },
-            ChatMessage {
-                role: "assistant".into(),
-                content: "Rust is a systems language.".into(),
-                interrupted: false,
-            },
-        ];
-        let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
-        assert!(
-            prompt.contains("user: What is Rust?"),
-            "should include user history"
-        );
-        assert!(
-            prompt.contains("assistant: Rust is a systems language."),
-            "should include assistant history"
-        );
-        assert!(
-            prompt.contains("当前用户追问: How does it handle memory?"),
-            "should include the user message"
-        );
-        assert!(prompt.contains("改写"), "should instruct rewriting");
-    }
-
-    #[test]
-    fn build_rewrite_prompt_with_empty_history_produces_valid_prompt() {
-        let history: Vec<ChatMessage> = vec![];
-        let prompt = build_rewrite_prompt(&history, "What is Rust?", None);
-        assert!(
-            prompt.contains("当前用户追问: What is Rust?"),
-            "should include user message even with empty history"
-        );
-        assert!(
-            prompt.contains("对话历史:\n\n"),
-            "should have empty history section"
-        );
-    }
-
     // --- build_compact_prompt tests ---
 
     #[test]
@@ -2047,284 +1573,6 @@ mod tests {
         assert!(
             prompt.contains("user: What is Rust?"),
             "should include old message content"
-        );
-    }
-
-    // --- build_first_turn_rewrite_prompt tests ---
-
-    #[test]
-    fn build_first_turn_rewrite_prompt_includes_user_message() {
-        let prompt = build_first_turn_rewrite_prompt("内存", None);
-        assert!(
-            prompt.contains("用户查询: 内存"),
-            "should include user message"
-        );
-        assert!(
-            prompt.contains("JSON"),
-            "should include JSON format constraint"
-        );
-        assert!(
-            prompt.contains(&format!("最多生成 {REWRITE_MAX_QUERIES} 条查询")),
-            "should reference REWRITE_MAX_QUERIES constant"
-        );
-    }
-
-    #[test]
-    fn build_first_turn_rewrite_prompt_references_max_queries_constant() {
-        let prompt = build_first_turn_rewrite_prompt("test", None);
-        assert!(
-            prompt.contains("最多生成 2 条查询"),
-            "should embed the REWRITE_MAX_QUERIES value"
-        );
-    }
-
-    // --- parse_rewrite_response tests ---
-
-    #[test]
-    fn parse_rewrite_response_valid_json() {
-        let result = parse_rewrite_response(r#"{"queries": ["query one", "query two"]}"#);
-        assert_eq!(result, vec!["query one", "query two"]);
-    }
-
-    #[test]
-    fn parse_rewrite_response_json_with_code_fence() {
-        let raw = "```json\n{\"queries\": [\"q1\", \"q2\"]}\n```";
-        let result = parse_rewrite_response(raw);
-        assert_eq!(result, vec!["q1", "q2"]);
-    }
-
-    #[test]
-    fn parse_rewrite_response_plain_code_fence() {
-        let raw = "```\n{\"queries\": [\"q1\"]}\n```";
-        let result = parse_rewrite_response(raw);
-        assert_eq!(result, vec!["q1"]);
-    }
-
-    #[test]
-    fn parse_rewrite_response_empty_queries_array_falls_back() {
-        let result = parse_rewrite_response("{\"queries\": []}");
-        assert_eq!(
-            result.len(),
-            1,
-            "empty array should fall back to raw output"
-        );
-        assert_eq!(result[0], "{\"queries\": []}");
-    }
-
-    #[test]
-    fn parse_rewrite_response_missing_queries_field_falls_back() {
-        let result = parse_rewrite_response("{\"result\": \"something\"}");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "{\"result\": \"something\"}");
-    }
-
-    #[test]
-    fn parse_rewrite_response_plain_text_falls_back() {
-        let result = parse_rewrite_response("This is just plain text");
-        assert_eq!(result, vec!["This is just plain text"]);
-    }
-
-    #[test]
-    fn parse_rewrite_response_truncates_to_max_queries() {
-        let result = parse_rewrite_response(r#"{"queries": ["q1", "q2", "q3", "q4"]}"#);
-        assert_eq!(
-            result.len(),
-            REWRITE_MAX_QUERIES,
-            "should truncate to REWRITE_MAX_QUERIES"
-        );
-    }
-
-    #[test]
-    fn parse_rewrite_response_filters_empty_strings() {
-        let result = parse_rewrite_response(r#"{"queries": ["q1", "", "  ", "q2"]}"#);
-        assert_eq!(result, vec!["q1", "q2"]);
-    }
-
-    #[test]
-    fn parse_rewrite_response_single_query_in_array() {
-        let result = parse_rewrite_response("{\"queries\": [\"single query\"]}");
-        assert_eq!(result, vec!["single query"]);
-    }
-
-    // --- modified build_rewrite_prompt JSON constraint test ---
-
-    #[test]
-    fn build_rewrite_prompt_includes_json_format_constraint() {
-        let history = vec![
-            ChatMessage {
-                role: "user".into(),
-                content: "What is Rust?".into(),
-                interrupted: false,
-            },
-            ChatMessage {
-                role: "assistant".into(),
-                content: "Rust is a systems language.".into(),
-                interrupted: false,
-            },
-        ];
-        let prompt = build_rewrite_prompt(&history, "How does it handle memory?", None);
-        assert!(
-            prompt.contains("JSON"),
-            "modified prompt should include JSON format constraint"
-        );
-        assert!(
-            prompt.contains("queries"),
-            "modified prompt should reference queries array"
-        );
-        assert!(
-            prompt.contains("How does it handle memory?"),
-            "should still include user message"
-        );
-    }
-
-    // --- content_language injection tests ---
-
-    #[test]
-    fn build_first_turn_rewrite_prompt_includes_language_instruction_when_set() {
-        let prompt = build_first_turn_rewrite_prompt("memory management", Some("Chinese"));
-        assert!(
-            prompt.contains("知识库文档主要使用 Chinese 语言"),
-            "should include language instruction when content_language is set"
-        );
-        assert!(
-            prompt.contains("请将查询改写为 Chinese"),
-            "should instruct rewriting to target language"
-        );
-    }
-
-    #[test]
-    fn build_rewrite_prompt_includes_language_instruction_when_set() {
-        let history = vec![ChatMessage {
-            role: "user".into(),
-            content: "test".into(),
-            interrupted: false,
-        }];
-        let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
-        assert!(
-            prompt.contains("知识库文档主要使用 English 语言"),
-            "should include language instruction when content_language is set"
-        );
-    }
-
-    #[test]
-    fn build_first_turn_rewrite_prompt_no_language_instruction_when_none() {
-        let prompt = build_first_turn_rewrite_prompt("test", None);
-        assert!(
-            !prompt.contains("知识库文档主要使用"),
-            "should NOT include language instruction when content_language is None"
-        );
-    }
-
-    #[test]
-    fn build_rewrite_prompt_no_language_instruction_when_none() {
-        let history = vec![ChatMessage {
-            role: "user".into(),
-            content: "test".into(),
-            interrupted: false,
-        }];
-        let prompt = build_rewrite_prompt(&history, "test", None);
-        assert!(
-            !prompt.contains("知识库文档主要使用"),
-            "should NOT include language instruction when content_language is None"
-        );
-    }
-
-    // --- content_language edge-case prompt tests (BE-T01) ---
-
-    // Covers: Design 5.1 — empty string content_language suppresses language instruction.
-    // User Story: Query language aware rewrite — empty string is treated as "no language" by prompt builders.
-    #[test]
-    fn build_first_turn_rewrite_prompt_empty_string_no_language_instruction() {
-        let prompt = build_first_turn_rewrite_prompt("test query", Some(""));
-        assert!(
-            !prompt.contains("知识库文档主要使用"),
-            "empty string content_language should NOT produce language instruction"
-        );
-    }
-
-    // Covers: Design 5.1 — empty string content_language suppresses language instruction in multi-turn.
-    // User Story: Query language aware rewrite — empty string treated as absent in rewrite prompt.
-    #[test]
-    fn build_rewrite_prompt_empty_string_no_language_instruction() {
-        let history = vec![ChatMessage {
-            role: "user".into(),
-            content: "test".into(),
-            interrupted: false,
-        }];
-        let prompt = build_rewrite_prompt(&history, "follow up", Some(""));
-        assert!(
-            !prompt.contains("知识库文档主要使用"),
-            "empty string content_language should NOT produce language instruction"
-        );
-    }
-
-    // Covers: Design 5.1 — Chinese language value produces correct instruction text.
-    // User Story: Query language aware rewrite — Chinese content_language injects both context and rewrite instruction.
-    #[test]
-    fn build_first_turn_rewrite_prompt_chinese_language_value() {
-        let prompt = build_first_turn_rewrite_prompt("memory management", Some("中文"));
-        assert!(
-            prompt.contains("知识库文档主要使用 中文 语言"),
-            "should include Chinese language instruction with Chinese value"
-        );
-        assert!(
-            prompt.contains("请将查询改写为 中文"),
-            "should instruct rewriting to 中文"
-        );
-    }
-
-    // Covers: Design 5.1 — Chinese language value in multi-turn prompt.
-    // User Story: Query language aware rewrite — Chinese content_language works in follow-up rewrite.
-    #[test]
-    fn build_rewrite_prompt_chinese_language_value() {
-        let history = vec![ChatMessage {
-            role: "user".into(),
-            content: "test".into(),
-            interrupted: false,
-        }];
-        let prompt = build_rewrite_prompt(&history, "follow up", Some("中文"));
-        assert!(
-            prompt.contains("知识库文档主要使用 中文 语言"),
-            "should include Chinese language instruction in multi-turn prompt"
-        );
-    }
-
-    // Covers: Design 5.1 — language instruction appears before JSON constraint in first-turn prompt.
-    // User Story: Query language aware rewrite — prompt ordering ensures LLM sees language context before output format.
-    #[test]
-    fn build_first_turn_rewrite_prompt_language_before_json_constraint() {
-        let prompt = build_first_turn_rewrite_prompt("test", Some("English"));
-        let lang_pos = prompt
-            .find("知识库文档主要使用")
-            .expect("should contain language instruction");
-        let json_pos = prompt
-            .find("只输出 JSON")
-            .expect("should contain JSON constraint");
-        assert!(
-            lang_pos < json_pos,
-            "language instruction should appear BEFORE JSON constraint"
-        );
-    }
-
-    // Covers: Design 5.1 — language instruction appears before JSON constraint in multi-turn prompt.
-    // User Story: Query language aware rewrite — prompt ordering consistent across first-turn and follow-up.
-    #[test]
-    fn build_rewrite_prompt_language_before_json_constraint() {
-        let history = vec![ChatMessage {
-            role: "user".into(),
-            content: "test".into(),
-            interrupted: false,
-        }];
-        let prompt = build_rewrite_prompt(&history, "follow up", Some("English"));
-        let lang_pos = prompt
-            .find("知识库文档主要使用")
-            .expect("should contain language instruction");
-        let json_pos = prompt
-            .find("只输出 JSON")
-            .expect("should contain JSON constraint");
-        assert!(
-            lang_pos < json_pos,
-            "language instruction should appear BEFORE JSON constraint in multi-turn prompt"
         );
     }
 

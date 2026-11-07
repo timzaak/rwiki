@@ -15,6 +15,7 @@ use crate::application::http::handlers::feedback::{
 use crate::application::http::handlers::low_recall::{
     LowRecallListResponse, LowRecallQueryParams, LowRecallRecord, LowRecallSource,
 };
+use crate::application::http::handlers::search::{SearchRequest, SearchResponse, SearchResultItem};
 
 /// OpenAPI 文档定义
 ///
@@ -50,6 +51,7 @@ use crate::application::http::handlers::low_recall::{
         crate::application::http::handlers::feedback::list_feedback,
         crate::application::http::handlers::eval::eval_query,
         crate::application::http::handlers::low_recall::list_low_recall_records,
+        crate::application::http::handlers::search::search_chunks,
     ),
     components(
         schemas(
@@ -75,6 +77,9 @@ use crate::application::http::handlers::low_recall::{
             LowRecallSource,
             LowRecallListResponse,
             LowRecallQueryParams,
+            SearchRequest,
+            SearchResponse,
+            SearchResultItem,
         )
     ),
     tags(
@@ -83,6 +88,7 @@ use crate::application::http::handlers::low_recall::{
         (name = "auth", description = "Authentication endpoints"),
         (name = "documents", description = "Document upload, listing, deletion, and publishing"),
         (name = "chat", description = "Knowledge base chat with SSE streaming"),
+        (name = "search", description = "Public channel-scoped knowledge chunk search"),
         (name = "low-recall", description = "Low-recall query records for KB blind-spot discovery")
     ),
     modifiers(&SecurityAddon)

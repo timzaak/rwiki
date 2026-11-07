@@ -7,11 +7,9 @@ use utoipa::ToSchema;
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
 
-use super::chat::{build_preamble, format_context_xml, rewrite_query, search_and_rerank};
+use rwiki_core::domain::search::{rewrite_query, search_and_rerank};
 
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+use super::chat::{build_preamble, format_context_xml};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EvalQueryRequest {
@@ -132,10 +130,6 @@ pub struct TimingMs {
     pub generate: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
 /// Execute RAG pipeline and return intermediate results + generated answer.
 ///
 /// This endpoint runs the full RAG pipeline (query rewrite -> hybrid search ->
@@ -161,8 +155,14 @@ pub async fn eval_query(
         return Err(ApiError::bad_request("Query cannot be empty"));
     }
 
-    // Check knowledge base is not empty
-    if state.vector_store.is_empty().await {
+    // Check knowledge base is not empty（预检查自身失败向上抛 500，不当
+    // 作「空库」误报 503）
+    if state
+        .vector_store
+        .is_empty()
+        .await
+        .map_err(ApiError::from)?
+    {
         return Err(ApiError::service_unavailable(
             "Knowledge base has no indexed data",
         ));

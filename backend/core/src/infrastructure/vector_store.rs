@@ -15,6 +15,8 @@ static JIEBA: OnceLock<Jieba> = OnceLock::new();
 
 /// Tokenize text using jieba for FTS5 indexing.
 /// Returns space-separated tokens for FTS5 unicode61 tokenizer.
+/// Also reused by `domain::search` for title-match detection, keeping the
+/// same tokenization as FTS retrieval.
 pub(crate) fn tokenize_for_fts(text: &str) -> String {
     let jieba = JIEBA.get_or_init(Jieba::new);
     jieba
@@ -783,7 +785,7 @@ impl VectorStoreManager {
         top_k: usize,
         scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
-        if self.is_empty().await {
+        if self.is_empty().await? {
             return Err(CoreError::ProcessingError(
                 "知识库为空，请先上传文档".into(),
             ));
@@ -1079,15 +1081,21 @@ impl VectorStoreManager {
     }
 
     /// Check if the vector store has any embeddings.
-    pub async fn is_empty(&self) -> bool {
-        self.conn
+    ///
+    /// 查询失败向上返回错误而非 fail-open：`unwrap_or(true)` 会把 DB 故障
+    /// 伪装成「空库」，使调用方把基础设施故障当零命中静默放行；失败语义
+    /// 由调用方决定（空库短路仅在 `Ok(true)` 时生效）。
+    pub async fn is_empty(&self) -> Result<bool, CoreError> {
+        let count: i64 = self
+            .conn
             .call(move |conn| {
                 let count: i64 =
                     conn.query_row("SELECT COUNT(*) FROM chunk_metadata", [], |row| row.get(0))?;
-                Ok::<bool, rusqlite::Error>(count == 0)
+                Ok::<i64, rusqlite::Error>(count)
             })
             .await
-            .unwrap_or(true)
+            .map_err(|e| CoreError::DatabaseError(format!("空库检查失败: {e}")))?;
+        Ok(count == 0)
     }
 
     /// Check if the vector store has any published documents for a given channel.
@@ -1212,7 +1220,7 @@ impl VectorStoreManager {
         rrf_k: u64,
         scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
-        if self.is_empty().await {
+        if self.is_empty().await? {
             return Err(CoreError::ProcessingError(
                 "知识库为空，请先上传文档".into(),
             ));
@@ -1313,7 +1321,7 @@ impl VectorStoreManager {
             return Ok(Vec::new());
         }
 
-        if self.is_empty().await {
+        if self.is_empty().await? {
             return Err(CoreError::ProcessingError(
                 "知识库为空，请先上传文档".into(),
             ));
