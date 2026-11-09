@@ -55,6 +55,7 @@ fn mcp_test_channels_config() -> rwiki_core::config::ChannelsConfig {
                 name: format!("Channel {id}"),
                 system_prompt: None,
                 suggested_questions: None,
+                content_language: None,
             },
         );
     }

@@ -554,11 +554,11 @@ async fn chat_inner(
         };
 
         // Query rewriting: always rewrite (unconditional)
-        let content_language = state
-            .chat_config
-            .content_language
-            .as_deref()
-            .filter(|s| !s.is_empty());
+        // content_language 频道级优先（多频道取排序后首个频道的值）、回退 chat 全局配置。
+        let content_language = state.channels_config.resolved_content_language_multi(
+            channel_id,
+            state.chat_config.content_language.as_deref(),
+        );
         let search_queries = rewrite_query(
             &state.llm_client,
             &state.llm_model,

@@ -23,11 +23,15 @@ DOCS_WEB_PORT = int(os.environ.get("DOCS_WEB_PORT", "3001"))
 TUTORIALS_DIR = REPO_ROOT / "docs-web" / "content" / "docs"
 RWIKI_URL = "https://rwiki.fornetcode.com"
 
-# All demo KB content (tutorials + OpenAPI) is seeded into this single channel.
+# English demo KB content (tutorials + OpenAPI) is seeded into this channel.
 # The demo chat/RAG tests (DE-D01..DE-D04) target help_center; the document
 # lifecycle endpoints now require channelId, so the seeder must carry it on
 # upload/publish/list or the KB stays empty and RAG fails.
 DEMO_CHANNEL_ID = "help_center"
+# Chinese tutorials (docs-web/content/docs/zh) go to their own channel: the
+# Chinese docs site searches and chats against it, and its channel-level
+# content_language (backend/config/demo.toml) keeps query rewrites in Chinese.
+DEMO_ZH_CHANNEL_ID = "help_center_zh"
 
 # Seed-format version: bump whenever the seeding transformation of uploaded
 # docs changes, so demo-start resets a demo KB seeded by an older format
@@ -38,10 +42,16 @@ DEMO_DB_DIR = REPO_ROOT / "backend" / "data" / "demo"
 DEMO_DB_PATH = DEMO_DB_DIR / "rwiki.db"
 
 
-def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
-    """Inject or update the `link` field in frontmatter with the docs channel URL."""
+def _inject_link_frontmatter(
+    file_bytes: bytes, slug: str, locale_prefix: str = ""
+) -> bytes:
+    """Inject or update the `link` field in frontmatter with the docs channel URL.
+
+    `locale_prefix` is "" for English (`/docs/{slug}`, redirected to `/en/docs`)
+    and "/zh" for Chinese (`/zh/docs/{slug}`).
+    """
     text = file_bytes.decode("utf-8-sig")
-    doc_link = f"{RWIKI_URL}/docs/{slug}"
+    doc_link = f"{RWIKI_URL}{locale_prefix}/docs/{slug}"
 
     if text.startswith("---"):
         # Already has frontmatter — find closing ---
@@ -73,11 +83,13 @@ def _inject_link_frontmatter(file_bytes: bytes, slug: str) -> bytes:
     return (frontmatter + text).encode("utf-8")
 
 
-def _get_published_filenames(base_url: str, api_token: str) -> set[str]:
-    """Fetch all published document filenames for the demo channel from the API."""
+def _get_published_filenames(
+    base_url: str, api_token: str, channel_id: str = DEMO_CHANNEL_ID
+) -> set[str]:
+    """Fetch all published document filenames for a demo channel from the API."""
     try:
         req = urllib.request.Request(
-            f"{base_url}/api/documents?channelId={DEMO_CHANNEL_ID}",
+            f"{base_url}/api/documents?channelId={channel_id}",
             headers={"Authorization": f"Bearer {api_token}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -89,7 +101,11 @@ def _get_published_filenames(base_url: str, api_token: str) -> set[str]:
 
 
 def _upload_and_publish_markdown(
-    base_url: str, api_token: str, md_path: "pathlib.Path"
+    base_url: str,
+    api_token: str,
+    md_path: "pathlib.Path",
+    channel_id: str = DEMO_CHANNEL_ID,
+    locale_prefix: str = "",
 ) -> bool:
     """Upload a single .md file and publish it."""
     t0 = time.time()
@@ -100,7 +116,7 @@ def _upload_and_publish_markdown(
         file_bytes = f.read()
 
     slug = md_path.stem  # e.g. "getting-started" from "getting-started.mdx"
-    file_bytes = _inject_link_frontmatter(file_bytes, slug)
+    file_bytes = _inject_link_frontmatter(file_bytes, slug, locale_prefix)
 
     body = (
         f"--{boundary}\r\n"
@@ -111,7 +127,7 @@ def _upload_and_publish_markdown(
         f"\r\n--{boundary}\r\n"
         f'Content-Disposition: form-data; name="channelId"\r\n'
         f"\r\n"
-        f"{DEMO_CHANNEL_ID}\r\n"
+        f"{channel_id}\r\n"
         f"--{boundary}--\r\n"
     ).encode()
 
@@ -140,7 +156,7 @@ def _upload_and_publish_markdown(
         return False
 
     pub_req = urllib.request.Request(
-        f"{base_url}/api/documents/{doc_id}/publish?channelId={DEMO_CHANNEL_ID}",
+        f"{base_url}/api/documents/{doc_id}/publish?channelId={channel_id}",
         data=b"",
         headers={"Authorization": f"Bearer {api_token}"},
         method="PATCH",
@@ -248,35 +264,46 @@ def _reset_stale_demo_db() -> None:
     marker.write_text(SEED_FORMAT_VERSION + "\n", encoding="utf-8")
 
 
-def seed_tutorials(base_url: str) -> bool:
-    """Upload tutorial .mdx files from docs-web/content/docs/."""
-    if not TUTORIALS_DIR.exists():
-        print(f"SKIP: tutorials directory not found: {TUTORIALS_DIR}")
+def seed_tutorials(
+    base_url: str,
+    docs_dir: "pathlib.Path" = TUTORIALS_DIR,
+    channel_id: str = DEMO_CHANNEL_ID,
+    locale_prefix: str = "",
+) -> bool:
+    """Upload tutorial .mdx files from a docs-web locale directory to a channel.
+
+    Defaults seed the English tutorials (docs-web/content/docs/) into
+    help_center; non-recursive glob, so the zh/ subdirectory is not included.
+    """
+    if not docs_dir.exists():
+        print(f"SKIP: tutorials directory not found: {docs_dir}")
         return True
 
     md_files = sorted(
-        f for f in TUTORIALS_DIR.glob("*.mdx") if f.stem != "index"
+        f for f in docs_dir.glob("*.mdx") if f.stem != "index"
     )
     if not md_files:
         print("SKIP: no .mdx files found in docs directory")
         return True
 
     api_token = os.environ.get("API_TOKEN", "demo-token")
-    published = _get_published_filenames(base_url, api_token)
+    published = _get_published_filenames(base_url, api_token, channel_id)
 
     to_upload = [f for f in md_files if f.name not in published]
     if not to_upload:
-        print(f"SKIP: all {len(md_files)} tutorials already published")
+        print(f"SKIP: all {len(md_files)} tutorials already published to {channel_id}")
         return True
 
     skipped = len(md_files) - len(to_upload)
     if skipped:
-        print(f"SKIP: {skipped} tutorials already published")
+        print(f"SKIP: {skipped} tutorials already published to {channel_id}")
 
-    print(f"Seeding {len(to_upload)} tutorials ...")
+    print(f"Seeding {len(to_upload)} tutorials into {channel_id} ...")
     failures = 0
     for md_path in to_upload:
-        if not _upload_and_publish_markdown(base_url, api_token, md_path):
+        if not _upload_and_publish_markdown(
+            base_url, api_token, md_path, channel_id, locale_prefix
+        ):
             failures += 1
 
     if failures:
@@ -372,10 +399,17 @@ def main() -> int:
         print("ERROR: Demo backend failed to start")
         return 1
 
-    # Seed tutorial documents
     seed_ok = seed_tutorials(f"http://127.0.0.1:{BACKEND_PORT}")
     if not seed_ok:
         print("WARNING: tutorial seed failed, continuing without seed data")
+    seed_zh_ok = seed_tutorials(
+        f"http://127.0.0.1:{BACKEND_PORT}",
+        TUTORIALS_DIR / "zh",
+        DEMO_ZH_CHANNEL_ID,
+        "/zh",
+    )
+    if not seed_zh_ok:
+        print("WARNING: Chinese tutorial seed failed, continuing without zh seed data")
 
     # Frontend
     npm = require_executable("npm", windows_fallback="npm.cmd")

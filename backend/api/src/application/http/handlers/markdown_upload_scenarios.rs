@@ -16,10 +16,6 @@ use tower::ServiceExt;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-md-upload";
 const EMBEDDING_DIMS: usize = 1536;
 const CHANNEL_ID: &str = "channel-a";
@@ -161,6 +157,7 @@ async fn test_app_state() -> Arc<AppState> {
                     name: "Site A".to_string(),
                     system_prompt: None,
                     suggested_questions: None,
+                    content_language: None,
                 },
             );
             rwiki_core::config::ChannelsConfig { channels }
@@ -267,10 +264,6 @@ fn upload_request_without_channel(
         .expect("build upload request")
 }
 
-// ---------------------------------------------------------------------------
-// 1. Upload .md with frontmatter -> 200, rowCount=1
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to upload a .md file with
 // frontmatter so that the system extracts metadata (title, locale, link, tags)
 // and indexes the content for RAG retrieval.
@@ -300,10 +293,6 @@ async fn upload_md_with_frontmatter_returns_200() {
     assert!(body["fileName"].is_string(), "response must have fileName");
 }
 
-// ---------------------------------------------------------------------------
-// 2. Upload .md without frontmatter, title from H1 -> 200
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to upload a .md file without
 // frontmatter so that the system derives the title from the first H1 heading
 // and still indexes the content successfully.
@@ -327,10 +316,6 @@ async fn upload_md_without_frontmatter_title_from_h1_returns_200() {
     assert_eq!(body["rowCount"], 1, "rowCount must be 1");
 }
 
-// ---------------------------------------------------------------------------
-// 3. Upload .mdx file -> 200, rowCount=1
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to upload a .mdx file so that
 // MDX content is ingested as plain text and indexed for RAG retrieval.
 // Covers: US-CORE-014, BE-D03 (.mdx extension routing)
@@ -348,10 +333,6 @@ async fn upload_mdx_file_returns_200() {
     let body = parse_json_body(resp.into_body()).await;
     assert_eq!(body["rowCount"], 1, "rowCount must be 1 for mdx");
 }
-
-// ---------------------------------------------------------------------------
-// 4. Upload empty .md -> 400
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want the system to reject empty
 // .md files with a clear error so that I know the file has no usable content.
@@ -372,10 +353,6 @@ async fn upload_empty_md_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 4b. Upload .md with frontmatter only, no body -> 400
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want the system to reject .md files
 // that have frontmatter but no body content, so that I know the file has no usable content.
 // Covers: US-CORE-014, BE-D02 (EmptyFile error -- body empty after frontmatter extraction)
@@ -395,10 +372,6 @@ async fn upload_md_frontmatter_only_no_body_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. Upload non-UTF-8 .md -> 400
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want the system to reject non-UTF-8
 // .md files with a clear error so that I know the file encoding is unsupported.
 // Covers: US-CORE-014, BE-D02 (InvalidEncoding error)
@@ -417,10 +390,6 @@ async fn upload_non_utf8_md_returns_400() {
         "upload non-UTF-8 .md must return 400"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 6. Upload .md with unclosed frontmatter -> 400
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want the system to reject .md files
 // with malformed frontmatter so that I know the metadata block has a syntax error.
@@ -444,10 +413,6 @@ async fn upload_md_unclosed_frontmatter_returns_400() {
         "upload .md with unclosed frontmatter must return 400"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 7. Upload .txt (unsupported) -> 400 with "不支持的文件格式"
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want the system to reject unsupported
 // file formats with a message listing supported formats, so that I know which
@@ -474,10 +439,6 @@ async fn upload_unsupported_format_returns_400() {
         "error message must contain '不支持的文件格式', got: {body_text}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 8. Upload xlsx still works (regression) -> 200
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want .xlsx uploads to continue
 // working after the markdown support changes, so that existing workflows are
@@ -515,10 +476,6 @@ async fn upload_xlsx_still_works_returns_200() {
     // If status is 200, the upload succeeded through the xlsx pipeline.
 }
 
-// ---------------------------------------------------------------------------
-// 9. Upload .md without token -> 401
-// ---------------------------------------------------------------------------
-
 // User Story: As an API operator, I want upload requests without a token to be
 // rejected, so that only authorized clients can upload documents.
 // Covers: US-CORE-014, upload route is behind auth middleware
@@ -537,10 +494,6 @@ async fn upload_md_without_token_returns_401() {
         "upload without token must return 401"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 10. Upload large .md (>1600 chars) -> 200, verify chunking in DB
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want large markdown files to be
 // automatically split into chunks, so that RAG retrieval works correctly with
@@ -628,10 +581,6 @@ async fn upload_large_md_chunking_works() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 11. Upload .md -> chunk_metadata.page_id is non-empty
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want uploaded markdown documents to
 // have a page_id assigned to each chunk, so that neighbor expansion and dedup
 // logic works correctly.
@@ -675,10 +624,6 @@ async fn upload_md_page_id_nonempty() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// 12. Channel-scoped upload assertions (BE-T02)
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // markdown upload path to persist the channelId I provide and echo it back.

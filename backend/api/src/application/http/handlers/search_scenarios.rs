@@ -114,6 +114,7 @@ fn search_channels_config() -> rwiki_core::config::ChannelsConfig {
                 name: format!("Channel {id}"),
                 system_prompt: None,
                 suggested_questions: None,
+                content_language: None,
             },
         );
     }
@@ -367,21 +368,7 @@ async fn search_app_state_with_rewrite(
     let _llm_mock = llm_server
         .mock("POST", "/chat/completions")
         .with_status(200)
-        .with_body(
-            serde_json::json!({
-                "id": "chatcmpl-search-test",
-                "object": "chat.completion",
-                "created": 1700000000u64,
-                "model": "test-model",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": rewrite_reply},
-                    "finish_reason": "stop"
-                }],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-            })
-            .to_string(),
-        )
+        .with_body(chat_completion_body("chatcmpl-search-test", rewrite_reply))
         .expect_at_most(50)
         .create_async()
         .await;
@@ -430,6 +417,23 @@ fn search_request(body: serde_json::Value) -> Request<Body> {
 
 fn search_body(query: &str, channel_id: &str) -> serde_json::Value {
     serde_json::json!({"query": query, "channelId": channel_id})
+}
+
+/// OpenAI chat.completion 响应体（rewrite mock 用）：两处 mock 共用同一 wire 格式。
+fn chat_completion_body(id: &str, content: &str) -> String {
+    serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": 1700000000u64,
+        "model": "test-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    })
+    .to_string()
 }
 
 async fn send(app: axum::Router, req: Request<Body>) -> (StatusCode, String) {
@@ -536,6 +540,74 @@ async fn search_falls_back_to_original_query_on_unusable_rewrite() {
             "fallback retrieval must still hit all seeded chunks: {body}"
         );
     }
+}
+
+// User Story: US-CORE-046 —— 频道级 content_language 覆盖全局：中文频道的检索词按
+// 中文改写（否则关键词检索无法命中中文片段），未配置语言的频道仍按全局语言改写。
+// Covers: rewrite_single_turn 必须按「本次请求的频道」解析内容语言。只读全局时，中文
+//         频道的改写请求不带中文指令 → zh_mock 命中 0 次失败；把频道语言当成全局开关时，
+//         另一频道的请求不再带 English 指令 → en_mock 命中 0 次失败。
+#[tokio::test]
+async fn search_rewrite_uses_channel_content_language_over_global() {
+    const ZH_CHANNEL: &str = "help_center_zh";
+    let base = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+
+    // The rewrite LLM only answers requests carrying the exact language
+    // instruction sentence of the rewrite prompt; anything else is unmatched.
+    let llm_server = leak_unpooled_mock_server().await;
+    let rewrite_reply =
+        chat_completion_body("chatcmpl-search-lang-test", r#"{"queries": ["rerank"]}"#);
+    let zh_mock = llm_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            "知识库文档主要使用 中文 语言".to_string(),
+        ))
+        .with_status(200)
+        .with_body(&rewrite_reply)
+        .expect(1)
+        .create_async()
+        .await;
+    let en_mock = llm_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            "知识库文档主要使用 English 语言".to_string(),
+        ))
+        .with_status(200)
+        .with_body(&rewrite_reply)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mut state = (*base).clone();
+    state.llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
+    state.chat_config.content_language = Some("English".to_string());
+    state.channels_config.channels.insert(
+        ZH_CHANNEL.to_string(),
+        rwiki_core::config::ChannelConfig {
+            name: "帮助中心".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+            content_language: Some("中文".to_string()),
+        },
+    );
+    let app = create_api_routes(Arc::new(state));
+
+    let (status, body) = post_search(app.clone(), search_body("如何配置重排序", ZH_CHANNEL)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "zh channel search must succeed: {body}"
+    );
+    let (status, body) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "plain channel search must succeed: {body}"
+    );
+
+    zh_mock.assert_async().await;
+    en_mock.assert_async().await;
 }
 
 // User Story: US-INTG-015 场景1 / PRD §5.2 验收目标1 —— 携带任意凭据与不携带

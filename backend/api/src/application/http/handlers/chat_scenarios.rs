@@ -821,6 +821,7 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     let channels_config = ChannelsConfig { channels };
@@ -1265,6 +1266,7 @@ fn channel_chat_channels_config() -> ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: Some("You are the Help Center assistant.".to_string()),
             suggested_questions: Some(channel_a_questions),
+            content_language: None,
         },
     );
 
@@ -1274,6 +1276,7 @@ fn channel_chat_channels_config() -> ChannelsConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
 
@@ -1283,6 +1286,7 @@ fn channel_chat_channels_config() -> ChannelsConfig {
             name: "Empty Site".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
 
@@ -1699,6 +1703,7 @@ fn channel_specific_system_prompt_overrides_global_and_unconfigured_channel_fall
             name: "Help Center".to_string(),
             system_prompt: Some("Site A override prompt.".to_string()),
             suggested_questions: None,
+            content_language: None,
         },
     );
     channels.insert(
@@ -1707,6 +1712,7 @@ fn channel_specific_system_prompt_overrides_global_and_unconfigured_channel_fall
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     let channels_config = ChannelsConfig { channels };
@@ -2131,6 +2137,7 @@ async fn build_low_recall_app_state_with_design_vector_seeds(
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     let channels_config = ChannelsConfig { channels };

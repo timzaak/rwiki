@@ -19,10 +19,6 @@ use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 
-// ---------------------------------------------------------------------------
-// Test constants / helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
@@ -55,6 +51,7 @@ fn test_channels_config() -> ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     channels.insert(
@@ -63,6 +60,7 @@ fn test_channels_config() -> ChannelsConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     ChannelsConfig { channels }
@@ -193,10 +191,6 @@ fn feedback_post_request(body: serde_json::Value) -> Request<Body> {
         ))
         .expect("build request")
 }
-
-// ---------------------------------------------------------------------------
-// POST submit/cancel feedback scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-029 -- As a user, I want to submit a like feedback for an
 // assistant message so that I can indicate the response was helpful.
@@ -801,10 +795,6 @@ async fn invalid_feedback_value_returns_400() {
         "feedback='unknown' must return 400"
     );
 }
-
-// ---------------------------------------------------------------------------
-// GET query feedback scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-029 -- As an operator, I want to query feedback records
 // to analyze knowledge base quality.

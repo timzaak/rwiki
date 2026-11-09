@@ -32,6 +32,18 @@ interface ChatState {
   updatedAt: number | null
   isLoading: boolean
   error: string | null
+  /**
+   * Widget 全局 API `RWikiChat.ask()` 投递、尚未发送的问题。React 树外的 main.tsx
+   * 无法直接调用组件内的 sendMessage，由 WidgetApp 内的 effect 消费并清空；不持久化。
+   */
+  pendingQuestion: string | null
+
+  /**
+   * 会话所属频道（排序后的频道 ID 集合编码）。随会话持久化：init/setChannel 绑定
+   * 到不同频道时丢弃旧会话，防止整页加载/换频道后复活异频道的会话与 sessionId。
+   */
+  channelKey: string | null
+  setChannelKey: (key: string | null) => void
 
   addUserMessage: (content: string) => void
   addAssistantMessage: (id: string) => void
@@ -46,9 +58,13 @@ interface ChatState {
   removeLastFailedPair: () => void
   updateMessageFeedback: (messageId: string, feedback: 'like' | 'dislike' | undefined) => void
   setLastAssistantSuggestions: (questions: string[]) => void
+  setPendingQuestion: (question: string | null) => void
 }
 
-type PersistedChatState = Pick<ChatState, 'messages' | 'sessionId' | 'updatedAt'>
+type PersistedChatState = Pick<
+  ChatState,
+  'messages' | 'sessionId' | 'updatedAt' | 'channelKey'
+>
 
 function removePersistedChatState() {
   localStorage.removeItem(CHAT_STORAGE_KEY)
@@ -64,6 +80,7 @@ function sanitizePersistedState(
 
   return {
     ...state,
+    channelKey: state.channelKey ?? null,
     messages: state.messages.map((message) => ({
       ...message,
       isStreaming: false,
@@ -83,6 +100,8 @@ export const useChatStore = create<ChatState>()(
       updatedAt: null,
       isLoading: false,
       error: null,
+      pendingQuestion: null,
+      channelKey: null,
 
       addUserMessage: (content) =>
         set((state) => {
@@ -243,6 +262,11 @@ export const useChatStore = create<ChatState>()(
           }
           return { messages, updatedAt: Date.now() }
         }),
+
+      setPendingQuestion: (question) => set({ pendingQuestion: question }),
+
+      setChannelKey: (key) => set({ channelKey: key }),
+
     }),
     {
       name: CHAT_STORAGE_KEY,
@@ -250,6 +274,7 @@ export const useChatStore = create<ChatState>()(
         messages: state.messages,
         sessionId: state.sessionId,
         updatedAt: state.updatedAt,
+        channelKey: state.channelKey,
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as PersistedChatState | undefined

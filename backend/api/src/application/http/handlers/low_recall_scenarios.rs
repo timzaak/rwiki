@@ -21,10 +21,6 @@ use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 
-// ---------------------------------------------------------------------------
-// Test constants / helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
@@ -57,6 +53,7 @@ fn test_channels_config() -> ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     channels.insert(
@@ -65,6 +62,7 @@ fn test_channels_config() -> ChannelsConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     ChannelsConfig { channels }
@@ -186,10 +184,6 @@ async fn insert_test_record(
         .await
         .expect("insert test low_recall_records row");
 }
-
-// ---------------------------------------------------------------------------
-// GET /api/low-recall/records scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-038 -- As an operator, I want to view low-recall records
 // filtered by score so I can identify knowledge-base blind spots.

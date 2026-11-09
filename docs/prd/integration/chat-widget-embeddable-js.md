@@ -1,6 +1,6 @@
 # Chat Widget 嵌入式 JS 导出 产品需求文档 (PRD)
 
-**状态**: Implemented
+**状态**: Implemented（2026-11-09 扩展：`ask` / `setChannel` 全局接口，US-INTG-016/017）
 **创建时间**: 2026-05-29
 **优先级**: P1
 
@@ -17,6 +17,8 @@
 | US-INTG-001 | 嵌入聊天组件到第三方网站 | P0 | Website Integrator | `docs/user-stories/02-website-integrator-user-stories.md` |
 | US-INTG-002 | 定制 Widget 外观 | P1 | Website Integrator | `docs/user-stories/02-website-integrator-user-stories.md` |
 | US-INTG-003 | 管理 Widget 生命周期 | P2 | Website Integrator | `docs/user-stories/02-website-integrator-user-stories.md` |
+| US-INTG-016 | 运行时切换 Widget 频道 | P2 | Website Integrator | `docs/user-stories/02-website-integrator-user-stories.md` |
+| US-INTG-017 | 把检索词交给 Widget 直接提问 | P1 | Website Integrator | `docs/user-stories/02-website-integrator-user-stories.md` |
 | US-CORE-002 | 与知识库进行多轮对话 | P0 | User | `docs/user-stories/01-user-user-stories.md` |
 | US-CORE-003 | 流式查看回答 | P0 | User | `docs/user-stories/01-user-user-stories.md` |
 | US-CORE-006 | 在弹窗中使用聊天 | P1 | User | `docs/user-stories/01-user-user-stories.md` |
@@ -44,6 +46,8 @@
 - 响应式适配：PC 端浮动窗口，移动端全屏覆盖
 - 提供 `RWikiChat.destroy()` 销毁接口
 - 提供 `RWikiChat.setLocale(locale)` 实时切换语言接口
+- 提供 `RWikiChat.ask(query)` 接口：打开弹窗并把 query 作为一轮用户提问自动发出（复用既有隐式中断语义；空串/空白被忽略）
+- 提供 `RWikiChat.setChannel(channelId)` 运行时切换频道接口：切换即开启新会话（中止在途回答、清空对话与 sessionId 后按新频道重新渲染）；频道集合不变时为 no-op（不误清会话）
 
 ### 2.2 不包含功能 (Out of Scope)
 
@@ -116,6 +120,8 @@
    - `init(config)` 方法创建 Shadow DOM 容器、注入样式、挂载 React 应用
    - `destroy()` 方法移除 Widget DOM 并清理资源
    - `setLocale(locale)` 方法在不卸载 Widget 的前提下实时切换界面语言（重新渲染，保留当前对话）
+   - `ask(query)` 方法（2026-11-09，US-INTG-017）：打开聊天弹窗并把 trim 后的 query 交给组件内发送链路作为一轮用户提问；已在流的回答按既有隐式中断语义收尾；init 前调用报控制台错误。宿主页（如 docs-web 搜索的「用 AI 回答」）由此把检索词升级为 AI 问答
+   - `setChannel(channelId)` 方法（2026-11-09，US-INTG-016）：参数校验与 `init` 的 channelId 一致（string | string[]，归一化去重）；频道集合不变时直接返回；变化时先中止在途回答、清空对话（含 sessionId）再以新频道重新渲染（与 setLocale 同模式）；init 前调用报控制台错误
 
 3. **配置接口**
    - `apiUrl`（必填）：后端 API 地址

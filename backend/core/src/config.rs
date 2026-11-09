@@ -373,6 +373,11 @@ pub struct ChannelConfig {
     /// Key 为语言标签（如 "default"、"zh-CN"、"en"），Value 为该语言的推荐问题列表。
     #[serde(default)]
     pub suggested_questions: Option<HashMap<String, Vec<String>>>,
+    /// 频道级知识库内容语言（如 "English"、"中文"）；省略或为空时使用全局
+    /// `[chat].content_language`。影响该频道查询改写的目标语言
+    /// （docs/prd/chat/query-language-aware-rewrite.md）。
+    #[serde(default)]
+    pub content_language: Option<String>,
 }
 
 /// 多频道配置集合。
@@ -542,6 +547,36 @@ impl ChannelsConfig {
             .and_then(|s| s.system_prompt.as_deref())
             .filter(|s| !s.is_empty())
             .unwrap_or(global)
+    }
+
+    /// 解析频道内容语言：频道级配置存在且非空时优先，否则回退到全局
+    /// `[chat].content_language`（同样过滤空串）。返回 `None` 表示未配置，
+    /// 此时改写提示词保持原行为（不含语言指令）。
+    pub fn resolved_content_language<'a>(
+        &'a self,
+        channel_id: Option<&str>,
+        global: Option<&'a str>,
+    ) -> Option<&'a str> {
+        channel_id
+            .and_then(|id| self.channels.get(id))
+            .and_then(|c| c.content_language.as_deref())
+            .filter(|s| !s.is_empty())
+            .or(global.filter(|s| !s.is_empty()))
+    }
+
+    /// 多频道版本的内容语言解析：取频道列表中**首个**已配置频道的频道级语言（非空时），
+    /// 否则回退到全局（过滤空串）。与 `resolved_system_prompt_multi` 同策略：
+    /// 单一改写请求只能有一个目标语言，取排序后的首个频道是确定性行为。
+    pub fn resolved_content_language_multi<'a>(
+        &'a self,
+        channel_ids: Option<&[String]>,
+        global: Option<&'a str>,
+    ) -> Option<&'a str> {
+        channel_ids
+            .and_then(|ids| ids.iter().find_map(|id| self.channels.get(id)))
+            .and_then(|c| c.content_language.as_deref())
+            .filter(|s| !s.is_empty())
+            .or(global.filter(|s| !s.is_empty()))
     }
 }
 
@@ -1253,6 +1288,7 @@ mod tests {
                             name: format!("channel {id}"),
                             system_prompt: None,
                             suggested_questions: None,
+                            content_language: None,
                         },
                     )
                 })
@@ -1428,7 +1464,8 @@ mod tests {
         assert!(config.list_metadata().is_empty());
     }
 
-    // Covers: Design 5.1 — [channels.<id>] parses name, system_prompt and suggested_questions.
+    // Covers: Design 5.1 — [channels.<id>] parses name, system_prompt, suggested_questions
+    // and content_language.
     #[test]
     fn channels_config_parses_from_toml() {
         // When parsed standalone, ChannelsConfig is transparent and expects
@@ -1437,6 +1474,7 @@ mod tests {
             [help_center]
             name = "Help Center"
             system_prompt = "You are Help Center."
+            content_language = "中文"
             [help_center.suggested_questions]
             default = ["How do I start?"]
             zh-CN = ["如何快速上手"]
@@ -1451,6 +1489,7 @@ mod tests {
         let help = config.get("help_center").expect("help_center should exist");
         assert_eq!(help.name, "Help Center");
         assert_eq!(help.system_prompt.as_deref(), Some("You are Help Center."));
+        assert_eq!(help.content_language.as_deref(), Some("中文"));
         let questions = help.suggested_questions.as_ref().unwrap();
         assert_eq!(questions.get("default").unwrap(), &vec!["How do I start?"]);
         assert_eq!(questions.get("zh-CN").unwrap(), &vec!["如何快速上手"]);
@@ -1459,6 +1498,8 @@ mod tests {
         assert_eq!(dev.name, "Developer Docs");
         assert!(dev.system_prompt.is_none());
         assert!(dev.suggested_questions.is_none());
+        // Existing configs without the key keep parsing (backward compatible).
+        assert!(dev.content_language.is_none());
     }
 
     // Covers: Design 5.1 — list_metadata returns only id + name in deterministic order.
@@ -1471,6 +1512,7 @@ mod tests {
                 name: "B Channel".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
+                content_language: None,
             },
         );
         channels.channels.insert(
@@ -1479,6 +1521,7 @@ mod tests {
                 name: "A Channel".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
+                content_language: None,
             },
         );
         let metadata = channels.list_metadata();
@@ -1514,6 +1557,7 @@ mod tests {
                 name: "Help".to_string(),
                 system_prompt: None,
                 suggested_questions: None,
+                content_language: None,
             },
         );
 
@@ -1550,6 +1594,7 @@ mod tests {
                 name: "Help".to_string(),
                 system_prompt: Some("Channel prompt.".to_string()),
                 suggested_questions: None,
+                content_language: None,
             },
         );
         channels.channels.insert(
@@ -1558,6 +1603,7 @@ mod tests {
                 name: "Empty".to_string(),
                 system_prompt: Some("".to_string()),
                 suggested_questions: None,
+                content_language: None,
             },
         );
 
@@ -1575,6 +1621,115 @@ mod tests {
             global
         );
         assert_eq!(channels.resolved_system_prompt(None, global), global);
+    }
+
+    fn channel_with_language(name: &str, content_language: Option<&str>) -> ChannelConfig {
+        ChannelConfig {
+            name: name.to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+            content_language: content_language.map(str::to_string),
+        }
+    }
+
+    // Covers: US-CORE-046 — a channel whose documents are in another language than the
+    // global [chat].content_language rewrites queries into ITS language; otherwise a
+    // Chinese channel under a global "English" would have its queries translated to
+    // English and the keyword leg could never match the Chinese chunks.
+    #[test]
+    fn resolved_content_language_prefers_channel_then_global() {
+        let mut channels = ChannelsConfig::default();
+        channels
+            .channels
+            .insert("zh".to_string(), channel_with_language("ZH", Some("中文")));
+        channels.channels.insert(
+            "blank".to_string(),
+            channel_with_language("Blank", Some("")),
+        );
+        channels
+            .channels
+            .insert("plain".to_string(), channel_with_language("Plain", None));
+
+        let global = Some("English");
+        assert_eq!(
+            channels.resolved_content_language(Some("zh"), global),
+            Some("中文"),
+            "channel-level language must override the global one"
+        );
+        assert_eq!(
+            channels.resolved_content_language(Some("blank"), global),
+            global,
+            "empty channel value means unset, not 'no language'"
+        );
+        assert_eq!(
+            channels.resolved_content_language(Some("plain"), global),
+            global
+        );
+        assert_eq!(
+            channels.resolved_content_language(Some("missing"), global),
+            global
+        );
+        assert_eq!(channels.resolved_content_language(None, global), global);
+
+        // Backward compatibility (US-CORE-025): with neither channel nor global
+        // language the rewrite stays language-agnostic; an empty global is unset too.
+        assert_eq!(
+            channels.resolved_content_language(Some("plain"), None),
+            None
+        );
+        assert_eq!(
+            channels.resolved_content_language(Some("plain"), Some("")),
+            None
+        );
+        assert_eq!(
+            channels.resolved_content_language(Some("zh"), None),
+            Some("中文"),
+            "channel language applies even without a global one"
+        );
+    }
+
+    // Covers: US-CORE-046 — multi-channel chat has a single rewrite target language, taken
+    // from the first channel of the sorted list (same rule as resolved_system_prompt_multi)
+    // and falling back to the global value when that channel sets none.
+    #[test]
+    fn resolved_content_language_multi_uses_first_channel_or_global() {
+        let mut channels = ChannelsConfig::default();
+        channels
+            .channels
+            .insert("a_zh".to_string(), channel_with_language("A", Some("中文")));
+        channels
+            .channels
+            .insert("b_plain".to_string(), channel_with_language("B", None));
+        channels.channels.insert(
+            "c_ja".to_string(),
+            channel_with_language("C", Some("日本語")),
+        );
+
+        let global = Some("English");
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            channels.resolved_content_language_multi(Some(&ids(&["a_zh", "b_plain"])), global),
+            Some("中文")
+        );
+        // The first channel has no language: its effective language is the global one,
+        // so a later channel's value must not leak in.
+        assert_eq!(
+            channels.resolved_content_language_multi(Some(&ids(&["b_plain", "c_ja"])), global),
+            global
+        );
+        assert_eq!(
+            channels.resolved_content_language_multi(Some(&ids(&["c_ja"])), None),
+            Some("日本語")
+        );
+        assert_eq!(
+            channels.resolved_content_language_multi(None, global),
+            global
+        );
+        assert_eq!(
+            channels.resolved_content_language_multi(None, Some("")),
+            None
+        );
     }
 
     // Covers: BE-D01 — [channels.<id>] section parses within full AppConfig.
@@ -1607,6 +1762,7 @@ mod tests {
 
             [channels.dev_docs]
             name = "Developer Docs"
+            content_language = "English"
         "#;
         let config: AppConfig =
             toml::from_str(toml_str).expect("config with channels should parse");
@@ -1616,6 +1772,19 @@ mod tests {
             "Help Center"
         );
         assert_eq!(config.channels.get("dev_docs").unwrap().system_prompt, None);
+        assert_eq!(
+            config
+                .channels
+                .get("dev_docs")
+                .unwrap()
+                .content_language
+                .as_deref(),
+            Some("English")
+        );
+        assert_eq!(
+            config.channels.get("help_center").unwrap().content_language,
+            None
+        );
     }
 
     // Covers: BE-D01 startup validation — tolerate tables without channel_id column,

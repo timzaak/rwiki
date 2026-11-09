@@ -33,7 +33,7 @@ export const WIDGET_DEFAULTS = {
  * - 结果为空数组 → 返回 null（调用方据此报 "channelId is required"）
  * - 非法类型（number、object 等）→ 返回 null
  */
-function normalizeChannelIds(input: unknown): string[] | null {
+export function normalizeChannelIds(input: unknown): string[] | null {
   let ids: unknown[]
   if (Array.isArray(input)) {
     ids = input

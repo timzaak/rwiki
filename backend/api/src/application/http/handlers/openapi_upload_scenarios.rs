@@ -16,10 +16,6 @@ use tower::ServiceExt;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-openapi-upload-token";
 const EMBEDDING_DIMS: usize = 1536;
 const CHANNEL_ID: &str = "channel-a";
@@ -158,6 +154,7 @@ async fn test_app_state() -> Arc<AppState> {
                     name: "Site A".to_string(),
                     system_prompt: None,
                     suggested_questions: None,
+                    content_language: None,
                 },
             );
             rwiki_core::config::ChannelsConfig { channels }
@@ -248,10 +245,6 @@ fn auth_request(method: Method, uri: String) -> Request<Body> {
         .expect("build request")
 }
 
-// ---------------------------------------------------------------------------
-// Test fixtures
-// ---------------------------------------------------------------------------
-
 /// Valid minimal OpenAPI 3.0 JSON with 2 endpoints (GET /pets, POST /pets).
 fn valid_openapi_json() -> Vec<u8> {
     r#"{
@@ -292,10 +285,6 @@ fn openapi_empty_paths_json() -> Vec<u8> {
     .to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// 1. Upload valid OpenAPI JSON -> 200, status=draft, rowCount=2
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to upload a valid OpenAPI 3.x
 // JSON file so that each API endpoint becomes an independent knowledge page in
 // draft status, ready for review before publishing.
@@ -335,10 +324,6 @@ async fn upload_valid_openapi_json_returns_200_draft() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. Upload non-OpenAPI JSON -> 400
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want the system to reject plain
 // JSON files that are not OpenAPI format with a clear error, so that I know
 // the file lacks the required `openapi` field.
@@ -364,10 +349,6 @@ async fn upload_non_openapi_json_returns_400() {
         "error message must contain 'missing \"openapi\" field', got: {body_text}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 3. Upload OpenAPI JSON with empty paths -> 400
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want the system to reject OpenAPI
 // files that have no endpoints with a clear error, so that I know there is
@@ -398,10 +379,6 @@ async fn upload_openapi_empty_paths_returns_400() {
         "error message must contain 'No parseable API endpoints', got: {body_text}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 4. Upload OpenAPI JSON -> publish -> list shows published
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want to upload an OpenAPI JSON file
 // and then publish it, so that the API documentation becomes available for RAG
@@ -460,10 +437,6 @@ async fn upload_openapi_then_publish_shows_in_document_list() {
         "listed document must show 'published' status after publish"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 5. Channel-scoped upload assertions (BE-T02)
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // OpenAPI upload path to persist the channelId I provide and echo it back.

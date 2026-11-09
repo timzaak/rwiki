@@ -35,3 +35,13 @@ The response carries `results[]`, where each item has `title`, `section`, `conte
 Retrieval runs through the same orchestration as chat and MCP: query rewrite, hybrid keyword and vector search, dedupe, optional rerank, then the page-level ranking. Same query, same channel, same results as the page search box and `rwiki_search`.
 
 The widget build does not include the search box; it is a main-site feature.
+
+## Docs site search
+
+The docs site (this site) uses the same semantic search: the Ctrl+K dialog calls `POST /api/search` instead of a static client-side index.
+
+- **Trigger**: typing sends nothing; Enter in the input runs the query. Once results are on screen, Enter opens the highlighted item — edit the query to run another search.
+- **Channel per locale**: each locale searches its own channel — on this site `/en` → `help_center`, `/zh` → `help_center_zh` (seeded with that language's docs, with channel-level `content_language` so queries are rewritten in the channel's language). The locale→channel map lives in `src/lib/rwiki.ts`: one channel per site language, add a language by adding a line and a channel.
+- **Results**: grouped by page — a title row with its chunk summaries below. Items open on the docs site in the current language; foreign origins open in a new tab. Results without a source link (for example OpenAPI chunks) are not shown.
+- **Ask AI**: with results on screen, the first row hands the query to the rwiki chat widget on the page. It requires a widget build with `RWikiChat.ask` — with an older bundle the row is simply not rendered.
+- **Failure**: backend errors show a fixed message; validation errors (like an unconfigured channel) show the backend's message verbatim.

@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from 'react';
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 
 import { ChatStreamProvider } from '@/components/chat/chat-stream-context';
 import { FloatingButton } from '@/components/chat/floating-button';
@@ -11,6 +11,7 @@ import { FeedbackSubmitFnContext } from '@/hooks/feedback-context';
 import { client } from '@/lib/api-generated/client.gen';
 import { submitFeedback } from '@/lib/api-generated/sdk.gen';
 import type { FeedbackRequest } from '@/lib/api-generated/types.gen';
+import { useChatStore } from '@/stores/chat-store';
 import { useWidgetChatStream } from '@/widget/use-widget-chat-stream';
 import { useWidgetSuggestions } from '@/widget/use-widget-suggestions';
 import type { ValidatedWidgetConfig } from '@/widget/config';
@@ -32,6 +33,17 @@ function WidgetAppContent({ config }: WidgetAppProps) {
     },
     [config.apiUrl, config.channelId],
   )
+
+  // 消费全局 API RWikiChat.ask() 投递的问题（US-INTG-017）：React 树外只能写 store，
+  // 发送逻辑在树内。先清空再发送，发送失败时由 chat 自身的错误态呈现，不重试。
+  // 发送中的回答按既有隐式中断语义收尾（US-CORE-039/040）。
+  const pendingQuestion = useChatStore((s) => s.pendingQuestion)
+  const { sendMessage } = streamValue
+  useEffect(() => {
+    if (pendingQuestion == null) return
+    useChatStore.getState().setPendingQuestion(null)
+    void sendMessage(pendingQuestion)
+  }, [pendingQuestion, sendMessage])
 
   return (
     <WidgetI18nProvider messages={t}>

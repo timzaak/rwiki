@@ -9,10 +9,6 @@ use std::collections::HashMap;
 
 use super::chat::match_locale;
 
-// ---------------------------------------------------------------------------
-// Scenario 1: Default group, no locale param
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 1; no locale provided -> default key lookup path.
 
@@ -33,10 +29,6 @@ fn default_group_no_locale_returns_default_questions() {
         "without locale param, must return the 'default' group questions"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Scenario 2: Exact locale match (case-insensitive)
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 2; exact match path.
@@ -78,10 +70,6 @@ fn exact_locale_match_is_case_insensitive() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 3a: No prefix match, falls to default
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 3a; no prefix match for locale -> default path.
 
@@ -101,10 +89,6 @@ fn no_prefix_match_falls_to_default() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 3b: Prefix match to shorter key
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 3b; longest prefix match path.
 
@@ -123,10 +107,6 @@ fn prefix_match_to_shorter_key() {
         "'zh-TW' has no exact match; 'zh' is a prefix -> returns 'zh' group questions"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Scenario 4: No suggested_questions configured
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 4; None config handling.
@@ -151,10 +131,6 @@ fn empty_hashmap_returns_empty_array() {
 
     assert!(result.is_empty(), "empty HashMap must return empty vec");
 }
-
-// ---------------------------------------------------------------------------
-// Scenario 5: Truncation at 10
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-028
 // Covers: Design 5.1 scenario 5; truncation to MAX_SUGGESTIONS (10).
@@ -182,10 +158,6 @@ fn more_than_ten_questions_truncated_to_ten() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 6: Empty locale string
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Locale validation; empty string fails format check, falls to default.
 
@@ -203,10 +175,6 @@ fn empty_locale_string_treated_as_no_locale() {
         "empty string locale fails validation, must fall back to default"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Scenario 7: Invalid locale format
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-028
 // Covers: Locale validation: digits in locale string rejected -> default fallback.
@@ -262,10 +230,6 @@ fn invalid_locale_with_underscore_falls_to_default() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 8: Exact match but empty questions array
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Exact match returns whatever the config says, even if empty.
 
@@ -282,10 +246,6 @@ fn exact_match_with_empty_array_returns_empty() {
         "exact match to 'fr' must return its empty array, not fall back to default"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Scenario 9: Multiple prefix matches, longest wins
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-028
 // Covers: Design BE-D01 spec "longest prefix match" -- most specific key wins.
@@ -327,10 +287,6 @@ fn multiple_prefix_matches_with_three_char_key_longest_wins() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// No match and no default key
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: When no locale match exists and no "default" key is configured,
 //         the function returns an empty vec rather than panicking.
@@ -366,10 +322,6 @@ fn none_locale_without_default_returns_empty() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Case-insensitive prefix matching
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-028
 // Covers: Prefix matching is case-insensitive on both locale and key.
 
@@ -388,10 +340,6 @@ fn prefix_match_is_case_insensitive() {
     );
 }
 
-// ===========================================================================
-// GET /api/chat/suggestions HTTP handler scenario tests (BE-T03)
-// ===========================================================================
-//
 // These tests exercise the public suggestions endpoint after `channelId` became
 // required. They verify configured-channel validation, channel-level suggested
 // question lookup, and the empty-array behavior for channels without configured
@@ -458,6 +406,7 @@ fn suggestions_channels_config() -> ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: Some(channel_a_questions),
+            content_language: None,
         },
     );
     channels.insert(
@@ -466,6 +415,7 @@ fn suggestions_channels_config() -> ChannelsConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
 

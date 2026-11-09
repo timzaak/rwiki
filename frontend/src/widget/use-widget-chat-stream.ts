@@ -44,6 +44,14 @@ function processSseLines(
   return false
 }
 
+// 页面上只有一个 widget 实例：React 树外的全局 API（main.tsx 的 setChannel）
+// 通过此句柄中止在途回答，避免旧频道的流在切换后写入新会话。
+let stopActiveStream: (() => void) | null = null
+
+export function stopWidgetStreaming() {
+  stopActiveStream?.()
+}
+
 export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatStreamValue {
   const abortRef = useRef<AbortController | null>(null)
   const storeRef = useRef(useChatStore.getState())
@@ -127,10 +135,12 @@ export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatSt
   )
 
   useEffect(() => {
+    stopActiveStream = stopStreaming
     return () => {
       abortRef.current?.abort()
+      if (stopActiveStream === stopStreaming) stopActiveStream = null
     }
-  }, [])
+  }, [stopStreaming])
 
   return { sendMessage, stopStreaming }
 }

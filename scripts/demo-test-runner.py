@@ -188,8 +188,10 @@ def run_tests(
     env["DEBUG"] = env.get("DEBUG", "pw:api")
     backend_port = os.environ.get("BACKEND_PORT", "18080")
     frontend_port = os.environ.get("FRONTEND_PORT", "3000")
+    docs_port = os.environ.get("DOCS_WEB_PORT", "3001")
     env.setdefault("BASE_URL", f"http://localhost:{backend_port}")
     env.setdefault("FRONTEND_URL", f"http://localhost:{frontend_port}")
+    env.setdefault("DOCS_URL", f"http://localhost:{docs_port}")
 
     # 构建 Playwright 命令
     npx = require_executable("npx", windows_fallback="npx.cmd")

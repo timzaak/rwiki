@@ -39,6 +39,16 @@ default = ["如何快速上手", "系统支持哪些文件格式"]
 zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何联系客服"]
 en = ["How to get started", "What file formats are supported"]
 
+[channels.help_center_es]
+name = "Centro de ayuda"
+# 可选：覆盖全局 [chat].content_language——
+# 该频道的查询按西班牙语改写
+content_language = "Spanish"
+
+[channels.help_center_ja]
+name = "ヘルプセンター"
+content_language = "Japanese"
+
 [channels.developer_docs]
 name = "Developer Docs"
 # 未配置推荐问题的频道，该频道返回空数组
@@ -51,7 +61,17 @@ name = "Developer Docs"
 - **无空 `channel_id` 历史行** —— 若 `documents`、`chat_feedback`、`low_recall_records` 中存在 `channel_id` 为空的行，启动失败并提示先回填。
 - **`channelId` 格式** —— URL-safe 字符串（字母、数字、连字符、下划线），启动时强制校验：含其他字符的标识（如引用键 `[channels."docs/v2"]`）会导致启动失败并指明该标识。频道标识会进入 URL 路径段（主站频道页与 MCP 入口 `/mcp/<channelId>`），因此必须保持为单一安全路径段。
 
-每个频道可选地配置 `system_prompt` 和 `suggested_questions`。未配置时使用全局 `[chat]` 的值。详见[配置 → Chat](/zh/docs/configuration#chat)。
+每个频道可选地配置 `system_prompt`、`suggested_questions` 和 `content_language`。未配置时使用全局 `[chat]` 的值。频道级 `content_language`（如英文为主的实例上的西语文档频道配 `"Spanish"`）让该频道的查询改写——以及关键词检索——按频道语言进行；多频道聊天取排序后首个频道的值。详见[配置 → Chat](/zh/docs/configuration#chat)；多语言站点按「每种语言一个频道」组织，见下文「多语言知识库」。
+
+## 多语言知识库
+
+站点同时提供多种语言时（如英语为主，另有西语、日语），**每种语言一个频道**，不要把多种语言混进同一频道——检索质量取决于按语料语言改写查询，而频道级 `content_language` 正是选择语言的开关：
+
+- 主语言频道沿用全局 `[chat]` 的 `content_language`（或不配置）。
+- 每种辅语言一个 `[channels.<id>]`，灌入该语言的文档，并配置频道级 `content_language`，使查询改写——以及关键词检索——按该语言进行。
+- 站点侧用一张 locale → `channelId` 映射表（每种语言一行，未列出时回退主语言频道）。Widget `init` 时使用映射频道，语言切换经 `setChannel` 跟随；文档站检索也发到映射频道。
+
+完整的 widget/检索接入模式见[配置 → Widget](/zh/docs/configuration#widget)。
 
 ## 三种指定频道的方式
 

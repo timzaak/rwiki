@@ -16,10 +16,6 @@ use std::env;
 use std::sync::{Mutex, MutexGuard};
 use tempfile::NamedTempFile;
 
-// ---------------------------------------------------------------------------
-// Env-var test synchronization
-// ---------------------------------------------------------------------------
-
 /// Global mutex used to serialize tests that mutate process environment variables.
 /// `env::set_var` / `env::remove_var` are not thread-safe when observed by other
 /// tests that read the same variables, so any test touching `OPENROUTER_API_KEY`
@@ -117,10 +113,6 @@ fn restore_env(var: &str, prev: Option<String>) {
     env_lock_release();
 }
 
-// ---------------------------------------------------------------------------
-// Config loads LLM api_key from file without OPENROUTER_API_KEY
-// ---------------------------------------------------------------------------
-
 // User Story: US-LLM-CONFIG-001
 // Covers: After openrouter removal, [llm].api_key loads purely from config file.
 //         OPENROUTER_API_KEY env var is no longer consulted.
@@ -140,10 +132,6 @@ fn llm_api_key_loads_from_file_without_openrouter_env() {
     restore_env("OPENROUTER_API_KEY", prev);
 }
 
-// ---------------------------------------------------------------------------
-// Config ignores OPENROUTER_API_KEY env var when set
-// ---------------------------------------------------------------------------
-
 // User Story: US-LLM-CONFIG-001
 // Covers: Even if OPENROUTER_API_KEY is set in the environment, config uses the file value.
 //         The env var reading for LLM api_key was removed by BE-D01.
@@ -162,10 +150,6 @@ fn llm_api_key_ignores_openrouter_env_var() {
 
     restore_env("OPENROUTER_API_KEY", prev);
 }
-
-// ---------------------------------------------------------------------------
-// Config preserves other fields from file
-// ---------------------------------------------------------------------------
 
 // User Story: US-LLM-CONFIG-001
 // Covers: base_url and model are loaded from the config file unchanged.
@@ -187,10 +171,6 @@ fn llm_base_url_and_model_load_from_file() {
 
     restore_env("OPENROUTER_API_KEY", prev);
 }
-
-// ---------------------------------------------------------------------------
-// Bailian DashScope full AppConfig (US-CORE-033 scenario 2 config seam)
-// ---------------------------------------------------------------------------
 
 /// Helper: write a full Bailian-oriented config that drives chat + embedding +
 /// rerank from one provider. Mirrors the recommended `config.example.toml`
@@ -288,10 +268,6 @@ fn app_config_parses_bailian_single_provider_stack() {
     restore_env("OPENROUTER_API_KEY", prev_or);
     restore_env("RERANK_API_KEY", prev_rerank);
 }
-
-// ---------------------------------------------------------------------------
-// RERANK_API_KEY env override (US-CORE-033 scenario 4 -- config-layer slice)
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-033 (scenario 4) -- As a deployer, I can supply the rerank
 // API Key either via [rerank].api_key in the file or the RERANK_API_KEY env var.
@@ -414,7 +390,6 @@ model = "qwen3-rerank"
     restore_env("OPENROUTER_API_KEY", prev_or);
 }
 
-// ---------------------------------------------------------------------------
 // Post-answer suggested-questions switch (BE-T02 / US-CORE-037)
 //
 // The toggle `enable_post_answer_suggestions` lives on `ChatConfig`
@@ -425,7 +400,6 @@ model = "qwen3-rerank"
 // safety property: the SSE `suggestions` event must not appear for anyone who
 // has not explicitly opted in. These four scenarios pin that property at the
 // config-deserialization seam.
-// ---------------------------------------------------------------------------
 
 /// Helper: write a minimal valid TOML config with a custom `[chat]` section body.
 ///
@@ -551,7 +525,6 @@ fn post_answer_suggestions_default_impl_is_false() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // LowRecallConfig enablement toggle (BE-T03 / US-CORE-038 + US-CORE-033)
 //
 // The low-recall logging feature's enablement lives on `AppConfig.low_recall:
@@ -563,7 +536,6 @@ fn post_answer_suggestions_default_impl_is_false() {
 // field carries `#[serde(default = "default_low_recall_threshold")]` = 0.3
 // (`config.rs` lines 325-327, 335). These three scenarios pin both properties
 // at the config-deserialization seam.
-// ---------------------------------------------------------------------------
 
 /// Helper: write a minimal valid TOML config with a customizable `[low_recall]`
 /// section, mirroring the `write_chat_config` skeleton (`[server]/[sqlite]/
@@ -722,12 +694,10 @@ fn low_recall_threshold_explicit_value_parsed() {
     restore_env("OPENROUTER_API_KEY", prev_or);
 }
 
-// ---------------------------------------------------------------------------
 // Channel configuration scenarios (BE-T01)
 //
 // Covers: configured channel parsing, default representation of omitted fields,
 //         startup rejection preconditions, and historical-row validation.
-// ---------------------------------------------------------------------------
 
 /// Helper: write a minimal valid TOML config with the given `[channels]` body.
 fn write_app_config_with_channels(channels_body: &str) -> NamedTempFile {
@@ -903,6 +873,7 @@ fn channel_list_metadata_excludes_system_prompt_and_suggested_questions() {
             name: "Help Center".to_string(),
             system_prompt: Some("secret prompt".to_string()),
             suggested_questions: Some(questions),
+            content_language: None,
         },
     );
 
@@ -930,6 +901,7 @@ fn require_configured_normalizes_and_rejects_invalid_channel_ids() {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
 
@@ -967,6 +939,7 @@ fn resolved_system_prompt_uses_channel_value_or_global_fallback() {
             name: "Help Center".to_string(),
             system_prompt: Some("Channel prompt.".to_string()),
             suggested_questions: None,
+            content_language: None,
         },
     );
     channels.channels.insert(
@@ -975,6 +948,7 @@ fn resolved_system_prompt_uses_channel_value_or_global_fallback() {
             name: "Empty Prompt".to_string(),
             system_prompt: Some("".to_string()),
             suggested_questions: None,
+            content_language: None,
         },
     );
 

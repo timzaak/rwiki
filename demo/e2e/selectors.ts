@@ -106,6 +106,20 @@ export const SELECTORS = {
     highlight: '[data-testid="search-highlight"]',
     askAi: '[data-testid="search-ask-ai"]',
   },
+
+  /**
+   * 文档站（docs-web）Ctrl+K 语义搜索 — US-CORE-045。
+   *
+   * 来源：`docs-web/src/components/search.tsx`（复用 fumadocs SearchDialog：
+   * 输入框带 docs-search-input；结果条目是原生 role="option"）。
+   * 状态行 docs-search-status 在待检索/检索中/失败时出现。
+   */
+  docsSearch: {
+    input: '[data-testid="docs-search-input"]',
+    status: '[data-testid="docs-search-status"]',
+    askAi: '[data-testid="docs-search-ask-ai"]',
+    option: '[role="option"]',
+  },
 }
 
 /**

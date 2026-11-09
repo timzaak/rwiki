@@ -63,9 +63,6 @@ export default defineConfig({
         // OpenAPI pages (crawler doesn't discover these from virtual pages)
         ...openapiPages(),
         {
-          path: "/api/search",
-        },
-        {
           path: "llms-full.txt",
         },
         {

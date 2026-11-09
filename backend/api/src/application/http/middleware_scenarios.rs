@@ -19,10 +19,6 @@ use tower::ServiceExt;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
@@ -119,14 +115,11 @@ fn test_channels_config() -> rwiki_core::config::ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     rwiki_core::config::ChannelsConfig { channels }
 }
-
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: As an API operator, I want unauthenticated requests to document
 // endpoints to be rejected, so that only authorized clients can manage

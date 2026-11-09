@@ -17,10 +17,6 @@ use tower::ServiceExt;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-faq-upload-token";
 const EMBEDDING_DIMS: usize = 1536;
 const CHANNEL_ID: &str = "channel-a";
@@ -159,6 +155,7 @@ async fn test_app_state() -> Arc<AppState> {
                     name: "Site A".to_string(),
                     system_prompt: None,
                     suggested_questions: None,
+                    content_language: None,
                 },
             );
             rwiki_core::config::ChannelsConfig { channels }
@@ -239,10 +236,6 @@ fn upload_request_without_channel(
         .expect("build upload request")
 }
 
-// ---------------------------------------------------------------------------
-// Test fixtures
-// ---------------------------------------------------------------------------
-
 /// Valid FAQ JSON array with 2 Q&A pairs.
 /// Valid FAQ JSONL with 2 Q&A pairs (one JSON object per line).
 fn valid_faq_jsonl() -> Vec<u8> {
@@ -286,10 +279,6 @@ fn valid_openapi_json() -> Vec<u8> {
     .to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// 1. Upload valid FAQ JSONL -> 200, status=draft, rowCount=2
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to upload a FAQ JSONL file
 // so that each Q&A becomes an independent knowledge page in draft status,
 // ready for review before publishing. (US-CORE-032 scenario 1)
@@ -321,10 +310,6 @@ async fn upload_valid_faq_jsonl_returns_200_draft() {
     );
     assert_eq!(body["fileName"], "faq.jsonl", "fileName must be faq.jsonl");
 }
-
-// ---------------------------------------------------------------------------
-// 2. Upload FAQ missing required field -> 400
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want FAQ files with missing
 // required fields to be rejected with a 400 that pinpoints the failing entry
@@ -363,10 +348,6 @@ async fn upload_faq_missing_answer_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. Upload empty FAQ file -> 400
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want an empty FAQ file upload to
 // be rejected with a clear "no usable Q&A data" message, so I notice the file
 // is empty instead of accidentally creating an empty draft document.
@@ -395,10 +376,6 @@ async fn upload_empty_faq_file_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 4. Upload `.json` non-OpenAPI -> 400 (OpenAPI parser rejects it)
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want a `.json` upload that is not
 // a valid OpenAPI document to be rejected by the OpenAPI parser, so that
 // `.json` exclusively routes to OpenAPI and FAQ arrays cannot be uploaded as
@@ -423,10 +400,6 @@ async fn upload_non_openapi_json_returns_400() {
         "upload non-OpenAPI `.json` must return 400"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 5. Upload valid OpenAPI JSON -> 200, draft (FAQ support does not regress)
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want existing OpenAPI `.json`
 // uploads to keep working after FAQ support is added, so that the new format
@@ -467,10 +440,6 @@ async fn upload_openapi_json_unaffected_by_faq_support() {
         "response must have a non-empty id"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 6. Channel-scoped upload assertions (BE-T02)
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // FAQ JSONL upload path to persist the channelId I provide and echo it back.

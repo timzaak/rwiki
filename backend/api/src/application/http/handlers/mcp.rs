@@ -238,14 +238,17 @@ pub(crate) fn validate_query_and_channel<'a>(
     Ok((query, channel_id))
 }
 
-/// 单轮改写：无历史（history = []）+ content_language 过滤。
+/// 单轮改写：无历史（history = []）+ content_language（频道级优先、回退全局，过滤空串）。
 /// 公开搜索 `/api/search` 复用同一单轮语义。
-pub(crate) async fn rewrite_single_turn(state: &AppState, query: &str) -> Vec<String> {
-    let content_language = state
-        .chat_config
-        .content_language
-        .as_deref()
-        .filter(|s| !s.is_empty());
+pub(crate) async fn rewrite_single_turn(
+    state: &AppState,
+    channel_id: &str,
+    query: &str,
+) -> Vec<String> {
+    let content_language = state.channels_config.resolved_content_language(
+        Some(channel_id),
+        state.chat_config.content_language.as_deref(),
+    );
     rewrite_query(
         &state.llm_client,
         &state.llm_model,
@@ -277,7 +280,7 @@ async fn run_qa(state: &AppState, params: &QaToolParams) -> Result<QaToolResult,
         return Err("当前频道没有可用文档".to_string());
     }
 
-    let rewritten_queries = rewrite_single_turn(state, query).await;
+    let rewritten_queries = rewrite_single_turn(state, channel_id, query).await;
 
     // 检索参数与公开聊天同口径（chat_inner 先例）
     let scope = RetrievalScope::Channel(channel_id.to_string());
@@ -357,7 +360,7 @@ async fn run_search(
         });
     }
 
-    let rewritten_queries = rewrite_single_turn(state, query).await;
+    let rewritten_queries = rewrite_single_turn(state, channel_id, query).await;
 
     let scope = RetrievalScope::Channel(channel_id.to_string());
     let results = search_and_rerank(

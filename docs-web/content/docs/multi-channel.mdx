@@ -39,6 +39,16 @@ default = ["How to get started", "What file formats are supported"]
 zh-CN = ["如何快速上手", "系统支持哪些文件格式"]
 en = ["How to get started", "What file formats are supported"]
 
+[channels.help_center_es]
+name = "Centro de ayuda"
+# Optional: overrides the global [chat].content_language for this channel —
+# queries into this channel are rewritten in Spanish
+content_language = "Spanish"
+
+[channels.help_center_ja]
+name = "ヘルプセンター"
+content_language = "Japanese"
+
 [channels.developer_docs]
 name = "Developer Docs"
 # A channel with no suggested_questions returns an empty list
@@ -51,7 +61,17 @@ Rules, verified at startup:
 - **No null `channel_id` rows** — if historical rows in `documents`, `chat_feedback`, or `low_recall_records` have a null `channel_id`, startup fails and tells you to backfill first.
 - **`channelId` format** — URL-safe string (letters, digits, hyphen, underscore), enforced at startup: any other character (e.g. a quoted key like `[channels."docs/v2"]`) fails to start with an error naming the id. The id is a URL path segment (channel pages and MCP entries `/mcp/<channelId>`), so it must stay a single safe path segment.
 
-Each channel optionally sets its own `system_prompt` and `suggested_questions`. When a channel doesn't configure them, the global `[chat]` values apply. See [Configuration → Chat](/en/docs/configuration#chat).
+Each channel optionally sets its own `system_prompt`, `suggested_questions`, and `content_language`. When a channel doesn't configure them, the global `[chat]` values apply. The per-channel `content_language` (e.g. `"Spanish"` for a Spanish-docs channel on an English-primary instance) makes that channel's query rewriting — and with it the keyword search leg — work in the channel's language; multi-channel chats take the first channel's value. See [Configuration → Chat](/en/docs/configuration#chat); for serving a site in several languages, see [Multi-language knowledge bases](#multi-language-knowledge-bases).
+
+## Multi-language knowledge bases
+
+For a site served in several languages (e.g. English primary plus Spanish and Japanese), run **one channel per language** rather than mixing languages in a single channel — retrieval quality depends on rewriting queries in the corpus language, and the channel-level `content_language` is what selects it:
+
+- The primary-language channel keeps the global `[chat]` `content_language` (or none).
+- Each secondary language gets its own `[channels.<id>]` seeded with that language's documents, with a channel-level `content_language` so queries are rewritten — and keyword-searched — in that language.
+- On the site side, map locale → `channelId` with a lookup table (one line per language, falling back to the primary channel). The widget takes the mapped channel at `init` and follows language switches via `setChannel`; a docs-site search posts to the mapped channel too.
+
+The full widget/search integration pattern is in [Configuration → Widget](/en/docs/configuration#widget).
 
 ## Three ways to target a channel
 

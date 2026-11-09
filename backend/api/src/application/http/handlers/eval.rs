@@ -191,6 +191,7 @@ pub async fn eval_query(
     };
 
     // Stage 1: Query rewrite
+    // 评测作用域由 documentIds 派生，没有频道概念，content_language 只用全局配置。
     let content_language = state
         .chat_config
         .content_language

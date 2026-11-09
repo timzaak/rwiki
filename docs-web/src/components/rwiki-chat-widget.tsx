@@ -1,34 +1,20 @@
 import { useEffect, useRef } from "react";
 
-const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
-
-// 外部 widget 脚本（frontend 构建的 rwiki-chat.js）暴露的全局 init 选项。
-// 字段与 configuration 文档的 Widget 配置一致。
-type RWikiChatOptions = {
-  apiUrl: string;
-  channelId: string | string[];
-  locale?: string;
-  title?: string;
-  primaryColor?: string;
-  position?: "left" | "right";
-  welcomeMessage?: string;
-  messages?: Record<string, string>;
-  suggestedQuestions?: string[] | Record<string, string[]>;
-};
-
-type RWikiChatGlobal = {
-  init?: (opts: RWikiChatOptions) => void;
-  destroy?: () => void;
-  setLocale?: (locale: string) => void;
-};
-
-type WindowWithRWikiChat = Window & { RWikiChat?: RWikiChatGlobal };
+import {
+  apiUrl,
+  channelIdForLocale,
+  getRWikiChat,
+  RWIKI_CHAT_READY_EVENT,
+} from "@/lib/rwiki";
 
 /**
  * 挂载 RWiki Chat Widget。
  *
  * 语言由 docs-web 当前 locale 决定（来自 URL 路径段）：首次 init 时传入，
  * 之后 locale 变化时通过 setLocale 实时切换，不重建 widget、不丢失对话。
+ * 频道跟随语言（映射表见 @/lib/rwiki，每种站点语言一个频道）：setChannel 同步
+ * 切换，切换频道会开启新会话（widget 既定语义）。旧版 widget 没有
+ * setChannel 时静默跳过（停留在初始频道）。
  */
 export default function RWikiChatWidget({ locale }: { locale: string }) {
   const firstRun = useRef(true);
@@ -39,18 +25,18 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
 
   // 加载脚本并初始化一次。
   useEffect(() => {
-    const w = window as unknown as WindowWithRWikiChat;
-
     const initWidget = () => {
-      w.RWikiChat?.init?.({
+      getRWikiChat()?.init?.({
         apiUrl,
-        channelId: "help_center",
+        channelId: channelIdForLocale(localeRef.current),
         primaryColor: "#7c3aed",
         locale: localeRef.current,
       });
+      // 通知搜索等消费者全局 API 已就绪：它们渲染期的快照不会自行刷新。
+      window.dispatchEvent(new CustomEvent(RWIKI_CHAT_READY_EVENT));
     };
 
-    if (w.RWikiChat?.init) {
+    if (getRWikiChat()?.init) {
       initWidget();
     } else {
       const script = document.createElement("script");
@@ -60,21 +46,22 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
     }
 
     return () => {
-      w.RWikiChat?.destroy?.();
+      getRWikiChat()?.destroy?.();
     };
     // 仅在挂载时初始化；locale 变化由下方 effect 处理。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // locale 变化时实时切换 widget 语言。
+  // locale 变化时实时切换 widget 语言与频道。
   useEffect(() => {
     // 首次运行跳过：初始 locale 已在 init 中传入，且此时脚本可能尚未加载。
     if (firstRun.current) {
       firstRun.current = false;
       return;
     }
-    const w = window as unknown as WindowWithRWikiChat;
-    w.RWikiChat?.setLocale?.(locale);
+    const rwikiChat = getRWikiChat();
+    rwikiChat?.setLocale?.(locale);
+    rwikiChat?.setChannel?.(channelIdForLocale(locale));
   }, [locale]);
 
   return null;

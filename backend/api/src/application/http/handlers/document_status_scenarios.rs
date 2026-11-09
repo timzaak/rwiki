@@ -22,10 +22,6 @@ use uuid::Uuid;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "channel-a";
 const CHANNEL_B: &str = "channel-b";
@@ -117,6 +113,7 @@ fn channels_config_with_a_and_b() -> rwiki_core::config::ChannelsConfig {
             name: "Site A".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     channels.insert(
@@ -125,6 +122,7 @@ fn channels_config_with_a_and_b() -> rwiki_core::config::ChannelsConfig {
             name: "Site B".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     rwiki_core::config::ChannelsConfig { channels }
@@ -318,10 +316,6 @@ fn upload_request_without_channel(
         .expect("build upload request")
 }
 
-// ---------------------------------------------------------------------------
-// 1. Happy path: valid transitions
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want to publish a draft document
 // so that its content becomes available in RAG search results.
 // Covers: BE-D01 (DocumentStatus enum), BE-D03 (publish handler)
@@ -376,10 +370,6 @@ async fn unpublish_published_document_returns_200_draft() {
     assert_eq!(body["id"], doc_id.to_string(), "response id must match");
     assert_eq!(body["status"], "draft", "response status must be 'draft'");
 }
-
-// ---------------------------------------------------------------------------
-// 2. Conflict: invalid transitions
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want a clear error when I attempt
 // to publish a document that is already published, so that I know the current
@@ -472,10 +462,6 @@ async fn unpublish_failed_document_returns_409() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. Not found: nonexistent documents
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want a 404 when I attempt to
 // publish a document that does not exist, so that I know the ID is wrong.
 // Covers: BE-D03 (publish returns 404 for unknown ID)
@@ -519,10 +505,6 @@ async fn unpublish_nonexistent_document_returns_404() {
         "unpublishing a nonexistent document must return 404"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 4. Authentication: missing token
-// ---------------------------------------------------------------------------
 
 // User Story: As an API operator, I want publish requests without a token to
 // be rejected, so that only authorized clients can change document visibility.
@@ -577,10 +559,6 @@ async fn unpublish_without_token_returns_401() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. Upload initial status
-// ---------------------------------------------------------------------------
-
 // User Story: As a knowledge base editor, I want newly uploaded documents to
 // start in "draft" status, so that content is not immediately visible in RAG
 // search before I review and publish it.
@@ -612,10 +590,6 @@ async fn upload_sets_initial_status_to_draft() {
         "uploaded document must have 'draft' status"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 6. End-to-end status visibility via list
-// ---------------------------------------------------------------------------
 
 // User Story: As a knowledge base editor, I want published documents to show
 // "published" status in the document list, so that I can verify the transition
@@ -690,10 +664,6 @@ async fn unpublish_then_list_shows_draft_status() {
         "listed document must show 'draft' status after unpublish"
     );
 }
-
-// ---------------------------------------------------------------------------
-// 7. Channel-scoped upload and lifecycle isolation (BE-T02)
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As an API operator, I want upload
 // requests without a channelId to be rejected so documents always belong to a

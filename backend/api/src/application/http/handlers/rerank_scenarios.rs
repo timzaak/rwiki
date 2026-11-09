@@ -26,10 +26,6 @@ use rwiki_core::infrastructure::reranker::RerankerProvider;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
 static SQLITE_VEC_INIT: Once = Once::new();
@@ -158,6 +154,7 @@ fn test_channels_config() -> rwiki_core::config::ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     rwiki_core::config::ChannelsConfig { channels }
@@ -179,10 +176,6 @@ fn chat_request(message: &str, session_id: &str) -> Request<Body> {
         ))
         .expect("build request")
 }
-
-// ---------------------------------------------------------------------------
-// Degradation scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-031 -- As a user, when rerank is disabled (the default),
 // search results must pass through unchanged. No rerank API call is made.
@@ -372,10 +365,6 @@ async fn rerank_invalid_json_degrades_to_original() {
         resp.status()
     );
 }
-
-// ---------------------------------------------------------------------------
-// Multi-query path scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-030 -- As a user submitting a query that triggers
 // multi-query rewrite, the rerank stage must receive the globally fused

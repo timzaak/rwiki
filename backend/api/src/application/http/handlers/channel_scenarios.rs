@@ -18,10 +18,6 @@ use rwiki_core::config::{ChannelConfig, ChannelsConfig};
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-channel-list";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
@@ -125,6 +121,7 @@ fn sample_channels_config() -> ChannelsConfig {
             name: "Help Center".to_string(),
             system_prompt: Some("You are the Help Center assistant.".to_string()),
             suggested_questions: Some(questions),
+            content_language: None,
         },
     );
     channels.insert(
@@ -133,14 +130,11 @@ fn sample_channels_config() -> ChannelsConfig {
             name: "Developer Docs".to_string(),
             system_prompt: None,
             suggested_questions: None,
+            content_language: None,
         },
     );
     ChannelsConfig { channels }
 }
-
-// ---------------------------------------------------------------------------
-// GET /api/channels scenarios
-// ---------------------------------------------------------------------------
 
 // User Story: support-multiple-website — As a frontend or widget, I want to
 // discover configured channels so I can let users pick or validate a channel.

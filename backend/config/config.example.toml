@@ -191,6 +191,8 @@ name = "Help Center"
 # system_prompt = """
 # 你是 Help Center 的知识库助手。优先回答产品使用相关问题，语气简洁专业。
 # """
+# 频道文档语言与全局 [chat].content_language 不同时在此覆盖（省略则沿用全局）。
+# content_language = "English"
 # [channels.help_center.suggested_questions]
 # default = ["如何快速上手", "系统支持哪些文件格式"]
 # zh-CN = ["如何快速上手", "系统支持哪些文件格式", "如何联系客服"]

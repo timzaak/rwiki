@@ -171,7 +171,7 @@ This token is also the admin console login key — the frontend uses it to sign 
 | `sliding_window_size` | number | No | `6` | Keep the last N messages for context |
 | `compact_threshold` | number | No | `8` | Trigger compaction check when message count exceeds this |
 | `token_budget` | number | No | `8000` | Trigger compaction when estimated token count exceeds this |
-| `content_language` | string | No | — | Primary language of knowledge base documents (e.g. `"English"`, `"Chinese"`). When set, the query rewrite prompt instructs the LLM to translate queries into this language for cross-language retrieval. Omit to disable language-aware rewriting. |
+| `content_language` | string | No | — | Primary language of knowledge base documents (e.g. `"English"`, `"Chinese"`). When set, the query rewrite prompt instructs the LLM to translate queries into this language for cross-language retrieval. Omit to disable language-aware rewriting. A channel can override it per channel via `[channels.<channelId>].content_language` (see [Multi-Channel](/en/docs/multi-channel)). |
 | `suggested_questions` | map | No | — | Pre-chat suggestions grouped by locale key. See [Suggested questions](#suggested-questions) below. |
 | `enable_post_answer_suggestions` | bool | No | `false` | Generate follow-up suggestion questions after the answer and deliver them as an SSE `suggestions` event. Adds one non-streaming LLM call per answer (with its own timeout and token budget). Off by default. |
 
@@ -374,11 +374,27 @@ RWikiChat.setLocale('zh-CN');
 
 `setLocale` accepts the same BCP-47 tags as the `locale` config and resolves them the same way. It must be called after `init`; calling it before `init` logs an error and does nothing.
 
+Switch the target channel at runtime without re-initializing — switching starts a new conversation (any in-flight answer is aborted, the transcript and session are cleared):
+
+```js
+RWikiChat.setChannel('help_center_es');
+```
+
+The argument follows the `channelId` config rules (`string` or `string[]`, normalized and deduplicated). When the channel set is unchanged the call is a no-op, so it is safe to call on every app state change. It must be called after `init`.
+
+Hand a query straight to the chat — the modal opens and the query is sent as a user turn (an in-flight answer is interrupted by the usual implicit-interrupt semantics):
+
+```js
+RWikiChat.ask('how do I configure rerank?');
+```
+
+Blank queries are ignored. `ask` is what the docs site search uses for its "Ask AI" row; with an older widget bundle that lacks `ask`, the row simply doesn't render.
+
 The widget uses Shadow DOM for style isolation and won't affect host page CSS.
 
 ### React integration (docs-web pattern)
 
-For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`). Pass the target `channelId` and the app's current locale: seed both at `init`, then call `setLocale` when the locale changes.
+For React apps, load the widget script dynamically from a component. The backend URL is passed via the `VITE_RWIKI_API_URL` environment variable (build-time, defined in `docs-web/vite.config.ts`). Pass the app's current locale and derive the channel from it — one channel per site language, with a lookup table as the single source of truth: seed both at `init`, then call `setLocale` and `setChannel` when the locale changes.
 
 ```tsx
 // src/components/rwiki-chat-widget.tsx
@@ -386,22 +402,36 @@ import { useEffect, useRef } from 'react';
 
 const apiUrl = import.meta.env.VITE_RWIKI_API_URL as string;
 
-export default function RWikiChatWidget({ channelId, locale }: { channelId: string; locale: string }) {
+// One channel per site language; the map is the single source of truth
+// (docs-web's own map: src/lib/rwiki.ts). Every id must exist as
+// [channels.<id>] on the backend; secondary-language channels set their
+// own content_language (e.g. "Spanish", "French").
+const CHANNEL_BY_LOCALE: Record<string, string> = {
+  en: 'help_center', // primary language
+  es: 'help_center_es',
+  fr: 'help_center_fr',
+};
+const channelIdForLocale = (locale: string) =>
+  CHANNEL_BY_LOCALE[locale] ?? CHANNEL_BY_LOCALE.en;
+
+export default function RWikiChatWidget({ locale }: { locale: string }) {
   const firstRun = useRef(true);
   // Keep the latest locale in a ref so the async script's onload init always
   // uses the current locale, not the one captured at mount.
   const localeRef = useRef(locale);
   localeRef.current = locale;
 
-  // Load + init once, seeding the initial locale.
+  // Load + init once, seeding the initial locale and its channel.
   useEffect(() => {
     const w = window as any;
-    const initWidget = () => { w.RWikiChat?.init?.({ apiUrl, channelId, locale: localeRef.current }); };
+    const initWidget = () => {
+      w.RWikiChat?.init?.({ apiUrl, channelId: channelIdForLocale(localeRef.current), locale: localeRef.current });
+    };
     if (w.RWikiChat?.init) {
       initWidget();
     } else {
       const script = document.createElement('script');
-      script.src = '/rwiki-chat.js';
+      script.src = `${apiUrl}/widget/rwiki-chat.js`;
       script.onload = initWidget;
       document.body.appendChild(script);
     }
@@ -410,20 +440,23 @@ export default function RWikiChatWidget({ channelId, locale }: { channelId: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Switch language live when the app locale changes.
+  // Switch language and channel live when the app locale changes. Older widget
+  // bundles without setChannel stay on the initial channel.
   useEffect(() => {
-    if (firstRun.current) { firstRun.current = false; return; } // initial locale already set via init
-    (window as any).RWikiChat?.setLocale?.(locale);
+    if (firstRun.current) { firstRun.current = false; return; } // initial values already set via init
+    const w = window as any;
+    w.RWikiChat?.setLocale?.(locale);
+    w.RWikiChat?.setChannel?.(channelIdForLocale(locale));
   }, [locale]);
 
   return null;
 }
 ```
 
-Place the component in your root layout and pass the current channel and locale (docs-web derives locale from the URL path):
+Place the component in your root layout and pass the current locale (docs-web derives locale from the URL path; its search dialog hands queries to the chat via `RWikiChat.ask`):
 
 ```tsx
-<RWikiChatWidget channelId="help_center" locale={locale} />
+<RWikiChatWidget locale={locale} />
 ```
 
 Build and copy the widget before starting docs-web:

@@ -130,8 +130,8 @@ pub async fn search_chunks(
     }
 
     // 单轮语义：无历史（与 MCP 检索工具共用 rewrite_single_turn），
-    // chat 配置的 content_language 同样生效。
-    let search_queries = rewrite_single_turn(&state, query).await;
+    // content_language 频道级优先、回退 chat 全局配置。
+    let search_queries = rewrite_single_turn(&state, channel_id, query).await;
 
     let scope = RetrievalScope::Channel(channel_id.to_string());
     let results = match search_and_rerank(

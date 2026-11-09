@@ -27,6 +27,12 @@ import { UnifiedLogger } from 'playwright-unified-logger'
  */
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173'
 
+/**
+ * Docs site dev server URL (docs-web Vite, port 3001) for the docs-search
+ * e2e (US-CORE-045).
+ */
+export const DOCS_URL = process.env.DOCS_URL || 'http://localhost:3001'
+
 export const test = base.extend<{
   demoLogger: UnifiedLogger
 }>({
