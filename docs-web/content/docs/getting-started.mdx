@@ -265,6 +265,10 @@ curl http://localhost:8080/api/chat/feedback \
   -H "Authorization: Bearer dev-test"
 ```
 
+### Search instead of asking
+
+The channel page also has a search box for direct chunk retrieval without LLM generation. Press Enter to search; query words are marked in the results, arrow keys walk through them, and an ask-AI row hands the query to the chat window. Details and the public `/api/search` endpoint are on the [Site Search](/en/docs/search) page.
+
 ## Embed in an existing site (Widget)
 
 RWiki ships a standalone chat widget as a single JS file. There are two integration paths: drop-in HTML script tag, or a React component (used by docs-web).

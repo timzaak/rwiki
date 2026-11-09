@@ -17,7 +17,10 @@ import { LoaderCircleIcon, RefreshCwIcon } from 'lucide-react'
 
 import { listChannels, suggestions } from '@/lib/api-generated'
 import { FloatingButton } from '@/components/chat/floating-button'
-import { DefaultChatStreamProvider } from '@/components/chat/chat-stream-context'
+import {
+  DefaultChatStreamProvider,
+  useChatStreamContext,
+} from '@/components/chat/chat-stream-context'
 import { ChannelIdProvider } from '@/components/chat/channel-id-context'
 import { SearchBox } from '@/components/search/search-box'
 import { useChatModalStore } from '@/stores/chat-store'
@@ -104,13 +107,33 @@ function ChannelRoute() {
     <ChannelIdProvider channelId={[channelId]}>
       <DefaultChatStreamProvider>
         <main className="mx-auto w-full max-w-2xl px-4 pt-16">
-          <SearchBox key={channelId} channelId={channelId} />
+          <ChannelSearchBox key={channelId} channelId={channelId} />
         </main>
         <Outlet />
         <FloatingButton visible />
         <ChannelChatModalMount channelId={channelId} />
       </DefaultChatStreamProvider>
     </ChannelIdProvider>
+  )
+}
+
+/**
+ * 频道搜索框挂载点：在 ChatStream Provider 内注入「用 AI 回答」——打开聊天
+ * 弹窗并把检索词作为一轮新提问发出（US-CORE-044）。与在聊天框输入等价：
+ * 续接当前会话；有回答在途时由 sendMessage 中断并保留。
+ */
+function ChannelSearchBox({ channelId }: { channelId: string }) {
+  const { sendMessage } = useChatStreamContext()
+  const openModal = useChatModalStore((s) => s.openModal)
+
+  return (
+    <SearchBox
+      channelId={channelId}
+      onAskAi={(query) => {
+        openModal()
+        sendMessage(query)
+      }}
+    />
   )
 }
 

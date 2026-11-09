@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import {
   createRootRoute,
@@ -12,6 +13,7 @@ import {
 
 import { server } from '@/test/mocks/server'
 import { client } from '@/lib/api-generated/client.gen'
+import { useChatModalStore, useChatStore } from '@/stores/chat-store'
 
 /**
  * FE-T02 — `/c/$channelId` route state branches + request contracts (FE-D02).
@@ -32,6 +34,9 @@ import { client } from '@/lib/api-generated/client.gen'
  *    `/api/search` requests on mount (submit-only trigger — no search on
  *    typing/entry); unknown channel and degraded listChannels render no
  *    `search-input` and fire no `/api/search` request either.
+ *  - US-CORE-044: 「用 AI 回答」由路由注入——点击后聊天弹窗打开，且
+ *    `/api/chat` 收到的这一轮正是检索词、发往本频道（SearchBox 单测只能
+ *    断言回调，弹窗与请求体只有在路由装配下才可见）。
  *
  * Router assembly mirrors `routes/admin/__tests__/admin.test.tsx`:
  * createMemoryHistory + RouterProvider + an explicit `/c/$channelId` child route
@@ -59,6 +64,7 @@ let chatCallCount: number
 let feedbackCallCount: number
 let searchCallCount: number
 let lastSuggestionsUrl: string
+let lastChatBody: unknown
 
 function installChannelsHandler(channels: Array<{ id: string; name: string }>) {
   server.use(
@@ -83,8 +89,9 @@ function installChatCounter() {
   // The default handlers.ts already serves /api/chat SSE; overlay a counter
   // that still returns a minimal SSE so any (unexpected) send doesn't throw.
   server.use(
-    http.post(CHAT_URL, () => {
+    http.post(CHAT_URL, async ({ request }) => {
       chatCallCount += 1
+      lastChatBody = await request.json()
       return new Response(
         new ReadableStream({
           start(controller) {
@@ -116,11 +123,11 @@ function installFeedbackCounter() {
   )
 }
 
-function installSearchCounter() {
+function installSearchCounter(results: unknown[] = []) {
   server.use(
     http.post(SEARCH_URL, () => {
       searchCallCount += 1
-      return HttpResponse.json({ results: [] })
+      return HttpResponse.json({ results })
     }),
   )
 }
@@ -154,6 +161,7 @@ beforeEach(() => {
   feedbackCallCount = 0
   searchCallCount = 0
   lastSuggestionsUrl = ''
+  lastChatBody = undefined
   vi.clearAllMocks()
 })
 
@@ -274,4 +282,55 @@ describe('/c/$channelId — listChannels failure (graceful degradation)', () => 
     expect(feedbackCallCount).toBe(0)
     expect(searchCallCount).toBe(0)
   })
+})
+
+describe('/c/$channelId — ask AI from search results (US-CORE-044)', () => {
+  afterEach(() => {
+    // 会话与弹窗开关是全局 store（会话还持久化到 localStorage），用例间必须复位。
+    useChatStore.getState().clearMessages()
+    useChatModalStore.setState({ isModalOpen: false })
+  })
+
+  it('opens the chat modal and sends the searched query as a chat turn of this channel', async () => {
+    installChannelsHandler([{ id: 'channel-a', name: 'A' }])
+    installSuggestionsHandler()
+    installChatCounter()
+    installFeedbackCounter()
+    installSearchCounter([
+      {
+        title: '部署指南',
+        section: null,
+        content: '本文介绍如何部署服务',
+        link: 'https://docs.example.com/deploy',
+        locale: 'zh',
+        score: 0.5,
+        documentId: 'doc-1',
+      },
+    ])
+
+    renderChannelRoute('/c/channel-a')
+    const user = userEvent.setup()
+    await user.type(await screen.findByTestId('search-input'), '如何部署')
+    await user.keyboard('{Enter}')
+    await user.click(await screen.findByTestId('search-ask-ai'))
+
+    // 弹窗打开，这一轮提问就是检索词，并发往本频道。ChatModal 经 lazy()
+    // 挂载，首次加载要转译整条聊天组件链（含 highlight.js）：findBy 默认
+    // 1s 等不到它；全套件并行转译时更会超过 vitest 单用例 5s 默认上限，
+    // 两层都要抬高（it 第三参），否则轮询预算跑不满就被测试超时杀掉。
+    expect(
+      await screen.findByTestId('chat-modal', {}, { timeout: 15_000 }),
+    ).toBeInTheDocument()
+    expect(await screen.findByTestId('message-item-user')).toHaveTextContent(
+      '如何部署',
+    )
+    await waitFor(() => expect(chatCallCount).toBe(1))
+    expect(lastChatBody).toMatchObject({
+      message: '如何部署',
+      channelId: ['channel-a'],
+    })
+    // 下拉让位给聊天，且不额外检索。
+    expect(screen.queryByTestId('search-dropdown')).toBeNull()
+    expect(searchCallCount).toBe(1)
+  }, 15_000)
 })

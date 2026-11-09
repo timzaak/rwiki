@@ -1,0 +1,37 @@
+---
+title: Site Search
+description: Channel-page search box with highlighted results, keyboard navigation, and the ask-AI handover
+icon: Search
+---
+
+Every channel page (`/c/{channelId}`) carries a search box above the chat entry. Press Enter or click the search button to run a query; typing alone sends nothing, so browsing the page never costs retrieval calls. The search covers published documents of that channel only, and no credentials are required.
+
+Results arrive in a dropdown under the box. Each item shows the page title, a two-line summary, and the source link, which opens in a new tab. Items whose source link is missing display normally but are not clickable. Ordering is page-level relevance: pages by their best chunk score, chunks inside a page in document order. Chat citations and the MCP `rwiki_search` tool use the same ordering, so the same query returns the same order everywhere.
+
+## Highlight and keyboard
+
+Query words that hit a title or summary are marked in the results. Marking is word-level and case-insensitive; single characters and punctuation-only words are not marked. The marks follow the query that produced the current results, so editing the box without re-submitting changes nothing.
+
+Arrow keys move focus through the dropdown: from the input to the ask-AI entry, then through the linked result items. Items without a source link are skipped because they have no action. Pressing Enter on a focused item does what a click would do, opening the source page without firing a new search. Enter inside the input re-searches. Esc collapses the dropdown and puts focus back in the input; pressing ↓ afterwards reopens the results without another request. Arrow keys and Enter are left to the IME while composing Chinese input.
+
+## Ask AI
+
+When a search returns results, a row above the list offers to hand the query over to the chat: click it (or focus it and press Enter) and the chat window opens with the searched query already sent as a chat turn. The answer streams back through the normal chat pipeline, continuing the current session. The dropdown collapses, and the keyword stays in the search box for refining.
+
+The handover sends the query that produced the results, not the current draft. The entry only appears with results on screen: on a zero-hit search or a failed one, chat retrieval would find the same nothing, so the row is hidden instead of charging an LLM call for "I don't know".
+
+## Search API
+
+The same search is available as a public endpoint, with no LLM generation and no credentials:
+
+```bash
+curl -X POST http://localhost:8080/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"how to upload documents","channelId":"help_center"}'
+```
+
+The response carries `results[]`, where each item has `title`, `section`, `content`, `link`, `locale`, `score`, and `documentId`. Zero hits return an empty list, not an error. An optional `topK` (1 to 20) caps the number of chunks; omit it to use the retrieval config default, which matches the MCP tool. The full schema is on the [`search_chunks` OpenAPI page](/en/docs/openapi/search_chunks).
+
+Retrieval runs through the same orchestration as chat and MCP: query rewrite, hybrid keyword and vector search, dedupe, optional rerank, then the page-level ranking. Same query, same channel, same results as the page search box and `rwiki_search`.
+
+The widget build does not include the search box; it is a main-site feature.

@@ -17,7 +17,9 @@ const SEARCH_FAILED_MESSAGE = '搜索失败，请稍后重试'
 export type SearchState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'success'; results: SearchResultItem[] }
+  // query = 产生这批结果的检索词（不是之后改过的输入框草稿）：高亮与
+  // 「用 AI 回答」都跟随它，保证与所展示的结果同源。
+  | { status: 'success'; query: string; results: SearchResultItem[] }
   | { status: 'error'; message: string }
 
 interface SearchSubmission {
@@ -47,7 +49,11 @@ export function useSearch(channelId: string) {
             message: raw || SEARCH_FAILED_MESSAGE,
           })
         } else if (result.data) {
-          setState({ status: 'success', results: result.data.results })
+          setState({
+            status: 'success',
+            query: submission.query,
+            results: result.data.results,
+          })
         }
       })
       .catch(() => {

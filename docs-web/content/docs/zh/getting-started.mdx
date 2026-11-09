@@ -265,6 +265,10 @@ curl http://localhost:8080/api/chat/feedback \
   -H "Authorization: Bearer dev-test"
 ```
 
+### 不想提问，直接搜
+
+频道页还有个搜索框，直接检索知识片段，不经 LLM 生成。回车触发；结果里标出检索词，方向键可翻，列表上方一行「用 AI 回答」把查询交给聊天窗口。细节和公开的 `/api/search` 接口见[站内搜索](/zh/docs/search)页。
+
 ## 嵌入已有网站（Widget）
 
 RWiki 提供单文件聊天 widget JS。集成方式有两种：HTML 脚本引入，或 React 组件（docs-web 的方式）。

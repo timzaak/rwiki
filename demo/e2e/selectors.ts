@@ -86,11 +86,12 @@ export const SELECTORS = {
   },
 
   /**
-   * 主站搜索相关选择器 — 对应 US-CORE-041。
+   * 主站搜索相关选择器 — 对应 US-CORE-041、US-CORE-043、US-CORE-044。
    *
    * 来源：`frontend/src/components/search/search-box.tsx` / `search-dropdown.tsx`
    * （仅 /c/$channelId ready 分支渲染，Widget 不含）。
-   * `search-result-item` / `search-result-link` 随列表条目重复出现，定位用 `.first()`。
+   * `search-result-item` / `search-result-link` / `search-highlight` 随列表条目
+   * 重复出现，定位用 `.first()`。
    */
   search: {
     input: '[data-testid="search-input"]',
@@ -102,6 +103,8 @@ export const SELECTORS = {
     loading: '[data-testid="search-loading"]',
     empty: '[data-testid="search-empty"]',
     error: '[data-testid="search-error"]',
+    highlight: '[data-testid="search-highlight"]',
+    askAi: '[data-testid="search-ask-ai"]',
   },
 }
 
