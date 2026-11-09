@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from 'react'
 import { searchChunks } from '@/lib/api-generated/sdk.gen'
-import type { SearchResultItem } from '@/lib/api-generated/types.gen'
+import type { ErrorResponse, SearchResultItem } from '@/lib/api-generated/types.gen'
 
 const SEARCH_FAILED_MESSAGE = '搜索失败，请稍后重试'
 
@@ -39,10 +39,13 @@ export function useSearch(channelId: string) {
         if (result.error) {
           // 仅 400 的业务提示（如「频道 xxx 未配置」）原文呈现；500 与网络
           // 失败一律固定文案，不外露内部错误细节。
+          // SDK 把 error 静态类型化为 unknown（真值收窄后是 {}），按
+          // OpenAPI 契约（400 → ErrorResponse）收窄，运行时再校验 message。
+          const err = result.error as ErrorResponse | undefined
           const raw =
             result.response?.status === 400 &&
-            typeof result.error.message === 'string'
-              ? result.error.message
+            typeof err?.message === 'string'
+              ? err.message
               : ''
           setState({
             status: 'error',
