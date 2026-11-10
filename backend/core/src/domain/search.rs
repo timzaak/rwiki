@@ -1,11 +1,13 @@
 //! 统一检索编排模块：查询改写 → 混合检索 → 内容去重 → 可选 rerank →
 //! 最终排序（标题命中加权 + page 级得分排序 + 页内 `sub_index` 稳定排列）。
 //!
-//! chat（公开 + scoped）、MCP（`rwiki_qa`/`rwiki_search`）、eval
-//! （`/api/eval/query`）与公开搜索 `/api/search` 全部经本模块完成检索，
-//! 「同一编排、同一排序口径」由该结构保证。查询改写及其 prompt 构建/解析
-//! 辅助仅本编排消费，随编排同居此模块（`strip_markdown_fences` 例外：
-//! chat 侧追问建议解析也复用它，保持 pub）；`build_preamble`/
+//! chat（公开 + scoped）、MCP（`rwiki_qa`/`rwiki_search`）与 eval
+//! （`/api/eval/query`）全部经 [`search_and_rerank`] 完成混合检索，
+//! 「同一编排、同一排序口径」由该结构保证；公开搜索 `/api/search` 为
+//! 延迟优先，走 [`search_fts`] 纯 FTS 编排（无改写/向量化/rerank），
+//! 最终排序与混合链路共享同一套 page 级口径。查询改写及其 prompt 构建/
+//! 解析辅助仅混合编排消费，随编排同居此模块（`strip_markdown_fences`
+//! 例外：chat 侧追问建议解析也复用它，保持 pub）；`build_preamble`/
 //! `format_context_xml` 等 chat 语义的 prompt 组装留在 api 层
 //! `handlers/chat.rs`。
 
@@ -374,6 +376,42 @@ pub async fn search_and_rerank(
     let mut queries: Vec<&str> = vec![original_query];
     queries.extend(search_queries.iter().map(String::as_str));
     Ok(rank_pages_with_title_boost(search_results, &queries))
+}
+
+/// 纯关键词检索编排（公开搜索 `/api/search` 专用）：FTS5 BM25 倒排检索 →
+/// 内容去重 → 最终排序（标题命中加权 + page 级得分排序 + 页内 `sub_index`
+/// 稳定排列）。
+///
+/// 与 [`search_and_rerank`] 的混合检索口径 deliberately 不同：不经 LLM 改写、
+/// 不做查询向量化、不做 rerank、不做窗口扩展，全程无网络调用（检索延迟为
+/// 本地毫秒级）。召回特性随之收窄：无词面重叠的语义查询（同义词、跨语言）
+/// 返回空结果；仅标题命中不召回（FTS 索引只含 content tokens，标题仅参与
+/// 排序加权）。chat / MCP / eval 仍走 [`search_and_rerank`] 完整链路。
+pub async fn search_fts(
+    vector_store: &VectorStoreManager,
+    query: &str,
+    top_k: usize,
+    metrics: &RwikiMetrics,
+    scope: &RetrievalScope,
+) -> Result<Vec<SearchResult>, CoreError> {
+    let retrieval_start = Instant::now();
+
+    let search_results = vector_store.search_by_keyword(query, top_k, scope).await?;
+
+    let elapsed_ms = retrieval_start.elapsed().as_secs_f64() * 1000.0;
+    metrics
+        .retrieval_duration
+        .record(elapsed_ms, &[KeyValue::new("search_type", "fts")]);
+    metrics
+        .retrieval_results_count
+        .record(search_results.len() as f64, &[]);
+    if search_results.is_empty() {
+        metrics.retrieval_empty_count.add(1, &[]);
+    }
+
+    let search_results = dedupe_by_content(search_results);
+
+    Ok(rank_pages_with_title_boost(search_results, &[query]))
 }
 
 /// 折叠内容完全相同的 chunk，仅保留得分最高的一个。

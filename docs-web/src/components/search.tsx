@@ -26,7 +26,8 @@ import {
 } from "@/lib/rwiki";
 import { siteUrl } from "@/lib/seo";
 
-// rwiki POST /api/search 的返回（口径与主站/MCP 一致：page 级排序）。
+// rwiki POST /api/search 的返回（与主站同一 FTS 检索：page 级排序；MCP 走
+// 混合链路，排序规则相同但召回来源不同）。
 interface RwikiSearchItem {
   title: string;
   section?: string | null;

@@ -17,6 +17,8 @@ export interface WidgetMessages {
   a11yStop: string
   a11yLike: string
   a11yDislike: string
+  a11yCopy: string
+  a11yCopied: string
   errorBoundary: string
 }
 
@@ -35,6 +37,8 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     a11yStop: 'Stop generating',
     a11yLike: 'Like',
     a11yDislike: 'Dislike',
+    a11yCopy: 'Copy message',
+    a11yCopied: 'Copied',
     errorBoundary:
       'Widget encountered an error. Call RWikiChat.destroy() and try again.',
   },
@@ -51,6 +55,8 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     a11yStop: '停止生成',
     a11yLike: '赞',
     a11yDislike: '踩',
+    a11yCopy: '复制消息',
+    a11yCopied: '已复制',
     errorBoundary:
       '小组件发生错误,请调用 RWikiChat.destroy() 后重试。',
   },

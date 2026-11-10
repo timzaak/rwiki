@@ -335,7 +335,7 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 | `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
 | `position` | string | No | `"right"` | Button position: `left` or `right` |
 | `welcomeMessage` | string | No | — | Welcome message |
-| `messages` | object | No | — | Override individual UI strings for the resolved locale. Any subset of: `titleDefault`, `inputPlaceholder`, `responseFailed`, `retry`, `a11yOpen`, `a11yClose`, `a11yClear`, `a11yLike`, `a11yDislike`, `errorBoundary`. |
+| `messages` | object | No | — | Override individual UI strings for the resolved locale. Any subset of: `titleDefault`, `inputPlaceholder`, `responseFailed`, `retry`, `a11yOpen`, `a11yClose`, `a11yClear`, `a11yLike`, `a11yDislike`, `a11yCopy`, `a11yCopied`, `errorBoundary`. |
 | `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). Ignored when the target channel has configured `[channels.<channelId>.suggested_questions]` — the server is then the single source of truth (see [Multi-Channel](/en/docs/multi-channel)). |
 
 ### HTML integration

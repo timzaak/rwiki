@@ -162,6 +162,63 @@ describe('MessageItem feedback buttons', () => {
   })
 })
 
+describe('MessageItem copy button', () => {
+  function seedAssistant(overrides?: Partial<ChatMessage>) {
+    const assistant = makeMessage({
+      id: 'msg-asst-1',
+      role: 'assistant',
+      content: 'AI response',
+      isStreaming: false,
+      ...overrides,
+    })
+    useChatStore.setState({
+      messages: [makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' }), assistant],
+      sessionId: 'test-session',
+      isLoading: false,
+      error: null,
+    })
+    return renderWithStream({ ...assistant })
+  }
+
+  it('copies the full assistant answer when clicked', async () => {
+    // WHY: the answer must be copyable as a whole — users quote RAG answers
+    // elsewhere, and hand-selecting text in the small widget window is
+    // impractical.
+    const user = userEvent.setup()
+    seedAssistant()
+    await user.click(screen.getByTestId('message-copy-button'))
+
+    // user-event's setup() installs an in-memory clipboard; reading it back
+    // asserts the full answer actually reached the clipboard.
+    expect(await navigator.clipboard.readText()).toBe('AI response')
+  })
+
+  it('hides the copy button while the answer is streaming', () => {
+    seedAssistant({ isStreaming: true, content: 'partial' })
+
+    expect(screen.queryByTestId('message-copy-button')).not.toBeInTheDocument()
+  })
+
+  it('hides the copy button for a completed-but-empty answer', () => {
+    // WHY: copying an empty body is a no-op; the button would only add noise.
+    seedAssistant({ content: '', contentEnded: true })
+
+    expect(screen.queryByTestId('message-copy-button')).not.toBeInTheDocument()
+  })
+
+  it('hides the copy button for user messages', () => {
+    useChatStore.setState({
+      messages: [makeMessage({ id: 'msg-user-1', role: 'user', content: 'Q' })],
+      sessionId: 'test-session',
+      isLoading: false,
+      error: null,
+    })
+    renderMessage({ id: 'msg-user-1', role: 'user', content: 'Q' })
+
+    expect(screen.queryByTestId('message-copy-button')).not.toBeInTheDocument()
+  })
+})
+
 describe('MessageItem suggested questions', () => {
   it('renders suggested questions between content and feedback when assistant message is finished and non-empty', () => {
     useChatStore.setState({

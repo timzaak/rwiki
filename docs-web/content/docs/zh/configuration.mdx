@@ -335,7 +335,7 @@ threshold = 0.3   # 上线后从首批记录校准
 | `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
 | `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
 | `welcomeMessage` | string | 否 | — | 欢迎语 |
-| `messages` | object | 否 | — | 覆盖当前语言下的界面文案，可传任意子集：`titleDefault`、`inputPlaceholder`、`responseFailed`、`retry`、`a11yOpen`、`a11yClose`、`a11yClear`、`a11yLike`、`a11yDislike`、`errorBoundary`。 |
+| `messages` | object | 否 | — | 覆盖当前语言下的界面文案，可传任意子集：`titleDefault`、`inputPlaceholder`、`responseFailed`、`retry`、`a11yOpen`、`a11yClose`、`a11yClear`、`a11yLike`、`a11yDislike`、`a11yCopy`、`a11yCopied`、`errorBoundary`。 |
 | `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。当目标频道已配置 `[channels.<channelId>.suggested_questions]` 时，本字段被忽略，以服务端为唯一来源（见[多频道](/zh/docs/multi-channel)）。 |
 
 ### HTML 集成

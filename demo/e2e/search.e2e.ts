@@ -90,7 +90,8 @@ test.describe('Dedicated search on /c/$channelId', () => {
 
     await searchInput.press('Enter')
     const firstItem = page.locator(SELECTORS.search.resultItem).first()
-    // Retrieval includes an LLM rewrite pass, so results can take a while.
+    // Retrieval is pure FTS (no rewrite/embedding), but the first e2e request
+    // still pays backend startup costs, so keep a generous timeout.
     await expect(firstItem).toBeVisible({ timeout: 60_000 })
     expect(searchRequests).toBe(1)
     expect((await firstItem.textContent())?.trim()).not.toBe('')

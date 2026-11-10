@@ -16,7 +16,7 @@ export function FeedbackButtons({
 }: FeedbackButtonsProps) {
   const t = useWidgetI18n()
   return (
-    <div className="flex items-center gap-1 mt-1.5 justify-end">
+    <div className="flex items-center gap-1">
       <button
         type="button"
         data-testid="feedback-like-button"

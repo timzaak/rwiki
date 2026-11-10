@@ -1,6 +1,7 @@
-//! Markdown parser scenario tests — 16 test functions per design section 5.1.
+//! Markdown parser scenario tests — parse contracts plus
+//! markdown_to_plain_text stripping scenarios for search snippets.
 
-use super::markdown_parser::{parse_markdown_file, MarkdownParseError};
+use super::markdown_parser::{markdown_to_plain_text, parse_markdown_file, MarkdownParseError};
 
 /// 1. Full frontmatter .md parses successfully: title, locale, link, tags extracted, page_id non-empty.
 #[test]
@@ -174,4 +175,61 @@ fn empty_title_in_frontmatter_falls_back_to_h1() {
     let result = parse_markdown_file(input.as_bytes(), "fallback.md").unwrap();
 
     assert_eq!(result.title, "Heading in Body");
+}
+
+/// 17. Heading/emphasis/inline-code markers disappear while their text stays readable as prose.
+#[test]
+fn heading_emphasis_inline_code_markers_stripped() {
+    let plain = markdown_to_plain_text("# Install\n\nUse **bold** and `cargo build` here.");
+    assert_eq!(plain, "Install Use bold and cargo build here.");
+}
+
+/// 18. Links keep their label but drop the URL; images keep the alt text.
+#[test]
+fn links_keep_label_and_images_keep_alt() {
+    let plain =
+        markdown_to_plain_text("See the [docs](https://example.com) and ![logo](logo.png).");
+    assert_eq!(plain, "See the docs and logo.");
+}
+
+/// 19. Fenced code blocks lose the fence markers but keep the code text.
+#[test]
+fn fenced_code_keeps_code_text() {
+    let plain = markdown_to_plain_text("Example:\n\n```rust\nfn main() {}\n```\n\nDone.");
+    assert_eq!(plain, "Example: fn main() {} Done.");
+}
+
+/// 20. GFM tables flatten to space-joined cell text — no pipes or separator rows.
+#[test]
+fn table_flattens_to_cell_text() {
+    let plain = markdown_to_plain_text("| Name | Value |\n| --- | ----- |\n| a | 1 |");
+    assert_eq!(plain, "Name Value a 1");
+}
+
+/// 21. Paragraph/list boundaries collapse to one space, never gluing words together.
+#[test]
+fn block_boundaries_collapse_to_single_space() {
+    let plain =
+        markdown_to_plain_text("First paragraph.\n\nSecond paragraph.\n\n- item one\n- item two");
+    assert_eq!(
+        plain,
+        "First paragraph. Second paragraph. item one item two"
+    );
+}
+
+/// 22. Plain-text chunks (OpenAPI/FAQ content) pass through unchanged (stripping is a no-op).
+#[test]
+fn plain_text_passes_through_unchanged() {
+    let plain = markdown_to_plain_text("Beta leading part");
+    assert_eq!(plain, "Beta leading part");
+}
+
+/// 23. Inline HTML tags drop out but inner text survives; HTML-only input falls back to original.
+#[test]
+fn html_dropped_with_fallback_to_original() {
+    let plain = markdown_to_plain_text("before <b>bold</b> after");
+    assert_eq!(plain, "before bold after");
+
+    let html_only = "<div>no markdown here</div>";
+    assert_eq!(markdown_to_plain_text(html_only), html_only);
 }

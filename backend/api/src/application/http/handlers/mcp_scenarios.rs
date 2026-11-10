@@ -1192,3 +1192,118 @@ async fn mcp_search_empty_knowledge_base_returns_empty_results() {
         .expect("results must be an array");
     assert!(results.is_empty(), "empty KB must return []: {text}");
 }
+
+// User Story: US-CORE-046 —— 频道级 content_language 覆盖全局：中文频道的检索词按
+// 中文改写（否则关键词检索无法命中中文片段），未配置语言的频道仍按全局语言改写。
+// Covers: rewrite_single_turn 必须按「本次请求的频道」解析内容语言。只读全局时，中文
+//         频道的改写请求不带中文指令 → zh_mock 命中 0 次失败；把频道语言当成全局开关时，
+//         另一频道的请求不再带 English 指令 → en_mock 命中 0 次失败。
+#[tokio::test]
+async fn mcp_search_rewrite_uses_channel_content_language_over_global() {
+    const ZH_CHANNEL: &str = "help_center_zh";
+    let base = mcp_app_state(true, true).await;
+
+    // The rewrite LLM only answers requests carrying the exact language
+    // instruction sentence of the rewrite prompt; anything else is unmatched.
+    let llm_server = leak_unpooled_mock_server().await;
+    let rewrite_reply = serde_json::json!({
+        "id": "chatcmpl-mcp-lang-test",
+        "object": "chat.completion",
+        "created": 1700000000u64,
+        "model": "test-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "{\"queries\": [\"rerank\"]}"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    })
+    .to_string();
+    let zh_mock = llm_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            "知识库文档主要使用 中文 语言".to_string(),
+        ))
+        .with_status(200)
+        .with_body(&rewrite_reply)
+        .expect(1)
+        .create_async()
+        .await;
+    let en_mock = llm_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            "知识库文档主要使用 English 语言".to_string(),
+        ))
+        .with_status(200)
+        .with_body(&rewrite_reply)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mut state = (*base).clone();
+    state.llm_client =
+        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
+    state.chat_config.content_language = Some("English".to_string());
+    state.channels_config.channels.insert(
+        ZH_CHANNEL.to_string(),
+        rwiki_core::config::ChannelConfig {
+            name: "帮助中心".to_string(),
+            system_prompt: None,
+            suggested_questions: None,
+            content_language: Some("中文".to_string()),
+        },
+    );
+    let app = create_api_routes(Arc::new(state));
+
+    // ZH channel: the rewrite request must carry the channel-level 中文
+    // instruction.
+    let zh_entry = entry_path(ZH_CHANNEL);
+    initialize_first(&app, &zh_entry).await;
+    let (status, body) = send(
+        app.clone(),
+        mcp_jsonrpc_request(
+            &zh_entry,
+            "tools/call",
+            tools_call_params(
+                "rwiki_search",
+                serde_json::json!({"query": "如何配置重排序", "channelId": ZH_CHANNEL}),
+            ),
+            2,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "zh channel search must succeed: {body}"
+    );
+    let (is_error, _) = tool_result_text(&parse_rpc_body(&body));
+    assert!(!is_error, "zh channel search must not error: {body}");
+
+    // Plain channel (no channel-level language): the global English applies.
+    let en_entry = entry_path(HIT_CHANNEL);
+    initialize_first(&app, &en_entry).await;
+    let (status, body) = send(
+        app,
+        mcp_jsonrpc_request(
+            &en_entry,
+            "tools/call",
+            tools_call_params(
+                "rwiki_search",
+                serde_json::json!({"query": "what is rust", "channelId": HIT_CHANNEL}),
+            ),
+            2,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "plain channel search must succeed: {body}"
+    );
+    let (is_error, _) = tool_result_text(&parse_rpc_body(&body));
+    assert!(!is_error, "plain channel search must not error: {body}");
+
+    zh_mock.assert_async().await;
+    en_mock.assert_async().await;
+}

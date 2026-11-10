@@ -5,19 +5,21 @@
 //! - Access: public — no credentials required, a Bearer header changes nothing
 //! - Validation: empty query / missing-or-empty channelId / unconfigured
 //!   channel / topK bounds (1..=20), exact public-chat wording
-//! - Results: page-granularity ordering (pages by best chunk score, chunks
-//!   within a page in document order), zero-hit empty list, channel
-//!   isolation, no relevance threshold (unrelated queries still return the
-//!   KNN recalls), global empty-KB short-circuit
-//! - Failure: retrieval errors collapse to a fixed generic 500 message
-//! - Consistency: HTTP and MCP `rwiki_search` share one orchestration and
-//!   return identical ordering for the same query
+//! - Results: pure FTS keyword recall (no rewrite, no embedding, no rerank),
+//!   page-granularity ordering (pages by best chunk score, chunks within a
+//!   page in document order), zero-hit empty list (incl. lexically disjoint
+//!   queries — no semantic recall by design), channel isolation, default
+//!   topK cap, markdown syntax stripped from content for display (MCP keeps
+//!   the raw chunk)
+//! - Failure: FTS-internal failures degrade to empty results (never 500);
+//!   no LLM/embedding provider is on this path
 //!
-//! Vector determinism: the embeddings mock always returns the unit vector e1
-//! and seeded chunks carry hand-placed 1536-dim embeddings, so the KNN order
-//! is fixed regardless of distance metric: b-sub1 (e1) > b-sub0 (mid) >
-//! a-sub0 (e2). No fts_chunks rows are seeded, so the keyword path stays
-//! empty and the fused order comes from the vector path alone.
+//! Ordering determinism: the endpoint is pure FTS (BM25, negated so higher =
+//! better) + title-match bonus. Seeded FTS rows carry the raw English
+//! content; queries use only terms present in every intended hit (FTS5
+//! MATCH terms are implicit AND), and BM25 length normalization (equal tf,
+//! shorter doc wins) fixes the cross-page order while stable page grouping
+//! fixes the within-page order (sub_index).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,9 +37,14 @@ const HIT_CHANNEL: &str = "help_center";
 const NO_DOCS_CHANNEL: &str = "empty_channel";
 const SECOND_CHANNEL: &str = "dev_docs";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-/// Marker query with no lexical overlap to any seeded title/content; the
-/// keyword path stays empty and only the vector path recalls.
+/// Marker query with no lexical overlap to any seeded title/content; under
+/// the FTS-only endpoint it recalls nothing (empty results by design). Still
+/// used by the MCP side of the markdown test, whose hybrid path recalls via
+/// the embeddings mock (always e1).
 const NO_MATCH_MARKER_QUERY: &str = "zzzzz-no-match-marker";
+/// Markdown-syntax chunk seed (heading/emphasis/link/fenced code) for the
+/// display-stripping scenario.
+const MARKDOWN_CHUNK_SEED: &str = "# Setup Guide\n\nInstall via **npm** and see the [docs](https://example.com/docs).\n\n```bash\nnpm install rwiki\n```";
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -61,16 +68,23 @@ fn ensure_sqlite_vec_loaded() {
 enum SeedKind {
     /// No chunks at all — global empty knowledge base.
     Empty,
-    /// Design-vector seed: page-a (doc-a, sub0 = e2) and page-b (doc-b,
-    /// sub0 = mid, sub1 = e1), all in HIT_CHANNEL. KNN order fixed:
-    /// b-sub1 > b-sub0 > a-sub0; page-b wins on its best chunk score.
+    /// Lexical seed: page-a (doc-a, "Alpha part") and page-b (doc-b,
+    /// sub0 "Beta leading part", sub1 "Beta part"), all in HIT_CHANNEL.
+    /// Query "part" hits all three; BM25 length normalization (equal tf,
+    /// shorter doc wins) makes the 2-term chunks outrank the 3-term
+    /// b-sub0, so page grouping must keep b-sub0 before the
+    /// higher-scoring b-sub1 (document order within a page).
     DesignVector,
-    /// Design-vector seed in HIT_CHANNEL plus one separate page in
-    /// SECOND_CHANNEL, for channel isolation.
+    /// Lexical seed in HIT_CHANNEL plus one separate page ("Gamma only
+    /// part") in SECOND_CHANNEL, for channel isolation via query "part".
     DualChannel,
-    /// 25 single-chunk pages with strictly increasing distance to e1, for
-    /// the default-topK cap (KNN keeps the closest 20 deterministically).
+    /// 25 single-chunk pages ("Angle content {i}") for the default-topK
+    /// cap: query "angle" hits all 25, FTS LIMIT keeps the first 20.
     TwentyFivePages,
+    /// One markdown-syntax chunk (heading/emphasis/link/fenced code), for
+    /// the display-stripping contract (HTTP hits lexically via "npm
+    /// install"; MCP hybrid recalls via its e1 embedding).
+    MarkdownChunk,
 }
 
 fn embedding_blob(values: &[f64]) -> Vec<u8> {
@@ -178,6 +192,13 @@ fn seed_chunk(conn: &mut rusqlite::Connection, spec: SeedChunkSpec<'_>) {
         rusqlite::params![rowid, embedding_blob(embedding)],
     )
     .expect("seed vec_chunks");
+    // FTS 行：生产侧写入 jieba 分词结果，英文种子词间本以空格分隔，
+    // unicode61 建索引时与原始文本等价，直接种 content 即可。
+    conn.execute(
+        "INSERT INTO fts_chunks (rowid, tokens) VALUES (?1, ?2)",
+        rusqlite::params![rowid, content],
+    )
+    .expect("seed fts_chunks");
 }
 
 fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
@@ -192,7 +213,7 @@ fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
             chunk_count: 1,
             title: "Alpha Page",
             section: "Alpha Section",
-            content: "Alpha only part",
+            content: "Alpha part",
             embedding: &e2(),
         },
     );
@@ -221,7 +242,7 @@ fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
             chunk_count: 2,
             title: "Beta Page",
             section: "Beta Section",
-            content: "Beta trailing part",
+            content: "Beta part",
             embedding: &e1(),
         },
     );
@@ -239,34 +260,11 @@ async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
 /// Build the AppState for search scenario tests.
 ///
 /// `max_context_chunks` overrides `retrieval.max_context_chunks` (default 12)
-/// for the default-topK cap scenario; `embed_fails` flips the embeddings mock
-/// to a 500 so query vectorization fails; `mcp_enabled` mounts the MCP
-/// entries for the HTTP-vs-MCP consistency scenario.
-async fn search_app_state(
-    seed: SeedKind,
-    max_context_chunks: usize,
-    embed_fails: bool,
-    mcp_enabled: bool,
-) -> Arc<AppState> {
-    search_app_state_with_rewrite(
-        seed,
-        max_context_chunks,
-        embed_fails,
-        mcp_enabled,
-        "{\"queries\": [\"Rust systems programming\"]}",
-    )
-    .await
-}
-
-/// Variant of `search_app_state` with a custom rewrite LLM reply, used to
-/// drive the production rewrite fallback arms (unparseable / empty output).
-async fn search_app_state_with_rewrite(
-    seed: SeedKind,
-    max_context_chunks: usize,
-    embed_fails: bool,
-    mcp_enabled: bool,
-    rewrite_reply: &str,
-) -> Arc<AppState> {
+/// for the default-topK cap scenario. The embeddings and LLM completions
+/// mocks exist only for the MCP hybrid path (markdown-stripping test mounts
+/// `rwiki_search` as the raw-markdown control); the FTS-only endpoint under
+/// test never calls either provider.
+async fn search_app_state(seed: SeedKind, max_context_chunks: usize) -> Arc<AppState> {
     ensure_sqlite_vec_loaded();
 
     let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
@@ -299,8 +297,8 @@ async fn search_app_state_with_rewrite(
         }
         SeedKind::TwentyFivePages => {
             seed_document(&mut conn, "doc-many", "many-pages.md", HIT_CHANNEL);
-            // Strictly increasing angle → strictly increasing distance to e1,
-            // so the KNN top-20 (and nothing at the boundary) is fixed.
+            // 25 independent pages; query "angle" hits all of them, the FTS
+            // LIMIT (default topK cap) keeps 20.
             for i in 0..25 {
                 let theta = i as f64 * 0.01;
                 let mut embedding = vec![0.0f64; 1536];
@@ -322,25 +320,37 @@ async fn search_app_state_with_rewrite(
                 );
             }
         }
+        SeedKind::MarkdownChunk => {
+            seed_document(&mut conn, "doc-md", "setup-guide.md", HIT_CHANNEL);
+            seed_chunk(
+                &mut conn,
+                SeedChunkSpec {
+                    doc_id: "doc-md",
+                    chunk_id: "md-sub0",
+                    page_id: "page-md",
+                    sub_index: 0,
+                    chunk_count: 1,
+                    title: "Setup Guide Page",
+                    section: "Setup Section",
+                    content: MARKDOWN_CHUNK_SEED,
+                    embedding: &e1(),
+                },
+            );
+        }
     }
     let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     let embed_server = leak_unpooled_mock_server().await;
-    let embed_body = if embed_fails {
-        "embedding provider exploded".to_string()
-    } else {
-        serde_json::json!({
-            "object": "list",
-            "data": [{"object": "embedding", "embedding": e1(), "index": 0}],
-            "model": "text-embedding-3-small",
-            "usage": {"prompt_tokens": 1, "total_tokens": 1}
-        })
-        .to_string()
-    };
-    let embed_status = if embed_fails { 500 } else { 200 };
+    let embed_body = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": e1(), "index": 0}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    })
+    .to_string();
     let _embed_mock = embed_server
         .mock("POST", "/embeddings")
-        .with_status(embed_status)
+        .with_status(200)
         .with_body(&embed_body)
         .expect_at_most(50)
         .create_async()
@@ -362,13 +372,16 @@ async fn search_app_state_with_rewrite(
         ),
     );
 
-    // LLM mock serves the rewrite payload; the generated answer is never
-    // consumed by /api/search (no LLM generation stage).
+    // LLM mock serves the rewrite payload for the MCP hybrid path; /api/search
+    // itself has no LLM stage.
     let llm_server = leak_unpooled_mock_server().await;
     let _llm_mock = llm_server
         .mock("POST", "/chat/completions")
         .with_status(200)
-        .with_body(chat_completion_body("chatcmpl-search-test", rewrite_reply))
+        .with_body(chat_completion_body(
+            "chatcmpl-search-test",
+            "{\"queries\": [\"Rust systems programming\"]}",
+        ))
         .expect_at_most(50)
         .create_async()
         .await;
@@ -397,7 +410,7 @@ async fn search_app_state_with_rewrite(
         reranker: None,
         rerank_config: rwiki_core::config::RerankConfig::default(),
         low_recall_config: None,
-        mcp_config: mcp_enabled.then(rwiki_core::config::McpConfig::default),
+        mcp_config: Some(rwiki_core::config::McpConfig::default()),
         channels_config: search_channels_config(),
         metrics: Arc::new(rwiki_core::infrastructure::metrics::RwikiMetrics::new()),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -461,15 +474,16 @@ fn message_of(body: &serde_json::Value) -> &str {
 
 // User Story: US-INTG-015 场景1 —— 无凭据检索成功，返回按相关性排序的片段，
 // 排序粒度为 page：page 之间按页内最高分降序，页内保持文档顺序。
-// Covers: 最终排序双向锁定——没有最终排序时输出是位置序 [a-sub0, b-sub0,
-//         b-sub1]；回退到 chunk 级平铺时输出 [b-sub1, b-sub0, a-sub0]（页内
-//         乱序）。两种退化都会让本用例失败。
+// Covers: 最终排序双向锁定——BM25 长度归一化（等词频下 2 词 chunk 分高于
+//         3 词的 b-sub0）使 chunk 级平铺输出 [a-sub0, b-sub1, b-sub0]（页内
+//         乱序、b-sub0 垫底）；无最终排序时输出 FTS 位置序同上。page 级
+//         排序必须输出页内 sub_index 序。两种退化都让本用例失败。
 #[tokio::test]
 async fn search_orders_pages_by_relevance_keeping_sub_index_within_page() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
-    let (status, body) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+    let (status, body) = post_search(app, search_body("part", HIT_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -488,9 +502,9 @@ async fn search_orders_pages_by_relevance_keeping_sub_index_within_page() {
         .collect();
     assert_eq!(
         contents,
-        vec!["Beta leading part", "Beta trailing part", "Alpha only part"],
-        "page-b (best chunk score) precedes page-a; within page-b sub0 precedes sub1 \
-         even though sub1 scores higher: {body}"
+        vec!["Alpha part", "Beta leading part", "Beta part"],
+        "page-a precedes page-b; within page-b sub0 precedes sub1 even though \
+         sub1 scores higher (shorter doc, higher BM25): {body}"
     );
 
     for result in results {
@@ -511,121 +525,22 @@ async fn search_orders_pages_by_relevance_keeping_sub_index_within_page() {
     }
 }
 
-// User Story: US-INTG-015 —— 改写 LLM 返回不可用输出时，生产解析路径的
-// 降级臂（invalid_json / empty_queries → 回退原始查询）必须在真实编排中
-// 继续检索而非报错。
-// Covers: rewrite_query 的两个 fallback 臂——mock LLM 返回纯文本 / 空
-//         queries 数组，端点仍 200 且命中全部种子片段。
-#[tokio::test]
-async fn search_falls_back_to_original_query_on_unusable_rewrite() {
-    for reply in ["this is not json at all", r#"{"queries": []}"#] {
-        let state =
-            search_app_state_with_rewrite(SeedKind::DesignVector, 12, false, false, reply).await;
-        let app = create_api_routes(state);
-
-        let (status, body) =
-            post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "unusable rewrite (reply={reply:?}) must degrade to original-query retrieval: {body}"
-        );
-        let results = body
-            .get("results")
-            .and_then(|r| r.as_array())
-            .unwrap_or_else(|| panic!("results must be an array: {body}"));
-        assert_eq!(
-            results.len(),
-            3,
-            "fallback retrieval must still hit all seeded chunks: {body}"
-        );
-    }
-}
-
-// User Story: US-CORE-046 —— 频道级 content_language 覆盖全局：中文频道的检索词按
-// 中文改写（否则关键词检索无法命中中文片段），未配置语言的频道仍按全局语言改写。
-// Covers: rewrite_single_turn 必须按「本次请求的频道」解析内容语言。只读全局时，中文
-//         频道的改写请求不带中文指令 → zh_mock 命中 0 次失败；把频道语言当成全局开关时，
-//         另一频道的请求不再带 English 指令 → en_mock 命中 0 次失败。
-#[tokio::test]
-async fn search_rewrite_uses_channel_content_language_over_global() {
-    const ZH_CHANNEL: &str = "help_center_zh";
-    let base = search_app_state(SeedKind::DesignVector, 12, false, false).await;
-
-    // The rewrite LLM only answers requests carrying the exact language
-    // instruction sentence of the rewrite prompt; anything else is unmatched.
-    let llm_server = leak_unpooled_mock_server().await;
-    let rewrite_reply =
-        chat_completion_body("chatcmpl-search-lang-test", r#"{"queries": ["rerank"]}"#);
-    let zh_mock = llm_server
-        .mock("POST", "/chat/completions")
-        .match_body(mockito::Matcher::Regex(
-            "知识库文档主要使用 中文 语言".to_string(),
-        ))
-        .with_status(200)
-        .with_body(&rewrite_reply)
-        .expect(1)
-        .create_async()
-        .await;
-    let en_mock = llm_server
-        .mock("POST", "/chat/completions")
-        .match_body(mockito::Matcher::Regex(
-            "知识库文档主要使用 English 语言".to_string(),
-        ))
-        .with_status(200)
-        .with_body(&rewrite_reply)
-        .expect(1)
-        .create_async()
-        .await;
-
-    let mut state = (*base).clone();
-    state.llm_client =
-        rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
-    state.chat_config.content_language = Some("English".to_string());
-    state.channels_config.channels.insert(
-        ZH_CHANNEL.to_string(),
-        rwiki_core::config::ChannelConfig {
-            name: "帮助中心".to_string(),
-            system_prompt: None,
-            suggested_questions: None,
-            content_language: Some("中文".to_string()),
-        },
-    );
-    let app = create_api_routes(Arc::new(state));
-
-    let (status, body) = post_search(app.clone(), search_body("如何配置重排序", ZH_CHANNEL)).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "zh channel search must succeed: {body}"
-    );
-    let (status, body) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "plain channel search must succeed: {body}"
-    );
-
-    zh_mock.assert_async().await;
-    en_mock.assert_async().await;
-}
-
 // User Story: US-INTG-015 场景1 / PRD §5.2 验收目标1 —— 携带任意凭据与不携带
 // 凭据的响应逐字节一致。
 // Covers: 公开端点不要求、不解析、不拒绝凭据；有人给该路由加鉴权中间件时失败。
 #[tokio::test]
 async fn search_with_bearer_token_returns_same_results() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     let (bare_status, bare_text) = send(
         app.clone(),
-        search_request(search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)),
+        search_request(search_body("alpha part", HIT_CHANNEL)),
     )
     .await;
     assert_eq!(bare_status, StatusCode::OK, "bare request must return 200");
 
-    let mut req = search_request(search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL));
+    let mut req = search_request(search_body("alpha part", HIT_CHANNEL));
     req.headers_mut().insert(
         header::AUTHORIZATION,
         axum::http::HeaderValue::from_static("Bearer some-arbitrary-token"),
@@ -648,7 +563,7 @@ async fn search_with_bearer_token_returns_same_results() {
 //         handler 校验而非 422。
 #[tokio::test]
 async fn search_rejects_empty_query() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     for (label, body) in [
@@ -684,7 +599,7 @@ async fn search_rejects_empty_query() {
 // Covers: DTO serde default + handler 复核；去掉 serde default 时失败。
 #[tokio::test]
 async fn search_rejects_missing_channel() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     for (label, body) in [
@@ -712,7 +627,7 @@ async fn search_rejects_missing_channel() {
 // Covers: 400 + 逐字 `频道 ghost 未配置`；文案漂移或内容泄漏时失败。
 #[tokio::test]
 async fn search_rejects_unconfigured_channel() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     let (status, json) = post_search(app, search_body("rust", "ghost")).await;
@@ -737,15 +652,14 @@ async fn search_rejects_unconfigured_channel() {
 // Covers: 双频道种子下，各频道结果的 documentId 只属于对应频道。
 #[tokio::test]
 async fn search_channel_isolation() {
-    let state = search_app_state(SeedKind::DualChannel, 12, false, false).await;
+    let state = search_app_state(SeedKind::DualChannel, 12).await;
     let app = create_api_routes(state);
 
     for (channel, allowed) in [
         (HIT_CHANNEL, ["doc-a", "doc-b"].as_slice()),
         (SECOND_CHANNEL, ["doc-c"].as_slice()),
     ] {
-        let (status, json) =
-            post_search(app.clone(), search_body(NO_MATCH_MARKER_QUERY, channel)).await;
+        let (status, json) = post_search(app.clone(), search_body("part", channel)).await;
         assert_eq!(status, StatusCode::OK, "search on {channel}: {json}");
         let results = json
             .get("results")
@@ -767,15 +681,13 @@ async fn search_channel_isolation() {
 
 // User Story: US-INTG-015 场景3 / US-CORE-041 场景2 —— 频道无已发布文档与检索
 // 零命中统一返回空列表，不视为错误。
-// Covers: DEC-dedicated-search-004 —— 有人加「无可用文档」报错型预检查
-//         （503/400）时失败。
+// Covers: 有人加「无可用文档」报错型预检查（503/400）时失败。
 #[tokio::test]
 async fn search_zero_hit_channel_returns_empty_results() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
-    let (status, json) =
-        post_search(app, search_body(NO_MATCH_MARKER_QUERY, NO_DOCS_CHANNEL)).await;
+    let (status, json) = post_search(app, search_body("part", NO_DOCS_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -791,37 +703,39 @@ async fn search_zero_hit_channel_returns_empty_results() {
     );
 }
 
-// User Story: US-CORE-041 场景2 / DEC-dedicated-search-004 —— 无关查询只要有
-// 召回就返回低相关结果，不因分数低而置空（无相关性阈值/低分过滤）。
-// Covers: 单内容频道（全部 chunk 属于 HIT_CHANNEL 且已发布）种子前提成立；
-//         有人在接口或共享编排里加阈值时失败。
+// User Story: US-CORE-041 场景2 —— 纯 FTS 口径下，
+// 与文档词面不相交的查询（同义词、跨语言等语义查询）召回为零，返回空
+// 列表而非错误，也不伪装出低相关结果。
+// Covers: FTS-only 召回特性——有人在该端点加回 embedding/混合召回（词面
+//         不相交却返回非空）或把零命中当错误（4xx/5xx）时失败。
 #[tokio::test]
-async fn search_unrelated_query_returns_low_relevance_results() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+async fn search_lexically_disjoint_query_returns_empty_results() {
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     let (status, json) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "unrelated query is not an error: {json}"
+        "lexically disjoint query is a zero-hit 200, not an error: {json}"
     );
     let results = json
         .get("results")
         .and_then(|r| r.as_array())
         .unwrap_or_else(|| panic!("results must be an array: {json}"));
     assert!(
-        !results.is_empty(),
-        "empty results are reserved for retrieval zero hits — the KNN path recalls here: {json}"
+        results.is_empty(),
+        "no lexical overlap means no recall under the FTS-only contract: {json}"
     );
 }
 
 // User Story: US-INTG-015 —— 全局空库（尚无任何已索引 chunk）时返回空结果
 // 而非 500。
-// Covers: 全局空库短路；去掉短路时检索原语报错 → 500，本用例失败。
+// Covers: 空 FTS 索引优雅降级为零命中；有人把空库当错误（500/预检查报错）
+//         时失败。
 #[tokio::test]
 async fn search_empty_knowledge_base_returns_empty_results() {
-    let state = search_app_state(SeedKind::Empty, 12, false, false).await;
+    let state = search_app_state(SeedKind::Empty, 12).await;
     let app = create_api_routes(state);
 
     let (status, json) = post_search(app, search_body("rust", HIT_CHANNEL)).await;
@@ -843,7 +757,7 @@ async fn search_empty_knowledge_base_returns_empty_results() {
 // Covers: topK 校验（1..=20），文案与 MCP 工具同构。
 #[tokio::test]
 async fn search_rejects_out_of_range_top_k() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 12).await;
     let app = create_api_routes(state);
 
     for bad in [0i64, 21, -1, 4294967296] {
@@ -861,7 +775,8 @@ async fn search_rejects_out_of_range_top_k() {
     }
 
     for good in [1i64, 20] {
-        let body = serde_json::json!({"query": NO_MATCH_MARKER_QUERY, "channelId": HIT_CHANNEL, "topK": good});
+        let body =
+            serde_json::json!({"query": "alpha part", "channelId": HIT_CHANNEL, "topK": good});
         let (status, json) = post_search(app.clone(), body).await;
         assert_eq!(
             status,
@@ -877,11 +792,11 @@ async fn search_rejects_out_of_range_top_k() {
 //         原配置值」时两种配置都会 400，本用例失败。
 #[tokio::test]
 async fn search_default_top_k_is_capped_by_limit() {
-    // max_context_chunks = 50 (> 20): 25 independent pages seeded, the
-    // default request must still return at most 20 chunks.
-    let state = search_app_state(SeedKind::TwentyFivePages, 50, false, false).await;
+    // max_context_chunks = 50 (> 20): 25 lexically matching pages seeded,
+    // the default request must return exactly the capped 20 chunks.
+    let state = search_app_state(SeedKind::TwentyFivePages, 50).await;
     let app = create_api_routes(state);
-    let (status, json) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+    let (status, json) = post_search(app, search_body("angle", HIT_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -891,16 +806,16 @@ async fn search_default_top_k_is_capped_by_limit() {
         .get("results")
         .and_then(|r| r.as_array())
         .unwrap_or_else(|| panic!("results must be an array: {json}"));
-    assert!(
-        results.len() <= 20,
-        "default topK is capped at 20 even when max_context_chunks=50, got {}: {json}",
-        results.len()
+    assert_eq!(
+        results.len(),
+        20,
+        "25 FTS hits, default topK capped at 20 even when max_context_chunks=50: {json}"
     );
 
     // max_context_chunks = 0: the clamp keeps the default request at 200.
-    let state = search_app_state(SeedKind::DesignVector, 0, false, false).await;
+    let state = search_app_state(SeedKind::DesignVector, 0).await;
     let app = create_api_routes(state);
-    let (status, json) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+    let (status, json) = post_search(app, search_body("alpha part", HIT_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -908,79 +823,37 @@ async fn search_default_top_k_is_capped_by_limit() {
     );
 }
 
-// User Story: US-INTG-015 —— 检索内部失败收敛为固定 500 文案，不外露底层
-// 错误细节。
-// Covers: 查询向量化失败路径；改回 e.to_string() 直出（body 出现
-//         「查询向量化失败」或 mock 错误正文）时失败。
+// 搜索摘要直读：HTTP 响应的 content 剥离 markdown 语法供前端直读；
+// MCP rwiki_search 的消费者是 LLM，保留原始 markdown 结构。
+// Covers: From<SearchResult> for SearchResultItem 漏掉剥离（裸 #/**/```
+//         回归摘要）时 HTTP 断言失败；剥离被上移到共享检索编排（连 MCP
+//         一起剥）时 MCP 断言失败。
 #[tokio::test]
-async fn search_retrieval_failure_returns_generic_500() {
-    let state = search_app_state(SeedKind::DesignVector, 12, true, false).await;
+async fn search_strips_markdown_for_display_but_mcp_keeps_raw() {
+    let state = search_app_state(SeedKind::MarkdownChunk, 12).await;
     let app = create_api_routes(state);
 
-    let (status, text) = send(
-        app,
-        search_request(search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "retrieval failure is a 500: {text}"
-    );
-    let json: serde_json::Value = serde_json::from_str(&text).expect("error body is JSON");
-    assert_eq!(
-        message_of(&json),
-        "知识库服务内部错误",
-        "500 message must be the fixed generic wording: {text}"
-    );
-    assert!(
-        !text.contains("查询向量化失败"),
-        "internal error wording must not leak: {text}"
-    );
-    assert!(
-        !text.contains("embedding provider exploded"),
-        "upstream provider error text must not leak: {text}"
-    );
-}
-
-// User Story: US-CORE-042 场景1 / PRD §5.2 验收目标3 —— 同一查询在 HTTP 搜索
-// 与 MCP rwiki_search 呈现一致的排序与得分（同一编排、同一排序口径）。
-// Covers: 编排分叉（两入口各自拼接检索）时 (documentId, title, score) 序列
-//         不再一致，本用例失败。
-#[tokio::test]
-async fn search_matches_mcp_search_ordering_for_same_query() {
-    let state = search_app_state(SeedKind::DesignVector, 12, false, true).await;
-    let app = create_api_routes(state);
-
-    // HTTP side
+    // HTTP side: lexical query hits the chunk; content is plain text.
     let (status, http_json) =
-        post_search(app.clone(), search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+        post_search(app.clone(), search_body("npm install", HIT_CHANNEL)).await;
     assert_eq!(
         status,
         StatusCode::OK,
         "HTTP search must succeed: {http_json}"
     );
-    let http_rows: Vec<(String, String, f64)> = http_json
+    let http_content = http_json
         .get("results")
         .and_then(|r| r.as_array())
-        .expect("results array")
-        .iter()
-        .map(|r| {
-            (
-                r.get("documentId")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                r.get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                r.get("score").and_then(|s| s.as_f64()).unwrap_or_default(),
-            )
-        })
-        .collect();
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_else(|| panic!("first result content: {http_json}"));
+    assert_eq!(
+        http_content, "Setup Guide Install via npm and see the docs. npm install rwiki",
+        "HTTP content must be the stripped plain text: {http_json}"
+    );
 
-    // MCP side: initialize then rwiki_search with the same arguments.
+    // MCP side: initialize then rwiki_search keeps the raw markdown chunk.
     let entry = format!("/mcp/{HIT_CHANNEL}");
     let mcp_request = |method: &str, params: serde_json::Value, id: i64| {
         Request::builder()
@@ -1008,7 +881,7 @@ async fn search_matches_mcp_search_ordering_for_same_query() {
             serde_json::json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "search-consistency-test", "version": "0.0.0"},
+                "clientInfo": {"name": "search-strip-test", "version": "0.0.0"},
             }),
             1,
         ),
@@ -1055,29 +928,15 @@ async fn search_matches_mcp_search_ordering_for_same_query() {
         .expect("content[0].text");
     let payload: serde_json::Value =
         serde_json::from_str(tool_text).expect("SearchToolResult JSON");
-    let mcp_rows: Vec<(String, String, f64)> = payload
+    let mcp_content = payload
         .get("results")
         .and_then(|r| r.as_array())
-        .expect("results array")
-        .iter()
-        .map(|r| {
-            (
-                r.get("documentId")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                r.get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                r.get("score").and_then(|s| s.as_f64()).unwrap_or_default(),
-            )
-        })
-        .collect();
-
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_else(|| panic!("first MCP result content: {tool_text}"));
     assert_eq!(
-        http_rows, mcp_rows,
-        "HTTP /api/search and MCP rwiki_search must return identical (documentId, title, score) \
-         sequences for the same query — one orchestration, one ranking"
+        mcp_content, MARKDOWN_CHUNK_SEED,
+        "MCP rwiki_search must keep the raw markdown chunk for LLM consumers"
     );
 }

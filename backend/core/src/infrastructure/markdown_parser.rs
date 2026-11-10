@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, Options, Parser, TagEnd};
 use uuid::Uuid;
 
 use super::xlsx_parser::{ContentType, ParsedChunk};
@@ -237,6 +238,53 @@ fn resolve_title(fm_title: Option<&str>, body: &str, file_name: &str) -> String 
         .or_else(|| file_name.strip_suffix(".md"))
         .unwrap_or(file_name);
     name.to_string()
+}
+
+/// Convert a markdown chunk to readable plain text for display snippets.
+///
+/// Walks the AST (plus GFM tables/strikethrough/task lists) rather than
+/// regex-replacing symbols, so nesting and edge cases stay correct: inline
+/// code keeps its inner text, links keep their label (URL dropped), images
+/// keep their alt text, fenced code keeps the code itself, and block
+/// boundaries (paragraphs, headings, list items, table cells) collapse to
+/// single spaces. Raw HTML, horizontal rules and task-list markers
+/// contribute nothing. If stripping yields only whitespace (e.g. an
+/// HTML-only chunk), the input is returned unchanged so the snippet never
+/// becomes empty.
+pub fn markdown_to_plain_text(markdown: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let mut out = String::with_capacity(markdown.len());
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Text(text) | Event::Code(text) => out.push_str(&text),
+            // Soft/hard line breaks and block ends mark a word boundary; runs
+            // of whitespace (including these) collapse to one space below.
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::CodeBlock
+                | TagEnd::Item
+                | TagEnd::TableRow
+                | TagEnd::TableCell,
+            ) => out.push(' '),
+            // Everything else (emphasis/link/image wrappers, raw HTML, rules,
+            // task-list markers) contributes no text of its own.
+            _ => {}
+        }
+    }
+
+    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        markdown.to_string()
+    } else {
+        collapsed
+    }
 }
 
 #[cfg(test)]

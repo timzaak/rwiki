@@ -102,7 +102,7 @@ RWiki exposes OpenTelemetry metrics for the entire RAG pipeline. All metrics sha
 | Rewrite | `rag.rewrite.duration` | Histogram | ms | Query rewrite LLM call latency. Attributes: `is_first_turn` |
 | Rewrite | `rag.rewrite.timeout.count` | Counter | — | Query rewrite timeouts |
 | Rewrite | `rag.rewrite.fallback.count` | Counter | — | Query rewrite fallbacks. Attributes: `fallback_reason` (`timeout`, `llm_error`, or `original`) |
-| Retrieval | `rag.retrieval.duration` | Histogram | ms | Retrieval total latency. Attributes: `search_type` (`hybrid`) |
+| Retrieval | `rag.retrieval.duration` | Histogram | ms | Retrieval total latency. Attributes: `search_type` (`hybrid`, `fts`) |
 | Retrieval | `rag.retrieval.results.count` | Histogram | — | Retrieval results count distribution |
 | Retrieval | `rag.retrieval.empty.count` | Counter | — | Empty retrieval results |
 | Rerank | `rag.rerank.duration` | Histogram | ms | Rerank API call latency. Attributes: `provider` |

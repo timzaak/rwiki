@@ -1,5 +1,5 @@
 /**
- * Docs site (docs-web) semantic search E2E — US-CORE-045.
+ * Docs site (docs-web) keyword search E2E — US-CORE-045.
  *
  * The docs Ctrl+K dialog calls the backend `POST /api/search` instead of the
  * former static client-side index:
@@ -79,7 +79,7 @@ async function searchDocs(page: Page, query: string) {
   return options
 }
 
-test.describe('Docs site semantic search (US-CORE-045)', () => {
+test.describe('Docs site keyword search (US-CORE-045)', () => {
   test('scn 1 - typing sends nothing; Enter searches help_center and navigates to a docs page', async ({
     page,
     demoLogger: _demoLogger,

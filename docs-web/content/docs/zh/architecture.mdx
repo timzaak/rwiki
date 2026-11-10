@@ -108,7 +108,7 @@ RWiki 通过 OpenTelemetry 暴露整个 RAG 管线的指标。所有指标共用
 | 改写 | `rag.rewrite.duration` | Histogram | ms | 查询改写 LLM 调用延迟。属性：`is_first_turn` |
 | 改写 | `rag.rewrite.timeout.count` | Counter | — | 查询改写超时次数 |
 | 改写 | `rag.rewrite.fallback.count` | Counter | — | 查询改写回退次数。属性：`fallback_reason`（`timeout`、`llm_error` 或 `original`） |
-| 检索 | `rag.retrieval.duration` | Histogram | ms | 检索总延迟。属性：`search_type`（`hybrid`） |
+| 检索 | `rag.retrieval.duration` | Histogram | ms | 检索总延迟。属性：`search_type`（`hybrid`、`fts`） |
 | 检索 | `rag.retrieval.results.count` | Histogram | — | 检索结果数量分布 |
 | 检索 | `rag.retrieval.empty.count` | Counter | — | 检索结果为空的次数 |
 | 重排 | `rag.rerank.duration` | Histogram | ms | Rerank API 调用延迟。属性：`provider` |

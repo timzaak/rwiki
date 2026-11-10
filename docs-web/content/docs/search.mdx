@@ -6,7 +6,7 @@ icon: Search
 
 Every channel page (`/c/{channelId}`) carries a search box above the chat entry. Press Enter or click the search button to run a query; typing alone sends nothing, so browsing the page never costs retrieval calls. The search covers published documents of that channel only, and no credentials are required.
 
-Results arrive in a dropdown under the box. Each item shows the page title, a two-line summary, and the source link, which opens in a new tab. Items whose source link is missing display normally but are not clickable. Ordering is page-level relevance: pages by their best chunk score, chunks inside a page in document order. Chat citations and the MCP `rwiki_search` tool use the same ordering, so the same query returns the same order everywhere.
+Results arrive in a dropdown under the box. Each item shows the page title, a two-line summary, and the source link, which opens in a new tab. Items whose source link is missing display normally but are not clickable. Ordering is page-level relevance: pages by their best chunk score, chunks inside a page in document order. Chat citations and the MCP `rwiki_search` tool share the same page-level ordering rule, but they retrieve through the hybrid pipeline, so the same query may rank differently there.
 
 ## Highlight and keyboard
 
@@ -18,7 +18,7 @@ Arrow keys move focus through the dropdown: from the input to the ask-AI entry, 
 
 When a search returns results, a row above the list offers to hand the query over to the chat: click it (or focus it and press Enter) and the chat window opens with the searched query already sent as a chat turn. The answer streams back through the normal chat pipeline, continuing the current session. The dropdown collapses, and the keyword stays in the search box for refining.
 
-The handover sends the query that produced the results, not the current draft. The entry only appears with results on screen: on a zero-hit search or a failed one, chat retrieval would find the same nothing, so the row is hidden instead of charging an LLM call for "I don't know".
+The handover sends the query that produced the results, not the current draft. The entry only appears with results on screen: on a zero-hit or failed search the row is hidden.
 
 ## Search API
 
@@ -32,16 +32,16 @@ curl -X POST http://localhost:8080/api/search \
 
 The response carries `results[]`, where each item has `title`, `section`, `content`, `link`, `locale`, `score`, and `documentId`. Zero hits return an empty list, not an error. An optional `topK` (1 to 20) caps the number of chunks; omit it to use the retrieval config default, which matches the MCP tool. The full schema is on the [`search_chunks` OpenAPI page](/en/docs/openapi/search_chunks).
 
-Retrieval runs through the same orchestration as chat and MCP: query rewrite, hybrid keyword and vector search, dedupe, optional rerank, then the page-level ranking. Same query, same channel, same results as the page search box and `rwiki_search`.
+Retrieval is pure keyword search (FTS5 BM25 over jieba-tokenized chunk content), tuned for latency: no query rewrite, no embedding call, no rerank, no window expansion — the whole request stays local and answers in milliseconds. Recall requires lexical overlap with the content: synonym or cross-language queries with no shared terms return an empty list, and a match on the page title alone does not recall a chunk (the title only lifts ranking). Content dedupe and the page-level ranking (including the title-match bonus) are shared with the hybrid pipeline, so ordering rules are the same even though the recall source differs. Chat, MCP, and eval keep the full hybrid pipeline.
 
 The widget build does not include the search box; it is a main-site feature.
 
 ## Docs site search
 
-The docs site (this site) uses the same semantic search: the Ctrl+K dialog calls `POST /api/search` instead of a static client-side index.
+The docs site (this site) uses the same keyword search: the Ctrl+K dialog calls `POST /api/search` instead of a static client-side index.
 
 - **Trigger**: typing sends nothing; Enter in the input runs the query. Once results are on screen, Enter opens the highlighted item — edit the query to run another search.
-- **Channel per locale**: each locale searches its own channel — on this site `/en` → `help_center`, `/zh` → `help_center_zh` (seeded with that language's docs, with channel-level `content_language` so queries are rewritten in the channel's language). The locale→channel map lives in `src/lib/rwiki.ts`: one channel per site language, add a language by adding a line and a channel.
+- **Channel per locale**: each locale searches its own channel — on this site `/en` → `help_center`, `/zh` → `help_center_zh` (seeded with that language's docs, so queries in that language share terms with the content — FTS segments Chinese via jieba on both sides). The locale→channel map lives in `src/lib/rwiki.ts`: one channel per site language, add a language by adding a line and a channel.
 - **Results**: grouped by page — a title row with its chunk summaries below. Items open on the docs site in the current language; foreign origins open in a new tab. Results without a source link (for example OpenAPI chunks) are not shown.
 - **Ask AI**: with results on screen, the first row hands the query to the rwiki chat widget on the page. It requires a widget build with `RWikiChat.ask` — with an older bundle the row is simply not rendered.
 - **Failure**: backend errors show a fixed message; validation errors (like an unconfigured channel) show the backend's message verbatim.

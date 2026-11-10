@@ -16,6 +16,7 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import { AlertCircleIcon, BotIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 
 import { FeedbackButtons } from './feedback-buttons'
+import { CopyButton } from './copy-button'
 import { SuggestedQuestions } from './suggested-questions'
 import { useChatStreamContext } from './chat-stream-context'
 import { useWidgetI18n } from './widget-i18n'
@@ -117,6 +118,11 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
   const t = useWidgetI18n()
   const { sendMessage } = useChatStreamContext()
   const suggestedQuestions = message.suggestedQuestions ?? []
+
+  // The action row shows only when at least one action is available; keeping
+  // the conditions in one place avoids rendering an empty padded row.
+  const canCopy = Boolean(message.content.trim())
+  const canFeedback = sessionId != null
 
   return (
     <div
@@ -225,12 +231,17 @@ export function MessageItem({ message, onRetry }: MessageItemProps) {
           </>
         )}
 
-        {!isUser && !message.isStreaming && !isFailed && sessionId != null && (
-          <FeedbackButtons
-            feedback={feedback}
-            onFeedback={submitFeedback}
-            isSubmitting={isSubmitting}
-          />
+        {!isUser && !message.isStreaming && !isFailed && (canCopy || canFeedback) && (
+          <div className="mt-1.5 flex items-center justify-end gap-1">
+            {canCopy && <CopyButton text={message.content} />}
+            {canFeedback && (
+              <FeedbackButtons
+                feedback={feedback}
+                onFeedback={submitFeedback}
+                isSubmitting={isSubmitting}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
