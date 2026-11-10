@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import { useChatStore, useChatModalStore } from '@/stores/chat-store'
+import { SIDE_PANEL_OPEN_CLASS, SIDE_PANEL_STYLE_ID } from '../side-panel-host'
 
 // Mock CSS inline imports before importing the module under test
 vi.mock('../styles.css?inline', () => ({ default: '/* widget-styles */' }))
@@ -397,5 +398,71 @@ describe('Widget setChannel (US-INTG-016)', () => {
     expect(errorSpy).toHaveBeenCalledWith('[RWikiChat] setChannel called before init')
 
     errorSpy.mockRestore()
+  })
+})
+
+describe('Widget side panel host wiring (US-INTG-018)', () => {
+  // main.tsx owns the host DOM, so these tests run the real side-panel-host
+  // module against jsdom (only inject-styles/widget-app stay mocked above).
+  beforeEach(() => {
+    getGlobalAPI()?.destroy?.()
+    resetStores()
+    document.querySelectorAll('#rwiki-chat-widget').forEach((el) => el.remove())
+    document.getElementById(SIDE_PANEL_STYLE_ID)?.remove()
+    document.documentElement.classList.remove(SIDE_PANEL_OPEN_CLASS)
+  })
+
+  afterEach(() => {
+    getGlobalAPI()?.destroy?.()
+  })
+
+  it('sidePanel mode: ask() opens the panel and shifts the host document root', () => {
+    const api = getGlobalAPI()
+    api.init({
+      apiUrl: 'http://localhost:3000',
+      channelId: 'help-center',
+      displayMode: 'sidePanel',
+    })
+
+    api.ask('how to configure rerank')
+
+    // ask() routes through the shared isModalOpen state: panel and host shift
+    // must open together, with no side-panel-specific API.
+    expect(useChatModalStore.getState().isModalOpen).toBe(true)
+    expect(document.getElementById(SIDE_PANEL_STYLE_ID)).not.toBeNull()
+    expect(document.documentElement.classList.contains(SIDE_PANEL_OPEN_CLASS)).toBe(true)
+  })
+
+  it('sidePanel mode: destroy() while open clears the injection synchronously and unsubscribes', () => {
+    const api = getGlobalAPI()
+    api.init({
+      apiUrl: 'http://localhost:3000',
+      channelId: 'help-center',
+      displayMode: 'sidePanel',
+    })
+    api.ask('hi')
+    expect(document.getElementById(SIDE_PANEL_STYLE_ID)).not.toBeNull()
+
+    api.destroy()
+
+    // Synchronous restore — no animation wait, no residue on the host page.
+    expect(document.getElementById(SIDE_PANEL_STYLE_ID)).toBeNull()
+    expect(document.documentElement.classList.contains(SIDE_PANEL_OPEN_CLASS)).toBe(false)
+
+    // The subscription is gone too: a later store flip must not re-inject.
+    useChatModalStore.getState().openModal()
+    expect(document.getElementById(SIDE_PANEL_STYLE_ID)).toBeNull()
+    expect(document.documentElement.classList.contains(SIDE_PANEL_OPEN_CLASS)).toBe(false)
+  })
+
+  it('modal mode (default): opening the chat leaves the host DOM footprint untouched', () => {
+    const api = getGlobalAPI()
+    api.init({ apiUrl: 'http://localhost:3000', channelId: 'help-center' })
+
+    api.ask('hi')
+
+    expect(useChatModalStore.getState().isModalOpen).toBe(true)
+    expect(document.getElementById(SIDE_PANEL_STYLE_ID)).toBeNull()
+    expect(document.documentElement.classList.contains(SIDE_PANEL_OPEN_CLASS)).toBe(false)
   })
 })

@@ -31,6 +31,8 @@ export default function RWikiChatWidget({ locale }: { locale: string }) {
         channelId: channelIdForLocale(localeRef.current),
         primaryColor: "#7c3aed",
         locale: localeRef.current,
+        // 文档站用右侧停靠侧栏（推挤正文，不遮挡），替代默认居中弹窗。
+        displayMode: "sidePanel",
       });
       // 通知搜索等消费者全局 API 已就绪：它们渲染期的快照不会自行刷新。
       window.dispatchEvent(new CustomEvent(RWIKI_CHAT_READY_EVENT));

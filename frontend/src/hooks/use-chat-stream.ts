@@ -5,6 +5,7 @@ import type { ChatRequest } from '@/lib/api-generated/types.gen'
 import { detectEventType } from '@/lib/chat-sse'
 import { useChatStore } from '@/stores/chat-store'
 import { useChannelId } from '@/components/chat/channel-id-context'
+import { generateId } from '@/lib/utils'
 
 export function useChatStream() {
   const abortRef = useRef<AbortController | null>(null)
@@ -35,7 +36,7 @@ export function useChatStream() {
       abortRef.current = controller
 
       addUserMessage(content)
-      const assistantId = crypto.randomUUID()
+      const assistantId = generateId()
       addAssistantMessage(assistantId)
 
       try {

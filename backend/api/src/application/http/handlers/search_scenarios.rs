@@ -13,13 +13,22 @@
 //!   the raw chunk)
 //! - Failure: FTS-internal failures degrade to empty results (never 500);
 //!   no LLM/embedding provider is on this path
+//! - Mode switch: everything above is the default `fts` mode;
+//!   `[retrieval].public_search_mode = "hybrid"` routes the endpoint through
+//!   the rewrite + hybrid pipeline instead — semantic recall for lexically
+//!   disjoint queries, global empty-KB short-circuit, retrieval errors
+//!   collapsed to a fixed generic 500
 //!
-//! Ordering determinism: the endpoint is pure FTS (BM25, negated so higher =
-//! better) + title-match bonus. Seeded FTS rows carry the raw English
+//! Ordering determinism: the default mode is pure FTS (BM25, negated so
+//! higher = better) + title-match bonus. Seeded FTS rows carry the raw English
 //! content; queries use only terms present in every intended hit (FTS5
 //! MATCH terms are implicit AND), and BM25 length normalization (equal tf,
 //! shorter doc wins) fixes the cross-page order while stable page grouping
-//! fixes the within-page order (sub_index).
+//! fixes the within-page order (sub_index). Hybrid-mode tests query with a
+//! lexically disjoint marker so the keyword leg stays empty; the embeddings
+//! mock always returns the unit vector e1 and seeded chunks carry hand-placed
+//! embeddings, so the KNN order is fixed: b-sub1 (e1) > b-sub0 (mid) >
+//! a-sub0 (e2).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,9 +47,9 @@ const NO_DOCS_CHANNEL: &str = "empty_channel";
 const SECOND_CHANNEL: &str = "dev_docs";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Marker query with no lexical overlap to any seeded title/content; under
-/// the FTS-only endpoint it recalls nothing (empty results by design). Still
-/// used by the MCP side of the markdown test, whose hybrid path recalls via
-/// the embeddings mock (always e1).
+/// the default `fts` mode it recalls nothing (empty results by design). The
+/// hybrid paths (the endpoint's `hybrid` mode and the MCP side of the
+/// markdown test) recall via the embeddings mock (always e1).
 const NO_MATCH_MARKER_QUERY: &str = "zzzzz-no-match-marker";
 /// Markdown-syntax chunk seed (heading/emphasis/link/fenced code) for the
 /// display-stripping scenario.
@@ -257,14 +266,30 @@ async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
     ))
 }
 
-/// Build the AppState for search scenario tests.
+/// Build the AppState for search scenario tests in the default (`fts`)
+/// public search mode.
 ///
 /// `max_context_chunks` overrides `retrieval.max_context_chunks` (default 12)
 /// for the default-topK cap scenario. The embeddings and LLM completions
-/// mocks exist only for the MCP hybrid path (markdown-stripping test mounts
-/// `rwiki_search` as the raw-markdown control); the FTS-only endpoint under
-/// test never calls either provider.
+/// mocks exist only for the hybrid paths (the endpoint's `hybrid` mode, and
+/// the markdown-stripping test mounting MCP `rwiki_search` as the
+/// raw-markdown control); the default `fts` mode never calls either provider.
 async fn search_app_state(seed: SeedKind, max_context_chunks: usize) -> Arc<AppState> {
+    search_app_state_with_mode(
+        seed,
+        max_context_chunks,
+        rwiki_core::config::PublicSearchMode::default(),
+    )
+    .await
+}
+
+/// Variant of `search_app_state` with an explicit
+/// `retrieval.public_search_mode`, used to drive the endpoint's hybrid arm.
+async fn search_app_state_with_mode(
+    seed: SeedKind,
+    max_context_chunks: usize,
+    public_search_mode: rwiki_core::config::PublicSearchMode,
+) -> Arc<AppState> {
     ensure_sqlite_vec_loaded();
 
     let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
@@ -372,8 +397,8 @@ async fn search_app_state(seed: SeedKind, max_context_chunks: usize) -> Arc<AppS
         ),
     );
 
-    // LLM mock serves the rewrite payload for the MCP hybrid path; /api/search
-    // itself has no LLM stage.
+    // LLM mock serves the rewrite payload for the hybrid paths; the default
+    // `fts` mode of /api/search has no LLM stage.
     let llm_server = leak_unpooled_mock_server().await;
     let _llm_mock = llm_server
         .mock("POST", "/chat/completions")
@@ -391,6 +416,7 @@ async fn search_app_state(seed: SeedKind, max_context_chunks: usize) -> Arc<AppS
 
     let retrieval_config = rwiki_core::config::RetrievalConfig {
         max_context_chunks,
+        public_search_mode,
         ..rwiki_core::config::RetrievalConfig::default()
     };
 
@@ -938,5 +964,133 @@ async fn search_strips_markdown_for_display_but_mcp_keeps_raw() {
     assert_eq!(
         mcp_content, MARKDOWN_CHUNK_SEED,
         "MCP rwiki_search must keep the raw markdown chunk for LLM consumers"
+    );
+}
+
+// `[retrieval].public_search_mode = "hybrid"` —— 运维切回混合检索后，与文档
+// 词面不相交的语义查询重新可召回（向量路），这是选择 hybrid 的全部意义。
+// Covers: 配置开关真正切换检索链路——handler 忽略配置（始终走 FTS）时该查询
+//         零命中，本用例失败；与默认模式下同一查询断言空结果的
+//         `search_lexically_disjoint_query_returns_empty_results` 成对锁定两种
+//         模式的召回差异。排序断言同时锁定混合链路的 page 级最终排序：KNN 序
+//         为 b-sub1 (e1) > b-sub0 (mid) > a-sub0 (e2)，退化为 chunk 级平铺会
+//         输出 [b-sub1, b-sub0, a-sub0]（页内乱序）。
+#[tokio::test]
+async fn search_hybrid_mode_recalls_lexically_disjoint_query() {
+    let state = search_app_state_with_mode(
+        SeedKind::DesignVector,
+        12,
+        rwiki_core::config::PublicSearchMode::Hybrid,
+    )
+    .await;
+    let app = create_api_routes(state);
+
+    let (status, body) = post_search(app, search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "hybrid-mode search must return 200: {body}"
+    );
+
+    let contents: Vec<&str> = body
+        .get("results")
+        .and_then(|r| r.as_array())
+        .unwrap_or_else(|| panic!("results must be an array: {body}"))
+        .iter()
+        .filter_map(|r| r.get("content").and_then(|c| c.as_str()))
+        .collect();
+    assert_eq!(
+        contents,
+        vec!["Beta leading part", "Beta part", "Alpha part"],
+        "hybrid mode recalls via the vector leg despite zero lexical overlap: page-b \
+         (best chunk score) precedes page-a, within page-b sub0 precedes sub1: {body}"
+    );
+}
+
+// hybrid 模式下全局空库（尚无任何已索引 chunk）返回空结果而非 500。
+// Covers: 混合臂的全局空库短路——去掉短路时检索原语报错 → 500，本用例失败。
+#[tokio::test]
+async fn search_hybrid_mode_empty_knowledge_base_returns_empty_results() {
+    let state = search_app_state_with_mode(
+        SeedKind::Empty,
+        12,
+        rwiki_core::config::PublicSearchMode::Hybrid,
+    )
+    .await;
+    let app = create_api_routes(state);
+
+    let (status, json) = post_search(app, search_body("rust", HIT_CHANNEL)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "globally empty KB must short-circuit to 200 [] in hybrid mode: {json}"
+    );
+    let results = json
+        .get("results")
+        .and_then(|r| r.as_array())
+        .unwrap_or_else(|| panic!("results must be an array: {json}"));
+    assert!(results.is_empty(), "empty KB returns no results: {json}");
+}
+
+// hybrid 模式下检索内部失败收敛为固定 500 文案，不外露底层错误细节——公开
+// 端点的信息不泄漏口径在 hybrid 模式重新可达（fts 模式下检索失败降级为空
+// 结果，不出 500）。
+// Covers: 查询向量化失败路径；改回 e.to_string() 直出（body 出现
+//         「查询向量化失败」或 mock 错误正文）时失败。
+#[tokio::test]
+async fn search_hybrid_mode_retrieval_failure_returns_generic_500() {
+    let base = search_app_state_with_mode(
+        SeedKind::DesignVector,
+        12,
+        rwiki_core::config::PublicSearchMode::Hybrid,
+    )
+    .await;
+
+    let embed_server = leak_unpooled_mock_server().await;
+    let _embed_mock = embed_server
+        .mock("POST", "/embeddings")
+        .with_status(500)
+        .with_body("embedding provider exploded")
+        .expect_at_most(50)
+        .create_async()
+        .await;
+    let embedding_model = rwiki_core::infrastructure::rig_client::connect_at(
+        "sk-test-fake-key-for-search-scenarios-only",
+        embed_server.url(),
+    )
+    .embedding("text-embedding-3-small", None);
+    let mut state = (*base).clone();
+    state.vector_store = Arc::new(
+        rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
+            state.sqlite.clone(),
+            rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model),
+            "text-embedding-3-small".to_string(),
+        ),
+    );
+    let app = create_api_routes(Arc::new(state));
+
+    let (status, text) = send(
+        app,
+        search_request(search_body(NO_MATCH_MARKER_QUERY, HIT_CHANNEL)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "retrieval failure is a 500: {text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&text).expect("error body is JSON");
+    assert_eq!(
+        message_of(&json),
+        "知识库服务内部错误",
+        "500 message must be the fixed generic wording: {text}"
+    );
+    assert!(
+        !text.contains("查询向量化失败"),
+        "internal error wording must not leak: {text}"
+    );
+    assert!(
+        !text.contains("embedding provider exploded"),
+        "upstream provider error text must not leak: {text}"
     );
 }

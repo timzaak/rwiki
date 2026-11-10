@@ -65,6 +65,37 @@ describe('validateWidgetConfig', () => {
     )
   })
 
+  describe('displayMode validation (US-INTG-018 scenario 5: fail fast)', () => {
+    it('passes displayMode: sidePanel through to the validated config', () => {
+      const result = validateWidgetConfig({
+        apiUrl: 'http://example.com',
+        channelId: 'help-center',
+        displayMode: 'sidePanel',
+      })
+      expect(result).not.toBeNull()
+      expect(result!.displayMode).toBe('sidePanel')
+    })
+
+    // Falsy values (e.g. '') follow the position precedent: treated as absent,
+    // not as an error — only truthy unsupported values fail fast.
+    it.each(['drawer', 'Modal', 'side-panel'])(
+      'returns null and logs displayMode error for %s — never a silent modal fallback',
+      (displayMode) => {
+        // A silent fallback to modal would mask an integrator's typo as a
+        // behavior change of their site — the error must be loud.
+        const result = validateWidgetConfig({
+          apiUrl: 'http://example.com',
+          channelId: 'help-center',
+          displayMode: displayMode as any,
+        })
+        expect(result).toBeNull()
+        expect(console.error).toHaveBeenCalledWith(
+          '[RWikiChat] displayMode must be "modal" or "sidePanel"',
+        )
+      },
+    )
+  })
+
   it('returns ValidatedWidgetConfig with defaults for valid full config', () => {
     const result = validateWidgetConfig({
       apiUrl: 'http://example.com',
@@ -80,6 +111,7 @@ describe('validateWidgetConfig', () => {
       primaryColor: '#ff5500',
       title: 'My Bot',
       position: 'left',
+      displayMode: 'modal',
       locale: 'en',
       welcomeMessage: 'Hi!',
     })
@@ -92,6 +124,7 @@ describe('validateWidgetConfig', () => {
       channelId: ['help-center'],
       primaryColor: '#3b82f6',
       position: 'right',
+      displayMode: 'modal',
       locale: 'en',
     })
   })

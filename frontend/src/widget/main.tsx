@@ -6,6 +6,7 @@ import highlightStyles from 'highlight.js/styles/github.css?inline';
 import { WidgetApp } from './widget-app';
 import { normalizeChannelIds, validateWidgetConfig, type ValidatedWidgetConfig, type WidgetConfig } from './config';
 import { injectStyles } from './inject-styles';
+import { removeSidePanelHostInjection, setSidePanelOpen } from './side-panel-host';
 import { stopWidgetStreaming } from './use-widget-chat-stream';
 import { resolveLocale } from '@/components/chat/messages';
 import { useChatModalStore, useChatStore } from '@/stores/chat-store';
@@ -14,6 +15,8 @@ let container: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
 let reactRoot: ReturnType<typeof createRoot> | null = null;
 let currentConfig: ValidatedWidgetConfig | null = null;
+let unsubscribeSidePanelHost: (() => void) | null = null;
+let darkModeObserver: MutationObserver | null = null;
 
 // Separator-safe encoding of a channel ID set (a plain join(',') key would
 // collide for IDs containing the separator, e.g. ["a","b"] vs ["a,b"]).
@@ -45,6 +48,16 @@ function init(config: WidgetConfig) {
   // to a different channel (destroy() above may already have reset it).
   bindChannel(validated.channelId);
 
+  // Side panel mode: drive the host-page layout shift from the shared open
+  // state, so ask()/floating button/close icon all route through it unchanged.
+  // The modal mode never subscribes — host DOM footprint stays as-is.
+  if (validated.displayMode === 'sidePanel') {
+    unsubscribeSidePanelHost = useChatModalStore.subscribe((state, prev) => {
+      if (state.isModalOpen === prev.isModalOpen) return;
+      setSidePanelOpen(state.isModalOpen);
+    });
+  }
+
   // Create host container
   container = document.createElement('div');
   container.id = 'rwiki-chat-widget';
@@ -55,7 +68,8 @@ function init(config: WidgetConfig) {
     container!.classList.toggle('dark', isDark);
   };
   updateDark();
-  new MutationObserver(updateDark).observe(document.documentElement, {
+  darkModeObserver = new MutationObserver(updateDark);
+  darkModeObserver.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ['class'],
   });
@@ -76,6 +90,17 @@ function init(config: WidgetConfig) {
 
 function destroy() {
   if (!container) return;
+
+  // Detach the host-page layout shift synchronously (no animation wait) before
+  // the store resets below fire any subscription callback. No-op in modal mode.
+  unsubscribeSidePanelHost?.();
+  unsubscribeSidePanelHost = null;
+  removeSidePanelHostInjection();
+
+  // Stop observing the host page: a live observer after destroy would crash on
+  // the next host class change (container is gone) — and is host residue.
+  darkModeObserver?.disconnect();
+  darkModeObserver = null;
 
   // Unmount React
   reactRoot?.unmount();

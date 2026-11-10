@@ -4,6 +4,7 @@ import { useCallback, useEffect } from 'react';
 import { ChatStreamProvider } from '@/components/chat/chat-stream-context';
 import { FloatingButton } from '@/components/chat/floating-button';
 import { ChatModal } from '@/components/chat/chat-modal';
+import { ChatSidePanel } from '@/components/chat/chat-side-panel';
 import { ChannelIdProvider } from '@/components/chat/channel-id-context';
 import { WidgetI18nProvider } from '@/components/chat/widget-i18n';
 import { WIDGET_MESSAGES, resolveWidgetMessages } from '@/components/chat/messages';
@@ -51,12 +52,20 @@ function WidgetAppContent({ config }: WidgetAppProps) {
         <FeedbackSubmitFnContext.Provider value={feedbackSubmitFn}>
           <ChatStreamProvider value={streamValue}>
             <FloatingButton position={config.position} />
-            <ChatModal
-              title={effectiveTitle}
-              position={config.position}
-              welcomeMessage={config.welcomeMessage}
-              suggestedQuestions={suggestedQuestions}
-            />
+            {config.displayMode === 'sidePanel' ? (
+              <ChatSidePanel
+                title={effectiveTitle}
+                welcomeMessage={config.welcomeMessage}
+                suggestedQuestions={suggestedQuestions}
+              />
+            ) : (
+              <ChatModal
+                title={effectiveTitle}
+                position={config.position}
+                welcomeMessage={config.welcomeMessage}
+                suggestedQuestions={suggestedQuestions}
+              />
+            )}
           </ChatStreamProvider>
         </FeedbackSubmitFnContext.Provider>
       </ChannelIdProvider>

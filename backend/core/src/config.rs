@@ -217,6 +217,20 @@ fn default_max_context_chunks() -> usize {
     12
 }
 
+/// 公开搜索 `/api/search` 的检索模式
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSearchMode {
+    /// 纯 FTS 关键词检索（默认）：无查询改写、无向量化、无 rerank，
+    /// 本地毫秒级返回；召回要求查询与内容有词面重叠。
+    #[default]
+    Fts,
+    /// 混合检索：查询改写 → 关键词/向量混合 → 去重 → 可选 rerank，
+    /// 与 MCP `rwiki_search` 同一链路；恢复语义召回，代价是每次请求
+    /// 一次 LLM 改写与一次向量化的网络往返。
+    Hybrid,
+}
+
 /// RAG 检索配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
@@ -226,6 +240,10 @@ pub struct RetrievalConfig {
     /// 最终送入 LLM 上下文的最大 chunk 数（默认 12）
     #[serde(default = "default_max_context_chunks")]
     pub max_context_chunks: usize,
+    /// 公开搜索 `/api/search` 的检索模式（默认 `fts`）。仅作用于
+    /// `/api/search`；聊天、MCP、eval 始终走混合检索链路。
+    #[serde(default)]
+    pub public_search_mode: PublicSearchMode,
 }
 
 impl Default for RetrievalConfig {
@@ -233,6 +251,7 @@ impl Default for RetrievalConfig {
         Self {
             search_top_k_per_query: default_search_top_k_per_query(),
             max_context_chunks: default_max_context_chunks(),
+            public_search_mode: PublicSearchMode::default(),
         }
     }
 }
@@ -582,7 +601,6 @@ impl ChannelsConfig {
 
 /// 启动校验：拒绝存在 `channel_id IS NULL` 历史行的表。
 ///
-/// `tables` 传入需要检查的表名；后续 item 可扩展此列表而不新增校验入口点。
 /// 若表尚未包含 `channel_id` 列（例如 migration 尚未执行），则跳过该校验，
 /// 避免在逐步演进的 schema 上误报。
 ///
@@ -928,6 +946,56 @@ mod tests {
             toml::from_str(toml_str).expect("retrieval config should deserialize");
         assert_eq!(config.search_top_k_per_query, 8);
         assert_eq!(config.max_context_chunks, 16);
+    }
+
+    // Covers: Public search mode default — configs written before the option
+    // existed must keep the keyword-only `/api/search`, so an upgrade never
+    // silently adds an LLM rewrite and an embedding call to every search.
+    #[test]
+    fn retrieval_config_public_search_mode_defaults_to_fts() {
+        assert_eq!(
+            RetrievalConfig::default().public_search_mode,
+            PublicSearchMode::Fts,
+            "missing [retrieval] section should keep keyword-only public search"
+        );
+
+        let toml_str = r#"
+            max_context_chunks = 16
+        "#;
+        let config: RetrievalConfig =
+            toml::from_str(toml_str).expect("retrieval config should deserialize");
+        assert_eq!(
+            config.public_search_mode,
+            PublicSearchMode::Fts,
+            "omitting public_search_mode should keep keyword-only public search"
+        );
+    }
+
+    // Covers: Public search mode parsing — admins opt back into semantic recall
+    // (or pin keyword-only explicitly) with the documented lowercase values.
+    #[test]
+    fn retrieval_config_parses_public_search_mode() {
+        for (value, expected) in [
+            ("hybrid", PublicSearchMode::Hybrid),
+            ("fts", PublicSearchMode::Fts),
+        ] {
+            let toml_str = format!("public_search_mode = \"{value}\"");
+            let config: RetrievalConfig =
+                toml::from_str(&toml_str).expect("retrieval config should deserialize");
+            assert_eq!(config.public_search_mode, expected, "value {value:?}");
+        }
+    }
+
+    // Covers: A mistyped mode fails config loading instead of silently falling
+    // back — the modes differ in cost and recall, so running the wrong one
+    // unnoticed is worse than refusing to start.
+    #[test]
+    fn retrieval_config_invalid_public_search_mode_fails() {
+        let result = toml::from_str::<RetrievalConfig>(r#"public_search_mode = "vector""#);
+        assert!(
+            result.is_err(),
+            "unknown public_search_mode should cause a deserialization error"
+        );
     }
 
     // Covers: PRD config-driven enablement — license_key field parsing within full AppConfig TOML.

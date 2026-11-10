@@ -26,6 +26,8 @@ export type RWikiChatOptions = {
   title?: string;
   primaryColor?: string;
   position?: "left" | "right";
+  /** 面板显示形态：弹窗（默认）或右侧推挤式停靠侧栏。 */
+  displayMode?: "modal" | "sidePanel";
   welcomeMessage?: string;
   messages?: Record<string, string>;
   suggestedQuestions?: string[] | Record<string, string[]>;

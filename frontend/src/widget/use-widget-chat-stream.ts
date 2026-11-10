@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { ChatStreamValue } from '@/components/chat/chat-stream-context'
 import { detectEventType } from '@/lib/chat-sse'
 import { useChatStore } from '@/stores/chat-store'
+import { generateId } from '@/lib/utils'
 
 function processSseLines(
   lines: string[],
@@ -69,7 +70,7 @@ export function useWidgetChatStream(apiUrl: string, channelId: string[]): ChatSt
 
       const store = storeRef.current
       store.addUserMessage(content)
-      const assistantId = crypto.randomUUID()
+      const assistantId = generateId()
       store.addAssistantMessage(assistantId)
 
       try {

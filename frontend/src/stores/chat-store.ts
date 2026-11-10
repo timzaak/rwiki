@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { generateId } from '@/lib/utils'
 
 const CHAT_STORAGE_KEY = 'rwiki-chat-state'
 const CHAT_STORAGE_TTL_MS = 30 * 60 * 1000
@@ -67,7 +68,14 @@ type PersistedChatState = Pick<
 >
 
 function removePersistedChatState() {
-  localStorage.removeItem(CHAT_STORAGE_KEY)
+  // Storage can be unavailable on opaque origins (about:blank hosts, sandboxed
+  // iframes) — accessing the property throws there. The embeddable widget
+  // must degrade silently instead of crashing init().
+  try {
+    localStorage.removeItem(CHAT_STORAGE_KEY)
+  } catch {
+    // nothing persisted to remove
+  }
 }
 
 function sanitizePersistedState(
@@ -110,7 +118,7 @@ export const useChatStore = create<ChatState>()(
             messages: [
               ...state.messages,
               {
-                id: crypto.randomUUID(),
+                id: generateId(),
                 role: 'user' as const,
                 content,
                 timestamp: now,

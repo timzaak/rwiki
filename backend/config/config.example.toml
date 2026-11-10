@@ -132,6 +132,17 @@ system_prompt = "你是一个知识库助手。请根据以下上下文回答用
 # Maximum number of chunks fed into the LLM context (default 12)
 # max_context_chunks = 12
 
+# Retrieval mode of the public search endpoint POST /api/search (default "fts").
+#   "fts"    - keyword-only (FTS5 BM25): no query rewrite, no embedding call,
+#              no rerank. Answers locally in milliseconds; recall requires
+#              lexical overlap with the content.
+#   "hybrid" - query rewrite + keyword/vector hybrid retrieval + optional
+#              rerank, the same pipeline as the MCP rwiki_search tool. Restores
+#              semantic recall (synonyms, cross-language) at the cost of one
+#              LLM call and one embedding call per request.
+# Only affects /api/search; chat, MCP and eval always use the hybrid pipeline.
+# public_search_mode = "fts"
+
 [otel]
 # OpenTelemetry OTLP tracing and metrics export config.
 # When endpoint is empty, OTLP tracing and metrics are disabled (zero overhead

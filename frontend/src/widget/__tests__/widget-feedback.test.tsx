@@ -50,6 +50,7 @@ function makeConfig(
     channelId: CHANNEL_ID,
     primaryColor: '#3b82f6',
     position: 'right',
+    displayMode: 'modal',
     locale: 'en',
     ...overrides,
   }

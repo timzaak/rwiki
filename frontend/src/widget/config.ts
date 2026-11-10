@@ -13,6 +13,13 @@ export interface WidgetConfig {
   primaryColor?: string;
   title?: string;
   position?: 'left' | 'right';
+  /**
+   * 面板显示形态：弹窗（默认，现状行为）或右侧推挤式停靠侧栏。
+   *
+   * 侧栏打开时向宿主文档根注入最小腾位样式（随关闭/destroy 移除）；
+   * 非法取值 fail-fast，不渲染 Widget。
+   */
+  displayMode?: 'modal' | 'sidePanel';
   welcomeMessage?: string;
   suggestedQuestions?: string[] | Record<string, string[]>;
   locale?: string;
@@ -22,6 +29,7 @@ export interface WidgetConfig {
 export const WIDGET_DEFAULTS = {
   primaryColor: '#3b82f6',
   position: 'right' as const,
+  displayMode: 'modal' as const,
 };
 
 /**
@@ -96,6 +104,11 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     return null;
   }
 
+  if (config.displayMode && !['modal', 'sidePanel'].includes(config.displayMode)) {
+    console.error('[RWikiChat] displayMode must be "modal" or "sidePanel"');
+    return null;
+  }
+
   if (config.suggestedQuestions != null) {
     const sq = config.suggestedQuestions;
     const isArray = Array.isArray(sq);
@@ -123,6 +136,7 @@ export function validateWidgetConfig(config: Partial<WidgetConfig>): ValidatedWi
     channelId,
     primaryColor: config.primaryColor ?? WIDGET_DEFAULTS.primaryColor,
     position: config.position ?? WIDGET_DEFAULTS.position,
+    displayMode: config.displayMode ?? WIDGET_DEFAULTS.displayMode,
     locale: resolveLocale(config.locale ?? navigator.language),
     ...(config.title && { title: config.title }),
     ...(config.welcomeMessage && { welcomeMessage: config.welcomeMessage }),

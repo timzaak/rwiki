@@ -25,6 +25,7 @@ function makeConfig(
     channelId: ['help-center'],
     primaryColor: '#3b82f6',
     position: 'right',
+    displayMode: 'modal',
     locale: 'en',
     ...overrides,
   }

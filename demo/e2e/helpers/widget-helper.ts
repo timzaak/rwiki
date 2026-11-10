@@ -1,4 +1,4 @@
-/* global window, document */
+/* global window, document, getComputedStyle */
 /**
  * Shared Widget Shadow-DOM helpers for the standalone IIFE bundle.
  *
@@ -10,6 +10,7 @@
  * These helpers are shared by:
  *  - demo/e2e/widget-suggested-questions.e2e.ts (US-INTG-004 suggestions)
  *  - demo/e2e/widget-multi-channel.e2e.ts (US-INTG-006 channelId init contract)
+ *  - demo/e2e/widget-side-panel.e2e.ts (US-INTG-018/US-CORE-047 side-panel mode)
  *
  * No hardcoded selector strings beyond the central `[data-testid=...]`
  * literals already used by these widget tests (they live entirely inside
@@ -55,13 +56,19 @@ export interface WidgetInitConfig {
  * @param page      Playwright Page
  * @param config    Config object passed verbatim to `RWikiChat.init(config)`.
  *                  Callers decide whether to include `channelId`.
+ * @param hostBody  Optional HTML injected into <body> BEFORE the widget
+ *                  script tag — host in-flow reference content for the
+ *                  side-panel push assertions. Backward compatible: omitted
+ *                  by existing modal-mode callers.
  */
 export async function setupWidgetPage(
   page: Page,
   config: WidgetInitConfig,
+  hostBody = '',
 ): Promise<void> {
   await page.setContent(`
     <!DOCTYPE html><html><body>
+    ${hostBody}
     <script src="${config.apiUrl}/widget/rwiki-chat.js"></script>
     </body></html>
   `)
@@ -368,5 +375,146 @@ export const createWidgetHelper = (page: Page) => ({
       },
       { timeout },
     )
+  },
+
+  // Side-panel display mode (displayMode: 'sidePanel'): selectors map 1:1
+  // to frontend data-testids:
+  //  - chat-side-panel       : chat-side-panel.tsx (panel root)
+  //  - chat-side-panel-close : chat-side-panel.tsx (header close button)
+  // Host-side observables injected by frontend/src/widget/side-panel-host.ts:
+  //  - <style id="rwiki-side-panel-style"> : the push stylesheet
+  //  - html.rwiki-side-panel-open          : functional class on the doc root
+  //  - --rwiki-side-panel-width            : single width source consumed by
+  //    BOTH the panel (inside the Shadow DOM) and the host push margin.
+
+  /** Wait until the floating button is rendered (widget init completed). */
+  async waitForFloatingButton(timeout = 10000): Promise<void> {
+    await page.waitForFunction(
+      () => {
+        const host = document.getElementById('rwiki-chat-widget')
+        const root = host?.shadowRoot
+        return root?.querySelector('[data-testid="floating-chat-button"]') != null
+      },
+      { timeout },
+    )
+  },
+
+  /** Wait until the side panel root is present in the Shadow DOM. */
+  async waitForSidePanel(timeout = 10000): Promise<void> {
+    await page.waitForFunction(
+      () => {
+        const host = document.getElementById('rwiki-chat-widget')
+        const root = host?.shadowRoot
+        return root?.querySelector('[data-testid="chat-side-panel"]') != null
+      },
+      { timeout },
+    )
+  },
+
+  /** Click the side panel header close button inside the Shadow DOM. */
+  async clickSidePanelClose(): Promise<void> {
+    await page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const btn = root?.querySelector(
+        '[data-testid="chat-side-panel-close"]',
+      ) as HTMLElement | null
+      btn?.click()
+    })
+  },
+
+  /** Bounding width of the side panel root in px, or -1 when not rendered. */
+  async getSidePanelWidth(): Promise<number> {
+    return page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const panel = root?.querySelector('[data-testid="chat-side-panel"]')
+      return panel ? panel.getBoundingClientRect().width : -1
+    })
+  },
+
+  /**
+   * Computed margin-right of the host document root in px (0 = not pushed).
+   * While the side panel is open on a >= 640px viewport this equals the
+   * panel width (both consume --rwiki-side-panel-width).
+   */
+  async getHtmlMarginRight(): Promise<number> {
+    return page.evaluate(() => {
+      const html = document.documentElement
+      return parseFloat(getComputedStyle(html).marginRight) || 0
+    })
+  },
+
+  /** true if the injected <style id="rwiki-side-panel-style"> exists. */
+  async hasSidePanelHostStyle(): Promise<boolean> {
+    return page.evaluate(
+      () => document.getElementById('rwiki-side-panel-style') !== null,
+    )
+  },
+
+  /** true if the document root still carries the rwiki-side-panel-open class. */
+  async hasSidePanelOpenClass(): Promise<boolean> {
+    return page.evaluate(() =>
+      document.documentElement.classList.contains('rwiki-side-panel-open'),
+    )
+  },
+
+  /**
+   * Wait until every host-side injection is gone: style element removed AND
+   * open class removed. Covers the close path's delayed (300ms) style
+   * removal after the slide-out animation.
+   */
+  async waitForSidePanelHostCleanup(timeout = 10000): Promise<void> {
+    await page.waitForFunction(
+      () =>
+        document.getElementById('rwiki-side-panel-style') === null &&
+        !document.documentElement.classList.contains('rwiki-side-panel-open'),
+      { timeout },
+    )
+  },
+
+  /**
+   * Wait until the host push has settled: the html margin-right transition
+   * (300ms ease-out) has converged, so the computed margin equals the panel
+   * width (both consume --rwiki-side-panel-width). Reading the margin right
+   * after the panel appears would catch the transition mid-flight.
+   */
+  async waitForHostPushApplied(timeout = 10000): Promise<void> {
+    await page.waitForFunction(
+      () => {
+        const html = document.documentElement
+        const margin = parseFloat(getComputedStyle(html).marginRight) || 0
+        if (margin < 300) return false
+        const host = document.getElementById('rwiki-chat-widget')
+        const panel = host?.shadowRoot?.querySelector(
+          '[data-testid="chat-side-panel"]',
+        )
+        if (!panel) return false
+        return Math.abs(margin - panel.getBoundingClientRect().width) <= 1
+      },
+      { timeout },
+    )
+  },
+
+  /**
+   * Bounding width of a light-DOM (host page) element in px, or -1 when the
+   * selector matches nothing. Used to measure the host in-flow reference
+   * content before/while/after the panel is open.
+   */
+  async getElementWidth(selector: string): Promise<number> {
+    return page.evaluate((sel) => {
+      const el = document.querySelector(sel)
+      return el ? el.getBoundingClientRect().width : -1
+    }, selector)
+  },
+
+  /** true if at least one user message bubble exists in the Shadow DOM. */
+  async hasUserMessage(): Promise<boolean> {
+    return page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      return (root?.querySelectorAll('[data-testid="message-item-user"]')
+        .length || 0) > 0
+    })
   },
 })

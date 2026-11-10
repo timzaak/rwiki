@@ -226,12 +226,13 @@ token_budget = 12000
 
 ## Retrieval
 
-`[retrieval]` — RAG 检索数量配置。所有字段均有默认值，可省略整个 `[retrieval]` 段。
+`[retrieval]` — RAG 检索数量与公开搜索模式配置。所有字段均有默认值，可省略整个 `[retrieval]` 段。
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `search_top_k_per_query` | number | 否 | `5` | 每个改写查询变体召回的候选数量 |
 | `max_context_chunks` | number | 否 | `12` | 最终送入 LLM 上下文的最大 chunk 数 |
+| `public_search_mode` | string | 否 | `"fts"` | 公开搜索接口 `POST /api/search`（主站频道页搜索框与文档站搜索）的检索模式。`fts`：纯关键词检索（FTS5 BM25），无查询改写、无向量化调用、无 rerank——毫秒级返回，但召回要求查询与内容有词面重叠。`hybrid`：查询改写 + 关键词/向量混合检索 + 可选 rerank，与 MCP `rwiki_search` 同一链路——恢复语义召回，代价是每次请求一次 LLM 调用和一次向量化调用。仅影响 `/api/search`；聊天、MCP、评测始终走混合链路。见[站内搜索](/zh/docs/search)。取值拼写错误会在启动时加载失败。 |
 
 `/api/eval/query` 可以通过请求里的 `topK` 覆盖单次评估的上下文数量。Chat 请求使用配置文件中的值。
 
@@ -239,6 +240,7 @@ token_budget = 12000
 [retrieval]
 search_top_k_per_query = 5
 max_context_chunks = 12
+public_search_mode = "fts"
 ```
 
 ## OpenTelemetry
@@ -334,9 +336,33 @@ threshold = 0.3   # 上线后从首批记录校准
 | `title` | string | 否 | 语言默认值 | 聊天窗口标题。不传时取语言默认值（`en`→`Rwiki Chat`，`zh-CN`→`Rwiki 助手`）。 |
 | `primaryColor` | string | 否 | `"#3b82f6"` | 主题色，6 位 hex 色值 |
 | `position` | string | 否 | `"right"` | 悬浮按钮位置：`left` 或 `right` |
+| `displayMode` | string | 否 | `"modal"` | 面板显示形态：`modal`（默认——带变暗遮罩的浮动窗口）或 `sidePanel`（停靠视口右缘的全高侧栏，打开时页面内容整体左移让位）。见[显示形态](#显示形态)。 |
 | `welcomeMessage` | string | 否 | — | 欢迎语 |
 | `messages` | object | 否 | — | 覆盖当前语言下的界面文案，可传任意子集：`titleDefault`、`inputPlaceholder`、`responseFailed`、`retry`、`a11yOpen`、`a11yClose`、`a11yClear`、`a11yLike`、`a11yDislike`、`a11yCopy`、`a11yCopied`、`errorBoundary`。 |
 | `suggestedQuestions` | string[] 或 map | 否 | — | 推荐问题。数组用于单一语言，`Record<string, string[]>` 用于多语言分组（匹配逻辑与后端配置一致）。当目标频道已配置 `[channels.<channelId>.suggested_questions]` 时，本字段被忽略，以服务端为唯一来源（见[多频道](/zh/docs/multi-channel)）。 |
+
+### 显示形态
+
+`displayMode` 选择聊天面板的呈现方式。默认 `modal` 保持现状行为：可拖拽的浮动窗口，背后有变暗遮罩。`sidePanel` 将全高面板停靠在视口右缘——打开时宿主页面的文档流内容整体左移让出空间，访客可以边读（边点）正文边提问；面板无遮罩、不可拖拽，通过头部关闭图标收起；视口宽度小于 640px 时回退为全屏覆盖，不推挤正文（与弹窗形态同一响应式断点）。
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
+    displayMode: 'sidePanel',
+  });
+</script>
+```
+
+传入不支持的 `displayMode` 取值时控制台报错且不渲染。其余行为——聊天、推荐问题、反馈、频道、`ask()`、`setLocale()`、`setChannel()`、`destroy()`——两种形态下完全一致。
+
+为给面板腾位，Widget 在面板打开期间会向宿主注入一个最小 `<style>` 元素和 `<html>` 上的一个 class；面板关闭与 `destroy()` 时均会移除，不残留。推挤布局的已知局限：
+
+- `position: fixed` 定位元素和独立滚动容器不随文档流位移，面板打开期间会视觉错位。含大量 fixed 元素的页面建议保持默认 `modal` 形态。
+- 宿主页面滚动条停留在视口右缘，打开期间被面板覆盖。
+- 宿主自行设置了 `html` margin（或使用 RTL/通栏布局）时推挤可能不符预期；Widget 不用 `!important` 强抢样式，表现为不推挤而非页面破损。此类页面建议使用 `modal`。
 
 ### HTML 集成
 

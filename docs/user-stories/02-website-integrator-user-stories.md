@@ -286,3 +286,55 @@ And 若已有回答在流式返回，按既有隐式中断语义收尾后发出�
 When query 为空白或 Widget 未初始化
 Then 不发起任何请求，未初始化时控制台报错
 ```
+
+## 故事 9：为 Widget 选择显示形态 [US-INTG-018]
+
+**优先级**: P1
+
+**【用户故事】**
+**作为**：Website Integrator
+**我希望**：在初始化 Widget 时通过 `displayMode` 选择显示形态——右下角弹窗（默认）或右侧推挤式停靠侧栏
+**从而**：文档站、帮助中心等阅读型站点可以让问答面板与正文并排，访客边读边问
+
+**【验收标准】**
+
+**场景 1：未配置显示形态时保持现状**
+```gherkin
+Given 网站已按现状引入 rwiki-chat.js，未传入 displayMode 配置
+When 调用 RWikiChat.init({ apiUrl: 'https://rwiki.example.com', channelId: 'channel-a' })
+Then Widget 行为与现状完全一致：右下角浮动按钮打开弹窗
+And 宿主页面布局不发生任何变化
+```
+
+**场景 2：配置右侧推挤侧栏（桌面端）**
+```gherkin
+Given 网站已引入 rwiki-chat.js
+When 调用 RWikiChat.init 时传入 displayMode: 'sidePanel'
+Then 页面右下角出现浮动按钮
+And 访客点击按钮后，全高侧栏从页面右缘滑入，宿主页面文档流内容整体左移让出空间
+And 侧栏打开期间宿主页面内容保持可见，可正常交互
+And 访客在侧栏中提问可获得与弹窗一致的流式回答
+```
+
+**场景 3：关闭与销毁后宿主页面复原**
+```gherkin
+Given 侧栏形态的 Widget 已初始化且侧栏处于打开状态
+When 访客点击侧栏头部的关闭图标，或集成者调用 RWikiChat.destroy()
+Then 侧栏收起，宿主页面内容回到原位置
+And 宿主页面不残留 Widget 注入的任何布局样式或元素
+```
+
+**场景 4：ask() 在侧栏形态下打开侧栏**
+```gherkin
+Given 侧栏形态的 Widget 已初始化且侧栏处于收起状态
+When 集成者调用 RWikiChat.ask('如何配置频道')
+Then 侧栏从右缘滑入并让出宿主空间
+And 该问题作为一轮用户提问自动发出
+```
+
+**场景 5：非法显示形态值**
+```gherkin
+Given 网站已引入 rwiki-chat.js
+When 调用 RWikiChat.init 时 displayMode 传入不支持的取值
+Then 控制台输出错误提示，页面不渲染 Widget
+```

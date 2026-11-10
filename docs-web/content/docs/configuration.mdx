@@ -226,12 +226,13 @@ token_budget = 12000
 
 ## Retrieval
 
-`[retrieval]` — RAG retrieval limits. All fields have defaults, so the entire section can be omitted.
+`[retrieval]` — RAG retrieval limits and the public search mode. All fields have defaults, so the entire section can be omitted.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `search_top_k_per_query` | number | No | `5` | Number of candidates retrieved for each rewritten query variant |
 | `max_context_chunks` | number | No | `12` | Maximum chunks passed into the LLM context |
+| `public_search_mode` | string | No | `"fts"` | Retrieval mode of the public search endpoint `POST /api/search` (the channel-page search box and the docs-site search). `fts`: keyword-only (FTS5 BM25) with no query rewrite, embedding call, or rerank — answers in milliseconds, but recall needs lexical overlap with the content. `hybrid`: query rewrite + keyword/vector retrieval + optional rerank, the same pipeline as MCP `rwiki_search` — restores semantic recall at the cost of an LLM call and an embedding call per request. Only affects `/api/search`; chat, MCP, and eval always use the hybrid pipeline. See [Site Search](/en/docs/search). An unknown value fails config loading at startup. |
 
 `/api/eval/query` can override the per-request context count with `topK`. Chat requests use the configured values.
 
@@ -239,6 +240,7 @@ token_budget = 12000
 [retrieval]
 search_top_k_per_query = 5
 max_context_chunks = 12
+public_search_mode = "fts"
 ```
 
 ## OpenTelemetry
@@ -334,9 +336,33 @@ The frontend can export a standalone JS file (`rwiki-chat.js`) via `npm run buil
 | `title` | string | No | locale default | Chat window title. Omit to use the locale default (`Rwiki Chat` for `en`, `Rwiki 助手` for `zh-CN`). |
 | `primaryColor` | string | No | `"#3b82f6"` | Theme color, 6-digit hex |
 | `position` | string | No | `"right"` | Button position: `left` or `right` |
+| `displayMode` | string | No | `"modal"` | Panel display mode: `modal` (default — floating window with dimmed overlay) or `sidePanel` (full-height panel docked to the right edge that pushes the page content left). See [Display modes](#display-modes). |
 | `welcomeMessage` | string | No | — | Welcome message |
 | `messages` | object | No | — | Override individual UI strings for the resolved locale. Any subset of: `titleDefault`, `inputPlaceholder`, `responseFailed`, `retry`, `a11yOpen`, `a11yClose`, `a11yClear`, `a11yLike`, `a11yDislike`, `a11yCopy`, `a11yCopied`, `errorBoundary`. |
 | `suggestedQuestions` | string[] or map | No | — | Pre-chat suggestions. Array for single-language, or `Record<string, string[]>` for locale grouping (same matching logic as backend config). Ignored when the target channel has configured `[channels.<channelId>.suggested_questions]` — the server is then the single source of truth (see [Multi-Channel](/en/docs/multi-channel)). |
+
+### Display modes
+
+`displayMode` selects how the chat panel is presented. The default `modal` keeps the current behavior: a draggable floating window with a dimmed overlay behind it. `sidePanel` docks a full-height panel to the right edge of the viewport — when it opens, the host page's document flow shifts left to make room, so readers can keep reading (and clicking) the page while chatting. There is no overlay and the panel is not draggable; it collapses via the close icon in its header, and on viewports narrower than 640px it falls back to a fullscreen cover that does not push the page (the same responsive breakpoint the modal uses).
+
+```html
+<script src="rwiki-chat.js"></script>
+<script>
+  RWikiChat.init({
+    apiUrl: 'https://your-rwiki-instance.com',
+    channelId: 'help_center',
+    displayMode: 'sidePanel',
+  });
+</script>
+```
+
+An unsupported `displayMode` value logs a console error and renders nothing. Everything else — chat, suggestions, feedback, channels, `ask()`, `setLocale()`, `setChannel()`, `destroy()` — behaves identically in both modes.
+
+To make room for the panel, the widget injects one minimal `<style>` element and one class on `<html>` while the panel is open; both are removed when the panel closes and on `destroy()`, leaving no residue. Known limitations of the push layout:
+
+- Elements with `position: fixed` and independently scrolling containers do not move with the document flow — they will appear misplaced while the panel is open. Pages with many fixed elements should keep the default `modal` mode.
+- The host page's scrollbar stays at the right edge and is covered by the open panel.
+- Host pages that set their own `html` margin (or use RTL/full-bleed layouts) may not shift as expected; the widget does not force its style with `!important`, so the result is no-push rather than breakage. Use `modal` on such pages.
 
 ### HTML integration
 
