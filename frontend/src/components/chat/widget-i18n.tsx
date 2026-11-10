@@ -18,7 +18,6 @@ export function WidgetI18nProvider({
   )
 }
 
-// eslint-disable-next-line react-refresh/only-export-components
 export function useWidgetI18n(): WidgetMessages {
   return useContext(WidgetI18nContext)
 }

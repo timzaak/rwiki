@@ -107,14 +107,12 @@ function makeDoc(
 // Management body in `index.tsx`. Explicit paths avoid the ambiguous
 // `@/routes/admin` directory import (Bundler resolution may pick either file).
 type BeforeLoadFn = (ctx: unknown) => unknown
-let AdminComponent: ComponentType
-let beforeLoad: BeforeLoadFn | undefined
 
 const { Route: AdminLayoutRoute } = await import('@/routes/admin/route')
 const { Route: AdminIndexRoute } = await import('@/routes/admin/index')
 
-AdminComponent = AdminIndexRoute.options.component as ComponentType
-beforeLoad = AdminLayoutRoute.options.beforeLoad as BeforeLoadFn | undefined
+const AdminComponent = AdminIndexRoute.options.component as ComponentType
+const beforeLoad = AdminLayoutRoute.options.beforeLoad as BeforeLoadFn | undefined
 
 // FE-D03: AdminComponent consumes useAdminChannel() (the page-body fetches
 // documents for the context's channelId). In the real app it renders inside

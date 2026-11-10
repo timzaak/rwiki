@@ -58,7 +58,6 @@ const { Route: ChannelRoute } = await import('@/routes/c/$channelId')
 // such rather than narrowing to ComponentType (which createRoute rejects).
 const ChannelComponent = ChannelRoute.options.component
 
-let channelsCallCount: number
 let suggestionsCallCount: number
 let chatCallCount: number
 let feedbackCallCount: number
@@ -69,7 +68,6 @@ let lastChatBody: unknown
 function installChannelsHandler(channels: Array<{ id: string; name: string }>) {
   server.use(
     http.get(CHANNELS_URL, () => {
-      channelsCallCount += 1
       return HttpResponse.json({ channels })
     }),
   )
@@ -155,7 +153,6 @@ function renderChannelRoute(initialPath: string) {
 
 beforeEach(() => {
   client.setConfig({ baseUrl: BASE_URL })
-  channelsCallCount = 0
   suggestionsCallCount = 0
   chatCallCount = 0
   feedbackCallCount = 0
@@ -256,7 +253,6 @@ describe('/c/$channelId — listChannels failure (graceful degradation)', () => 
     // documented for FE-D02 (it needs `throwOnError: true` on `listChannels()`).
     server.use(
       http.get(CHANNELS_URL, () => {
-        channelsCallCount += 1
         return HttpResponse.error()
       }),
     )
