@@ -9,7 +9,8 @@
  *
  * User stories: US-INTG-018 为 Widget 选择显示形态 (scenarios 1-5) and
  * US-CORE-047 在右侧停靠侧栏中使用聊天 (scenarios 1-3),
- * docs/user-stories/.
+ * docs/user-stories/; plus US-CORE-048 (chat history consistency inside
+ * the widget, scenario 3).
  *
  * Boundary: tests target the standalone IIFE widget bundle
  * (`${BASE_URL}/widget/rwiki-chat.js`) loaded via `page.setContent` into a
@@ -25,6 +26,7 @@
 import { test, expect } from './fixtures/chat.fixtures'
 import {
   setupWidgetPage,
+  setupWidgetPageOnHttpOrigin,
   createWidgetHelper,
   WIDGET_BASE_URL,
   DEFAULT_WIDGET_CHANNEL_ID,
@@ -139,6 +141,53 @@ test.describe('US-INTG-018 / US-CORE-047: Widget side-panel display mode', () =>
     await helper.clickFloatingButton()
     await helper.waitForSidePanel()
 
+    expect(await helper.hasUserMessage()).toBe(true)
+    expect(await helper.getLastAssistantText()).toBe(textBefore)
+  })
+
+  // US-CORE-048 scenario 3: the widget shares the same ChatPanel history.
+  // Starting a new conversation archives the previous one into the local
+  // history; the in-widget history list shows it and clicking it switches
+  // back with the full conversation intact.
+  //
+  // Hosted on a real HTTP origin (not setContent): the history archive lives
+  // in localStorage, which the opaque about:blank origin cannot provide —
+  // there the widget correctly degrades to no-history mode (US-CORE-049
+  // scn 3), which this test must NOT trigger.
+  test('US-CORE-048 scn 3 - history list archives and restores a previous conversation', async ({
+    page,
+    demoLogger: _demoLogger,
+  }) => {
+    await setupWidgetPageOnHttpOrigin(page, {
+      apiUrl: WIDGET_BASE_URL,
+      channelId: DEFAULT_WIDGET_CHANNEL_ID,
+      displayMode: 'sidePanel',
+    })
+
+    const helper = createWidgetHelper(page)
+    await helper.waitForFloatingButton()
+    await helper.clickFloatingButton()
+    await helper.waitForSidePanel()
+
+    await helper.sendMessage('What is this knowledge base about?')
+    await helper.waitForAssistantMessage()
+    await helper.waitForStreamingDone()
+    const textBefore = await helper.getLastAssistantText()
+    expect(textBefore.length).toBeGreaterThan(0)
+
+    // New conversation: the answered conversation is archived, the widget
+    // workspace empties (no user bubble remains).
+    await helper.clickNewConversationButton()
+    expect(await helper.hasUserMessage()).toBe(false)
+
+    // The archived conversation appears in the widget history list.
+    await helper.toggleHistoryList(true)
+    expect(await helper.getHistoryItemTitles()).toContain(
+      'What is this knowledge base about?',
+    )
+
+    // Clicking it switches back and restores the full conversation.
+    await helper.clickHistoryItemByTitle('What is this knowledge base about?')
     expect(await helper.hasUserMessage()).toBe(true)
     expect(await helper.getLastAssistantText()).toBe(textBefore)
   })

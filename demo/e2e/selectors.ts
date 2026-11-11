@@ -39,6 +39,25 @@ export const SELECTORS = {
     // (message-item.tsx, gated on [chat] enable_post_answer_suggestions).
     emptyStateSuggestions: '[data-testid="chat-empty-suggestions"] [data-testid="suggested-questions"]',
     suggestedQuestionButton: '[data-testid="suggested-question-button"]',
+    // Browser-local chat history (conversation archive) — US-CORE-048/049/051.
+    // Sources: frontend/src/components/chat/chat-panel.tsx (history toggle +
+    // new-conversation toolbar buttons) and chat-history-panel.tsx (panel/
+    // list/entries/empty state/storage error). Entries repeat per session —
+    // locate by item-title text. The currently-viewed conversation renders
+    // as a highlighted entry with aria-current="true" and NO delete button;
+    // only archived entries carry the delete button. The clear-all confirm
+    // dialog reuses the reserved common.dialog* testids.
+    newConversationButton: '[data-testid="chat-new-conversation-button"]',
+    historyToggleButton: '[data-testid="chat-history-toggle-button"]',
+    historyPanel: '[data-testid="chat-history-panel"]',
+    historyList: '[data-testid="chat-history-list"]',
+    historyItem: '[data-testid="chat-history-item"]',
+    historyItemCurrent: '[data-testid="chat-history-item"][aria-current="true"]',
+    historyItemTitle: '[data-testid="chat-history-item-title"]',
+    historyItemDeleteButton: '[data-testid="chat-history-item-delete-button"]',
+    historyClearAllButton: '[data-testid="chat-history-clear-all-button"]',
+    historyEmpty: '[data-testid="chat-history-empty"]',
+    historyStorageError: '[data-testid="chat-history-storage-error"]',
   },
 
   /** 通用组件选择器 */

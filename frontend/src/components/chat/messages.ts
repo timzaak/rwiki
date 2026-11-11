@@ -13,13 +13,25 @@ export interface WidgetMessages {
   retry: string
   a11yOpen: string
   a11yClose: string
-  a11yClear: string
+  a11yNewConversation: string
   a11yStop: string
   a11yLike: string
   a11yDislike: string
   a11yCopy: string
   a11yCopied: string
   errorBoundary: string
+  /** History conversation list (shared ChatPanel layer). */
+  historyTitle: string
+  historyEmpty: string
+  a11yHistory: string
+  historyClearAll: string
+  a11yDeleteSession: string
+  untitledSession: string
+  confirmClearTitle: string
+  confirmClearBody: string
+  confirmClearConfirm: string
+  confirmClearCancel: string
+  storageError: string
 }
 
 export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
@@ -33,7 +45,7 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     retry: 'Retry',
     a11yOpen: 'Open chat assistant',
     a11yClose: 'Close chat modal',
-    a11yClear: 'Clear current conversation',
+    a11yNewConversation: 'Start a new conversation',
     a11yStop: 'Stop generating',
     a11yLike: 'Like',
     a11yDislike: 'Dislike',
@@ -41,6 +53,19 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     a11yCopied: 'Copied',
     errorBoundary:
       'Widget encountered an error. Call RWikiChat.destroy() and try again.',
+    historyTitle: 'History conversations',
+    historyEmpty: 'No history yet',
+    a11yHistory: 'History conversations',
+    historyClearAll: 'Clear all',
+    a11yDeleteSession: 'Delete conversation',
+    untitledSession: 'Untitled conversation',
+    confirmClearTitle: 'Clear all history?',
+    confirmClearBody:
+      'All conversations archived for this channel will be deleted. Your current conversation is not affected. This cannot be undone.',
+    confirmClearConfirm: 'Clear',
+    confirmClearCancel: 'Cancel',
+    storageError:
+      'Local storage is running out of space; new conversations may not be saved to history. Delete or clear history to free up space.',
   },
   'zh-CN': {
     titleDefault: 'Rwiki 助手',
@@ -51,7 +76,7 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     retry: '重试',
     a11yOpen: '打开聊天助手',
     a11yClose: '关闭聊天窗口',
-    a11yClear: '清空当前对话',
+    a11yNewConversation: '开始新对话',
     a11yStop: '停止生成',
     a11yLike: '赞',
     a11yDislike: '踩',
@@ -59,6 +84,19 @@ export const WIDGET_MESSAGES: Record<Locale, WidgetMessages> = {
     a11yCopied: '已复制',
     errorBoundary:
       '小组件发生错误,请调用 RWikiChat.destroy() 后重试。',
+    historyTitle: '历史对话',
+    historyEmpty: '暂无历史对话',
+    a11yHistory: '历史对话',
+    historyClearAll: '清空全部',
+    a11yDeleteSession: '删除该会话',
+    untitledSession: '未命名对话',
+    confirmClearTitle: '清空全部历史？',
+    confirmClearBody:
+      '将删除本频道的全部历史对话，当前对话不受影响，此操作不可恢复。',
+    confirmClearConfirm: '清空',
+    confirmClearCancel: '取消',
+    storageError:
+      '本地存储空间不足，新对话可能无法保存到历史；删除或清空历史可释放空间。',
   },
 }
 

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import { useChatStore, useChatModalStore } from '@/stores/chat-store'
+import {
+  useChatHistoryErrorStore,
+  useChatHistoryStore,
+} from '@/stores/chat-history-store'
 import { SIDE_PANEL_OPEN_CLASS, SIDE_PANEL_STYLE_ID } from '../side-panel-host'
 
 // Mock CSS inline imports before importing the module under test
@@ -20,8 +24,8 @@ vi.mock('../widget-app', () => ({
 }))
 
 // Mock the stream stop handle: setChannel must abort an in-flight answer
-// before clearing the conversation, otherwise stale SSE chunks of the old
-// channel bleed into the new one.
+// before archiving and clearing the conversation, otherwise stale SSE chunks
+// of the old channel bleed into the new one.
 const mockStopWidgetStreaming = vi.fn()
 vi.mock('../use-widget-chat-stream', () => ({
   stopWidgetStreaming: (...args: unknown[]) => mockStopWidgetStreaming(...args),
@@ -56,10 +60,16 @@ function resetStores() {
   useChatStore.setState({
     messages: [],
     sessionId: null,
+    conversationId: null,
+    channelKey: null,
+    updatedAt: null,
     error: null,
     isLoading: false,
     pendingQuestion: null,
   })
+  useChatHistoryStore.setState({ sessions: [] })
+  useChatHistoryErrorStore.setState({ storageError: false })
+  localStorage.clear()
   useChatModalStore.setState({ isModalOpen: false })
 }
 
@@ -129,6 +139,29 @@ describe('Widget lifecycle (init/destroy)', () => {
 
     expect(document.querySelector('#rwiki-chat-widget')).toBeNull()
     expect(mockUnmount).toHaveBeenCalledTimes(1)
+  })
+
+  it('destroy() archives the current conversation and keeps the history key', () => {
+    // WHY (US-CORE-049): 宿主 SPA 路由切换会 destroy 重挂 widget；历史必须跨
+    // destroy 存续——当前会话归档进其频道，rwiki-chat-history 键不被触碰。
+    const api = getGlobalAPI()
+    api.init({ apiUrl: 'http://localhost:3000', channelId: 'help_center' })
+    seedConversation()
+
+    api.destroy()
+
+    expect(localStorage.getItem('rwiki-chat-history')).not.toBeNull()
+    const workspace = useChatStore.getState()
+    expect(workspace.messages).toEqual([])
+    expect(workspace.sessionId).toBeNull()
+    expect(workspace.conversationId).toBeNull()
+    const sessions = useChatHistoryStore.getState().sessions
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({
+      id: 'conv-old',
+      sessionId: 'old-session',
+      channelKey: JSON.stringify(['help_center']),
+    })
   })
 
   it('double init() destroys the first instance before creating a new one', () => {
@@ -226,6 +259,8 @@ function seedConversation() {
       { id: 'a1', role: 'assistant', content: 'old answer', timestamp: 2 },
     ],
     sessionId: 'old-session',
+    conversationId: 'conv-old',
+    updatedAt: 2,
   })
 }
 
@@ -315,11 +350,19 @@ describe('Widget setChannel (US-INTG-016)', () => {
     expect(mockCreateRoot).toHaveBeenCalledTimes(1)
     expect(lastRenderedConfig().channelId).toEqual(['help_center_zh'])
     expect(lastRenderedConfig().locale).toBe('zh-CN')
-    // A conversation never spans channels: the in-flight answer is aborted and
-    // the transcript + session are gone (the next turn opens a new session).
+    // A conversation never spans channels: the in-flight answer is aborted,
+    // the old conversation is archived into its own channel's history (not
+    // dropped), and the workspace starts a new session.
     expect(mockStopWidgetStreaming).toHaveBeenCalledTimes(1)
     expect(useChatStore.getState().messages).toEqual([])
     expect(useChatStore.getState().sessionId).toBeNull()
+    const sessions = useChatHistoryStore.getState().sessions
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({
+      id: 'conv-old',
+      channelKey: JSON.stringify(['help_center']),
+    })
+    expect(sessions[0].messages).toHaveLength(2)
   })
 
   it('setChannel() with the same channel set keeps the conversation', () => {
@@ -338,15 +381,14 @@ describe('Widget setChannel (US-INTG-016)', () => {
     expect(useChatStore.getState().sessionId).toBe('old-session')
   })
 
-  it('init() on another channel drops a persisted foreign-channel session', () => {
-    // Full page load of the other language's site: no destroy() runs and the
-    // store rehydrates the previous channel's transcript + sessionId. A
-    // conversation never spans channels — init must not revive it under the
-    // new channel (setChannel already clears on live switches).
+  it('init() on another channel archives the persisted foreign-channel session into its own history', () => {
+    // Full page load of the other language's site: the store rehydrates the
+    // previous channel's transcript + sessionId. A conversation never spans
+    // channels — init archives it into its own channel's history instead of
+    // dropping or reviving it under the new channel.
     const api = getGlobalAPI()
-    api.init({ apiUrl: 'http://localhost:3000', channelId: 'help_center' })
-    api.destroy()
-    // Simulate the rehydrated state of the previous site.
+    // Simulate the rehydrated state of the previous site (module-level widget
+    // state is already clean: beforeEach destroyed any residue).
     seedConversation()
     useChatStore.setState({ channelKey: JSON.stringify(['help_center']) })
 
@@ -357,13 +399,19 @@ describe('Widget setChannel (US-INTG-016)', () => {
     expect(useChatStore.getState().channelKey).toBe(
       JSON.stringify(['help_center_zh']),
     )
+    const sessions = useChatHistoryStore.getState().sessions
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({
+      id: 'conv-old',
+      channelKey: JSON.stringify(['help_center']),
+    })
+    expect(sessions[0].messages).toHaveLength(2)
   })
 
   it('init() with the same channel keeps the persisted session', () => {
-    // Reloading the same page must keep the conversation within the TTL.
+    // Reloading the same page restores the most recent conversation (permanent
+    // retention; the old 30-minute TTL is gone).
     const api = getGlobalAPI()
-    api.init({ apiUrl: 'http://localhost:3000', channelId: 'help_center' })
-    api.destroy()
     seedConversation()
     useChatStore.setState({ channelKey: JSON.stringify(['help_center']) })
 
@@ -371,6 +419,7 @@ describe('Widget setChannel (US-INTG-016)', () => {
 
     expect(useChatStore.getState().messages).toHaveLength(2)
     expect(useChatStore.getState().sessionId).toBe('old-session')
+    expect(useChatHistoryStore.getState().sessions).toHaveLength(0)
   })
 
   it('setChannel() with an invalid channel logs error and keeps everything', () => {

@@ -10,6 +10,11 @@ import { removeSidePanelHostInjection, setSidePanelOpen } from './side-panel-hos
 import { stopWidgetStreaming } from './use-widget-chat-stream';
 import { resolveLocale } from '@/components/chat/messages';
 import { useChatModalStore, useChatStore } from '@/stores/chat-store';
+import {
+  archiveCurrentSession,
+  rebindWorkspaceChannel,
+} from '@/stores/chat-history-store';
+import { channelKeyOf } from '@/lib/channel-key';
 
 let container: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
@@ -18,23 +23,13 @@ let currentConfig: ValidatedWidgetConfig | null = null;
 let unsubscribeSidePanelHost: (() => void) | null = null;
 let darkModeObserver: MutationObserver | null = null;
 
-// Separator-safe encoding of a channel ID set (a plain join(',') key would
-// collide for IDs containing the separator, e.g. ["a","b"] vs ["a,b"]).
-function channelKeyOf(channelIds: readonly string[]): string {
-  return JSON.stringify([...channelIds].sort());
-}
-
-// A conversation belongs to its channel. setChannel() clears on switch; init()
-// must do the same for the full-page-load path, where a persisted session from
-// a different channel (e.g. another language's site) would otherwise be
-// rehydrated under the new channel.
+// A conversation belongs to its channel: rebinding archives the current session
+// into its own channel's history, then clears and rebinds the workspace (see
+// rebindWorkspaceChannel in chat-history-store) so a persisted session from a
+// different channel (e.g. another language's site) never rehydrates under the
+// new channel. No-op for an unchanged key.
 function bindChannel(channelIds: readonly string[]) {
-  const channelKey = channelKeyOf(channelIds);
-  const store = useChatStore.getState();
-  if (store.channelKey !== channelKey) {
-    store.clearMessages();
-  }
-  store.setChannelKey(channelKey);
+  rebindWorkspaceChannel(channelKeyOf(channelIds));
 }
 
 function init(config: WidgetConfig) {
@@ -106,8 +101,14 @@ function destroy() {
   reactRoot?.unmount();
   reactRoot = null;
 
-  // Reset stores
+  // Reset stores. The current session is archived first (its channel's
+  // history survives destroy — the rwiki-chat-history key is never touched
+  // here); the workspace key is cleared with the store.
   useChatModalStore.getState().closeModal();
+  const fallbackChannelKey = currentConfig
+    ? channelKeyOf(currentConfig.channelId)
+    : undefined;
+  archiveCurrentSession(fallbackChannelKey);
   useChatStore.getState().clearMessages();
   useChatStore.getState().setPendingQuestion(null);
   useChatStore.getState().setChannelKey(null);
@@ -152,9 +153,10 @@ function ask(query: string) {
 }
 
 // Switch the widget's channel at runtime (US-INTG-016). A new channel means a
-// new conversation: abort the in-flight answer, clear transcript and session,
-// then re-render with the new channel. No-op for an unchanged channel set
-// (would otherwise wipe the conversation).
+// new conversation: abort the in-flight answer, archive the old conversation
+// into its channel's history, clear the workspace and re-render with the new
+// channel (bindChannel). No-op for an unchanged channel set (would otherwise
+// wipe the conversation).
 function setChannel(channelId: string | string[]) {
   if (!container || !reactRoot || !currentConfig) {
     console.error('[RWikiChat] setChannel called before init');
@@ -175,7 +177,6 @@ function setChannel(channelId: string | string[]) {
   if (sameChannels) return;
 
   stopWidgetStreaming();
-  useChatStore.getState().clearMessages();
   bindChannel(normalized);
   currentConfig = { ...currentConfig, channelId: normalized };
   const root = reactRoot;

@@ -50,6 +50,7 @@
 | chat | 低相关召回记录 | [chat/low-recall-logging.md](chat/low-recall-logging.md) | Implemented | 自动旁路记录低相关召回查询、运营页列表与筛选、阈值与功能开关可配置、记录与实时回答解耦 |
 | integration | MCP Server（知识库 MCP 服务） | [integration/mcp-server.md](integration/mcp-server.md) | Implemented | MCP 只读工具面（问答/检索）、频道隔离、公开免鉴权入口、按频道寻址、频道标识格式校验、配置启用开关 |
 | core | 专门搜索 | [core/dedicated-search.md](core/dedicated-search.md) | Implemented | 统一检索编排与全入口一致排序、公开频道级搜索能力、标题命中加权、主站搜索框交互（高亮、键盘操作、AI 入口） |
+| chat | 前端会话历史存储与回看 | [chat/frontend-user-history.md](chat/frontend-user-history.md) | Implemented | 浏览器本地会话历史归档、列表切换回看、继续对话、删除/清空、频道隔离、永久保留 |
 
 ## 内部工程工具（无 PRD）
 

@@ -386,7 +386,7 @@ To make room for the panel, the widget injects one minimal `<style>` element and
 </script>
 ```
 
-Destroy the instance:
+Destroy the instance. The current conversation is archived into its channel's local history in the visitor's browser before teardown, so it stays reachable from the history list:
 
 ```js
 RWikiChat.destroy();
@@ -400,7 +400,7 @@ RWikiChat.setLocale('zh-CN');
 
 `setLocale` accepts the same BCP-47 tags as the `locale` config and resolves them the same way. It must be called after `init`; calling it before `init` logs an error and does nothing.
 
-Switch the target channel at runtime without re-initializing — switching starts a new conversation (any in-flight answer is aborted, the transcript and session are cleared):
+Switch the target channel at runtime without re-initializing — switching starts a new conversation (any in-flight answer is aborted, and the current conversation is archived into its channel's local history before the workspace is cleared):
 
 ```js
 RWikiChat.setChannel('help_center_es');

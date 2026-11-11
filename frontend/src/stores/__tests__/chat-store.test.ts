@@ -20,6 +20,8 @@ describe('useChatStore message management', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -126,6 +128,8 @@ describe('useChatStore session management', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -152,6 +156,8 @@ describe('useChatStore error handling', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -183,6 +189,8 @@ describe('useChatStore loading state', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -228,6 +236,8 @@ describe('useChatStore persistence', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -239,7 +249,7 @@ describe('useChatStore persistence', () => {
     localStorage.clear()
   })
 
-  it('restores a conversation updated less than 30 minutes ago', async () => {
+  it('restores a recently-updated conversation', async () => {
     const updatedAt = Date.now() - 29 * 60 * 1000
     localStorage.setItem(
       CHAT_STORAGE_KEY,
@@ -396,14 +406,18 @@ describe('useChatStore persistence', () => {
     expect(message.interrupted).toBeUndefined()
   })
 
-  it('drops a conversation updated more than 30 minutes ago', async () => {
+  it('restores a conversation no matter how long ago it was last updated', async () => {
+    // WHY (US-CORE-049): 历史永久保留、直到用户手动清除是本 feature 的核心
+    // 业务规则（替代旧 30 分钟 TTL）。若 TTL 语义回归，隔日/隔周回访的用户
+    // 会静默丢失全部会话——该用例在恢复 TTL 时必须失败。
+    const updatedAt = Date.now() - 30 * 24 * 60 * 60 * 1000
     localStorage.setItem(
       CHAT_STORAGE_KEY,
       JSON.stringify({
         state: {
-          messages: [makeMessage({ content: 'Expired question' })],
-          sessionId: 'session-expired',
-          updatedAt: Date.now() - 31 * 60 * 1000,
+          messages: [makeMessage({ content: 'Month-old question' })],
+          sessionId: 'session-month-old',
+          updatedAt,
         },
         version: 0,
       }),
@@ -412,12 +426,132 @@ describe('useChatStore persistence', () => {
     await useChatStore.persist.rehydrate()
 
     const state = useChatStore.getState()
-    expect(state.messages).toEqual([])
-    expect(state.sessionId).toBeNull()
-    expect(state.updatedAt).toBeNull()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0].content).toBe('Month-old question')
+    expect(state.sessionId).toBe('session-month-old')
+    expect(state.updatedAt).toBe(updatedAt)
+    expect(localStorage.getItem(CHAT_STORAGE_KEY)).not.toBeNull()
+  })
+
+  it('migrates a v0 persisted conversation, keeping messages and backfilling a stable conversationId', async () => {
+    // WHY (US-CORE-049): 存量用户升级时旧会话必须原样进入新模型——迁移丢
+    // 消息或没有稳定 conversationId，旧会话就无法归档与回看。
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [
+            makeMessage({ id: 'user-1', role: 'user', content: 'Legacy question' }),
+          ],
+          sessionId: 'session-v0',
+          updatedAt,
+        },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    const state = useChatStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0].content).toBe('Legacy question')
+    expect(state.sessionId).toBe('session-v0')
+    expect(state.conversationId).toEqual(expect.any(String))
+    expect(state.conversationId).not.toBe('')
+  })
+
+  it('migrates a v0 empty workspace to a null conversationId', async () => {
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: { messages: [], sessionId: null, updatedAt: null },
+        version: 0,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    expect(useChatStore.getState().conversationId).toBeNull()
+  })
+
+  it('restores a v1 workspace with its existing conversationId unchanged', async () => {
+    const updatedAt = Date.now() - 29 * 60 * 1000
+    localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          messages: [makeMessage({ content: 'Current-era question' })],
+          sessionId: 'session-v1',
+          conversationId: 'conv-v1',
+          updatedAt,
+        },
+        version: 1,
+      }),
+    )
+
+    await useChatStore.persist.rehydrate()
+
+    expect(useChatStore.getState().conversationId).toBe('conv-v1')
+  })
+})
+
+describe('useChatStore conversation identity', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useChatStore.setState({
+      messages: [],
+      sessionId: null,
+      conversationId: null,
+      channelKey: null,
+      updatedAt: null,
+      isLoading: false,
+      error: null,
+    })
+  })
+
+  it('addUserMessage generates a conversationId on the first user message and keeps it stable', () => {
+    // WHY: conversationId 是会话在历史归档与工作区之间的唯一键；每次提问
+    // 都换 id 会让归档条目无限翻倍、无法覆盖更新。
+    useChatStore.getState().addUserMessage('First question')
+    const first = useChatStore.getState().conversationId
+    expect(first).toEqual(expect.any(String))
+
+    useChatStore.getState().addUserMessage('Follow-up question')
+    expect(useChatStore.getState().conversationId).toBe(first)
+  })
+
+  it('clearMessages resets conversationId', () => {
+    useChatStore.getState().addUserMessage('Hello')
+
+    useChatStore.getState().clearMessages()
+
+    expect(useChatStore.getState().conversationId).toBeNull()
+  })
+
+  it('loadSession restores a full conversation snapshot and resets loading/error', () => {
+    // WHY (US-CORE-050): 装载归档会话后续聊必须复用原 sessionId；装载时
+    // 残留的 loading/error 会让新会话一打开就显示错误或禁用输入。
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', content: 'Archived question' }),
+      makeMessage({ id: 'asst-1', role: 'assistant', content: 'Archived answer' }),
+    ]
+    useChatStore.setState({ isLoading: true, error: 'stale error' })
+
+    useChatStore.getState().loadSession({
+      messages,
+      sessionId: 'session-archived',
+      conversationId: 'conv-archived',
+      updatedAt: 1234,
+    })
+
+    const state = useChatStore.getState()
+    expect(state.messages).toEqual(messages)
+    expect(state.sessionId).toBe('session-archived')
+    expect(state.conversationId).toBe('conv-archived')
+    expect(state.updatedAt).toBe(1234)
     expect(state.isLoading).toBe(false)
     expect(state.error).toBeNull()
-    expect(localStorage.getItem(CHAT_STORAGE_KEY)).toBeNull()
   })
 })
 
@@ -427,6 +561,8 @@ describe('useChatStore post-answer suggestions', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -558,6 +694,8 @@ describe('useChatStore interruption finishing', () => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
+      conversationId: null,
+      channelKey: null,
       updatedAt: null,
       isLoading: false,
       error: null,

@@ -3,7 +3,6 @@ import { persist } from 'zustand/middleware'
 import { generateId } from '@/lib/utils'
 
 const CHAT_STORAGE_KEY = 'rwiki-chat-state'
-const CHAT_STORAGE_TTL_MS = 30 * 60 * 1000
 
 function findLastAssistantIndex(messages: ChatMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -30,6 +29,11 @@ export interface ChatMessage {
 interface ChatState {
   messages: ChatMessage[]
   sessionId: string | null
+  /**
+   * 会话稳定标识：贯穿工作区与历史归档（同一会话在两处的唯一键），
+   * 首条用户消息时生成，装载归档会话时携带其 id，清空时置 null。
+   */
+  conversationId: string | null
   updatedAt: number | null
   isLoading: boolean
   error: string | null
@@ -40,8 +44,8 @@ interface ChatState {
   pendingQuestion: string | null
 
   /**
-   * 会话所属频道（排序后的频道 ID 集合编码）。随会话持久化：init/setChannel 绑定
-   * 到不同频道时丢弃旧会话，防止整页加载/换频道后复活异频道的会话与 sessionId。
+   * 会话所属频道（排序后的频道 ID 集合编码）。随会话持久化：绑定到不同频道时
+   * 旧会话先归档进其频道的历史再清空工作区，防止异频道的会话与 sessionId 复活。
    */
   channelKey: string | null
   setChannelKey: (key: string | null) => void
@@ -56,6 +60,12 @@ interface ChatState {
   setError: (error: string) => void
   setLoading: (loading: boolean) => void
   clearMessages: () => void
+  loadSession: (session: {
+    messages: ChatMessage[]
+    sessionId: string | null
+    conversationId: string
+    updatedAt: number
+  }) => void
   removeLastFailedPair: () => void
   updateMessageFeedback: (messageId: string, feedback: 'like' | 'dislike' | undefined) => void
   setLastAssistantSuggestions: (questions: string[]) => void
@@ -64,7 +74,7 @@ interface ChatState {
 
 type PersistedChatState = Pick<
   ChatState,
-  'messages' | 'sessionId' | 'updatedAt' | 'channelKey'
+  'messages' | 'sessionId' | 'conversationId' | 'updatedAt' | 'channelKey'
 >
 
 function removePersistedChatState() {
@@ -78,10 +88,25 @@ function removePersistedChatState() {
   }
 }
 
+/**
+ * 净化 ChatMessage 生命周期字段（工作区 rehydrate 与历史归档快照共用）：
+ * isStreaming 强制收敛，未收 contentEnd 的流式消息推导为 interrupted。
+ */
+export function sanitizeChatMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    isStreaming: false,
+    interrupted:
+      message.isStreaming && !message.contentEnded
+        ? true
+        : message.interrupted,
+  }))
+}
+
 function sanitizePersistedState(
   state: PersistedChatState,
 ): PersistedChatState | null {
-  if (!state.updatedAt || Date.now() - state.updatedAt > CHAT_STORAGE_TTL_MS) {
+  if (!state.updatedAt) {
     removePersistedChatState()
     return null
   }
@@ -89,14 +114,8 @@ function sanitizePersistedState(
   return {
     ...state,
     channelKey: state.channelKey ?? null,
-    messages: state.messages.map((message) => ({
-      ...message,
-      isStreaming: false,
-      interrupted:
-        message.isStreaming && !message.contentEnded
-          ? true
-          : message.interrupted,
-    })),
+    conversationId: state.conversationId ?? null,
+    messages: sanitizeChatMessages(state.messages),
   }
 }
 
@@ -105,6 +124,7 @@ export const useChatStore = create<ChatState>()(
     (set) => ({
       messages: [],
       sessionId: null,
+      conversationId: null,
       updatedAt: null,
       isLoading: false,
       error: null,
@@ -115,6 +135,7 @@ export const useChatStore = create<ChatState>()(
         set((state) => {
           const now = Date.now()
           return {
+            conversationId: state.conversationId ?? generateId(),
             messages: [
               ...state.messages,
               {
@@ -227,12 +248,23 @@ export const useChatStore = create<ChatState>()(
         set({
           messages: [],
           sessionId: null,
+          conversationId: null,
           updatedAt: null,
           isLoading: false,
           error: null,
         })
         removePersistedChatState()
       },
+
+      loadSession: (session) =>
+        set({
+          messages: session.messages,
+          sessionId: session.sessionId,
+          conversationId: session.conversationId,
+          updatedAt: session.updatedAt,
+          isLoading: false,
+          error: null,
+        }),
 
       removeLastFailedPair: () =>
         set((state) => {
@@ -278,12 +310,26 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: CHAT_STORAGE_KEY,
+      version: 1,
       partialize: (state): PersistedChatState => ({
         messages: state.messages,
         sessionId: state.sessionId,
+        conversationId: state.conversationId,
         updatedAt: state.updatedAt,
         channelKey: state.channelKey,
       }),
+      migrate: (persistedState) => {
+        const persisted = persistedState as PersistedChatState
+        // v0 workspaces predate conversationId; backfill a stable id so the
+        // session and its future archive entry share one key. No TTL judgment
+        // here — migrated data is retained permanently like everything else.
+        return {
+          ...persisted,
+          conversationId: persisted.messages?.length
+            ? generateId()
+            : null,
+        }
+      },
       merge: (persistedState, currentState) => {
         const persisted = persistedState as PersistedChatState | undefined
         if (!persisted) return currentState

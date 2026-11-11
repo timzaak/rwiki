@@ -24,6 +24,8 @@ import {
 import { ChannelIdProvider } from '@/components/chat/channel-id-context'
 import { SearchBox } from '@/components/search/search-box'
 import { useChatModalStore } from '@/stores/chat-store'
+import { rebindWorkspaceChannel } from '@/stores/chat-history-store'
+import { channelKeyOf } from '@/lib/channel-key'
 import { Button } from '@/components/ui/button'
 
 const ChatModal = lazy(() =>
@@ -111,10 +113,23 @@ function ChannelRoute() {
         </main>
         <Outlet />
         <FloatingButton visible />
+        <ChannelChatBinding channelId={channelId} />
         <ChannelChatModalMount channelId={channelId} />
       </DefaultChatStreamProvider>
     </ChannelIdProvider>
   )
+}
+
+/**
+ * 聊天工作区频道绑定：频道变化时执行换频道协议（归档旧会话 → 清空 → 绑定
+ * 新频道，见 chat-history-store 的 rebindWorkspaceChannel），保证历史按频道
+ * 隔离且跨频道遗留数据不丢失。
+ */
+function ChannelChatBinding({ channelId }: { channelId: string }) {
+  useEffect(() => {
+    rebindWorkspaceChannel(channelKeyOf([channelId]))
+  }, [channelId])
+  return null
 }
 
 /**

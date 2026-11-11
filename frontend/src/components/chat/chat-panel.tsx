@@ -1,12 +1,18 @@
-import { PlusIcon } from 'lucide-react'
+import { HistoryIcon, PlusIcon } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chat-store'
+import {
+  isHistoryStorageAvailable,
+  startNewConversation,
+} from '@/stores/chat-history-store'
 import { useChatStreamContext } from './chat-stream-context'
 import { Button } from '@/components/ui/button'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
 import { SuggestedQuestions } from './suggested-questions'
+import { ChatHistoryPanel } from './chat-history-panel'
 import { useWidgetI18n } from './widget-i18n'
 
 interface ChatPanelProps {
@@ -29,14 +35,26 @@ export function ChatPanel({
   const isLoading = useChatStore((s) => s.isLoading)
   const error = useChatStore((s) => s.error)
   const setError = useChatStore((s) => s.setError)
-  const clearMessages = useChatStore((s) => s.clearMessages)
   const { sendMessage, stopStreaming } = useChatStreamContext()
   const t = useWidgetI18n()
+  const historyAvailable = isHistoryStorageAvailable()
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const messageCountRef = useRef(messages.length)
   const hasConversation = messages.length > 0 || Boolean(sessionId) || Boolean(error)
+  // 稳定引用：历史面板的 Escape 监听 effect 依赖 onClose，流式 chunk 引发的
+  // 重渲染不应反复重建 window 监听。
+  const closeHistory = useCallback(() => setHistoryOpen(false), [])
 
-  function handleClearConversation() {
+  // 新消息加入（用户提问或回答占位）即回到对话视图；流式 chunk 不改变条数，
+  // 不会把列表收起，流式中打开的历史列表保持可用。
+  useEffect(() => {
+    if (messages.length > messageCountRef.current) setHistoryOpen(false)
+    messageCountRef.current = messages.length
+  }, [messages.length])
+
+  function handleNewConversation() {
     if (isLoading) stopStreaming()
-    clearMessages()
+    startNewConversation()
   }
 
   function handleRetry() {
@@ -51,17 +69,33 @@ export function ChatPanel({
     }
   }
 
-  const clearButton = hasConversation ? (
-    <Button
-      data-testid="chat-clear-button"
-      size="icon-xs"
-      variant="ghost"
-      onClick={handleClearConversation}
-      aria-label={t.a11yClear}
-    >
-      <PlusIcon className="size-3.5" />
-    </Button>
-  ) : null
+  const toolButtons = (
+    <div className="flex items-center gap-1">
+      {historyAvailable && (
+        <Button
+          data-testid="chat-history-toggle-button"
+          size="icon-xs"
+          variant="ghost"
+          onClick={() => setHistoryOpen((open) => !open)}
+          aria-label={t.a11yHistory}
+          aria-expanded={historyOpen}
+        >
+          <HistoryIcon className="size-3.5" />
+        </Button>
+      )}
+      {hasConversation && (
+        <Button
+          data-testid="chat-new-conversation-button"
+          size="icon-xs"
+          variant="ghost"
+          onClick={handleNewConversation}
+          aria-label={t.a11yNewConversation}
+        >
+          <PlusIcon className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
 
   return (
     <div
@@ -71,13 +105,13 @@ export function ChatPanel({
       {showHeader && (
         <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
           <span className="font-serif text-sm font-medium">{headerTitle ?? t.titleDefault}</span>
-          {clearButton}
+          {toolButtons}
         </div>
       )}
 
-      {!showHeader && hasConversation && (
+      {!showHeader && (historyAvailable || hasConversation) && (
         <div className="flex items-center justify-end border-b border-border/60 px-4 py-2">
-          {clearButton}
+          {toolButtons}
         </div>
       )}
 
@@ -87,7 +121,12 @@ export function ChatPanel({
         </div>
       )}
 
-      <MessageList onRetry={handleRetry} />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <MessageList onRetry={handleRetry} />
+        {historyOpen && historyAvailable && (
+          <ChatHistoryPanel onClose={closeHistory} />
+        )}
+      </div>
 
       {messages.length === 0 && suggestedQuestions && suggestedQuestions.length > 0 && (
         <div className="px-4" data-testid="chat-empty-suggestions">

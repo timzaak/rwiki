@@ -24,13 +24,17 @@
 | US-CORE-003 | 流式查看回答 | P0 | User | `docs/user-stories/01-user-user-stories.md` |
 | US-CORE-006 | 在弹窗中使用聊天 | P1 | User | `docs/user-stories/01-user-user-stories.md` |
 | US-CORE-047 | 在右侧停靠侧栏中使用聊天 | P1 | User | `docs/user-stories/01-user-user-stories.md` |
+| US-CORE-048 | 查看历史会话列表并来回切换回看 | P0 | User | `docs/user-stories/01-user-user-stories.md` |
+| US-CORE-049 | 历史会话长期保留在本地浏览器 | P0 | User | `docs/user-stories/01-user-user-stories.md` |
+| US-CORE-050 | 在历史会话中继续对话 | P1 | User | `docs/user-stories/01-user-user-stories.md` |
+| US-CORE-051 | 删除历史会话 | P1 | User | `docs/user-stories/01-user-user-stories.md` |
 
 ### 1.2 优先级汇总
 
 | 优先级 | 数量 | 关键故事 |
 |--------|------|----------|
-| P0 | 3 | 嵌入 Widget、流式查看回答、多轮对话 |
-| P1 | 4 | 定制外观、弹窗聊天、选择显示形态、侧栏使用 |
+| P0 | 5 | 嵌入 Widget、流式查看回答、多轮对话、历史列表切换回看、本地长期保留 |
+| P1 | 6 | 定制外观、弹窗聊天、选择显示形态、侧栏使用、历史续聊、删除历史 |
 | P2 | 2 | Widget 生命周期、运行时切换频道 |
 
 ---
@@ -53,7 +57,7 @@
 - 提供 `RWikiChat.destroy()` 销毁接口
 - 提供 `RWikiChat.setLocale(locale)` 实时切换语言接口
 - 提供 `RWikiChat.ask(query)` 接口：打开当前显示形态的面板并把 query 作为一轮用户提问自动发出（复用既有隐式中断语义；空串/空白被忽略）
-- 提供 `RWikiChat.setChannel(channelId)` 运行时切换频道接口：切换即开启新会话（中止在途回答、清空对话与 sessionId 后按新频道重新渲染）；频道集合不变时为 no-op（不误清会话）
+- 提供 `RWikiChat.setChannel(channelId)` 运行时切换频道接口：切换即开启新会话（中止在途回答，当前会话归档进其频道的浏览器本地历史后清空工作区，再按新频道重新渲染）；频道集合不变时为 no-op（不误清会话）
 
 ### 2.2 不包含功能 (Out of Scope)
 
@@ -62,7 +66,7 @@
 - 同一页面多 Widget 实例支持
 - Widget 使用数据统计与分析
 - Widget 版本管理与 CDN 分发策略
-- 聊天历史持久化（与现有 chat-assistant 一致，会话级保留）
+- 聊天历史的服务端持久化与跨设备同步（历史仅存于访客本地浏览器，按频道保留直到手动清除，见 `chat/frontend-user-history.md`）
 - 新增后端 API 或修改现有接口（显示形态为纯前端行为）
 - 宿主页面与 Widget 之间的消息通信（postMessage 等）
 - 左侧停靠侧栏：`position` 配置只控制浮动按钮位置（左下/右下），不延伸为停靠侧
@@ -134,10 +138,10 @@
 2. **初始化接口**
    - 暴露全局对象 `RWikiChat`
    - `init(config)` 方法创建 Shadow DOM 容器、注入样式、挂载 React 应用
-   - `destroy()` 方法移除 Widget DOM 并清理资源；侧栏打开状态下销毁时同步移除注入宿主的布局样式并复原宿主布局
+   - `destroy()` 方法移除 Widget DOM 并清理资源；销毁前当前会话归档进其频道的浏览器本地历史（访客本地数据不因销毁丢失）；侧栏打开状态下销毁时同步移除注入宿主的布局样式并复原宿主布局
    - `setLocale(locale)` 方法在不卸载 Widget 的前提下实时切换界面语言（重新渲染，保留当前对话）
    - `ask(query)` 方法（2026-11-09，US-INTG-017）：打开当前显示形态的面板并把 trim 后的 query 交给组件内发送链路作为一轮用户提问；侧栏形态下打开侧栏并让出宿主空间；已在流的回答按既有隐式中断语义收尾；init 前调用报控制台错误。宿主页（如 docs-web 搜索的「用 AI 回答」）由此把检索词升级为 AI 问答
-   - `setChannel(channelId)` 方法（2026-11-09，US-INTG-016）：参数校验与 `init` 的 channelId 一致（string | string[]，归一化去重）；频道集合不变时直接返回；变化时先中止在途回答、清空对话（含 sessionId）再以新频道重新渲染（与 setLocale 同模式）；init 前调用报控制台错误
+   - `setChannel(channelId)` 方法（2026-11-09，US-INTG-016）：参数校验与 `init` 的 channelId 一致（string | string[]，归一化去重）；频道集合不变时直接返回；变化时先中止在途回答，把当前会话归档进其频道的浏览器本地历史（见 `chat/frontend-user-history.md`），再清空工作区并以新频道重新渲染（与 setLocale 同模式）；init 前调用报控制台错误
 
 3. **配置接口**
    - `apiUrl`（必填）：后端 API 地址

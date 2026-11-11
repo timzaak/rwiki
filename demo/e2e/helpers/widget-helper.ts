@@ -78,6 +78,34 @@ export async function setupWidgetPage(
 }
 
 /**
+ * Like setupWidgetPage, but hosts the page on the widget bundle's real HTTP
+ * origin instead of setContent's opaque about:blank document.
+ *
+ * Why: `page.setContent` yields an opaque-origin document where accessing
+ * `window.localStorage` throws, so the widget correctly degrades to
+ * no-history mode (no toolbar toggle button — US-CORE-049 scn 3). Tests
+ * that exercise the browser-local chat history (US-CORE-048+) therefore
+ * need a normal origin. The synthetic path is route-intercepted and never
+ * reaches the server.
+ */
+export async function setupWidgetPageOnHttpOrigin(
+  page: Page,
+  config: WidgetInitConfig,
+): Promise<void> {
+  await page.route('**/__widget-host__', (route) =>
+    route.fulfill({
+      contentType: 'text/html; charset=utf-8',
+      body: '<!DOCTYPE html><html><body></body></html>',
+    }),
+  )
+  await page.goto(`${config.apiUrl}/__widget-host__`)
+  await page.addScriptTag({ url: `${config.apiUrl}/widget/rwiki-chat.js` })
+  await page.evaluate((cfg) => {
+    ;(window as any).RWikiChat.init(cfg)
+  }, config)
+}
+
+/**
  * Shadow-DOM query helpers. Every method uses `page.evaluate()` because
  * Playwright locators cannot pierce shadow roots.
  *
@@ -516,5 +544,95 @@ export const createWidgetHelper = (page: Page) => ({
       return (root?.querySelectorAll('[data-testid="message-item-user"]')
         .length || 0) > 0
     })
+  },
+
+  // Browser-local chat history (US-CORE-048; shared ChatPanel behavior
+  // inside the Shadow DOM). Selectors map 1:1 to frontend data-testids:
+  //  - chat-history-toggle-button      : chat-panel.tsx (list overlay switch)
+  //  - chat-new-conversation-button    : chat-panel.tsx (archive + new)
+  //  - chat-history-panel              : chat-history-panel.tsx (overlay root)
+  //  - chat-history-item(-title)       : chat-history-panel.tsx (entries;
+  //    the currently-viewed one carries aria-current="true")
+  //  - chat-history-item-delete-button : chat-history-panel.tsx (archived only)
+
+  /** Click the "new conversation" toolbar button inside the Shadow DOM. */
+  async clickNewConversationButton(): Promise<void> {
+    await page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const btn = root?.querySelector(
+        '[data-testid="chat-new-conversation-button"]',
+      ) as HTMLElement | null
+      btn?.click()
+    })
+  },
+
+  /**
+   * Toggle the history list overlay and wait until it reaches `open`.
+   * The toggle button lives in the ChatPanel toolbar; the overlay covers
+   * the message area only (input row stays reachable).
+   */
+  async toggleHistoryList(open: boolean): Promise<void> {
+    await page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const btn = root?.querySelector(
+        '[data-testid="chat-history-toggle-button"]',
+      ) as HTMLElement | null
+      btn?.click()
+    })
+    await page.waitForFunction(
+      (wantOpen) => {
+        const host = document.getElementById('rwiki-chat-widget')
+        const root = host?.shadowRoot
+        const present =
+          root?.querySelector('[data-testid="chat-history-panel"]') != null
+        return present === wantOpen
+      },
+      open,
+      { timeout: 10000 },
+    )
+  },
+
+  /** Titles of every history list entry (current + archived). */
+  async getHistoryItemTitles(): Promise<string[]> {
+    return page.evaluate(() => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const titles = root?.querySelectorAll(
+        '[data-testid="chat-history-item-title"]',
+      )
+      return Array.from(titles || []).map((el) => el.textContent || '')
+    })
+  },
+
+  /**
+   * Click the history entry whose title contains `title`.
+   * Archived entries switch the workspace back to that conversation (and
+   * close the list); the aria-current entry only closes the list.
+   */
+  async clickHistoryItemByTitle(title: string): Promise<void> {
+    await page.evaluate((t) => {
+      const host = document.getElementById('rwiki-chat-widget')
+      const root = host?.shadowRoot
+      const items = Array.from(
+        root?.querySelectorAll('[data-testid="chat-history-item"]') || [],
+      )
+      for (const item of items) {
+        const titleEl = item.querySelector(
+          '[data-testid="chat-history-item-title"]',
+        )
+        if (!titleEl?.textContent?.includes(t)) continue
+        if (item.getAttribute('aria-current') === 'true') {
+          // The current entry IS the clickable button itself.
+          ;(item as HTMLElement).click()
+        } else {
+          // Archived entry: the inner switch button (not the delete button).
+          ;(item.querySelector('button') as HTMLElement | null)?.click()
+        }
+        return
+      }
+      throw new Error(`History entry not found: ${t}`)
+    }, title)
   },
 })
