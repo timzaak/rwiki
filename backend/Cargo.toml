@@ -32,6 +32,14 @@ rusqlite_migration = { version = "2.6" }
 zerocopy = "0.8"
 sqlite-vec = "0.1.9"
 
+# PostgreSQL（企业部署可选存储后端）
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+] }
+pgvector = { version = "0.4.2", default-features = false, features = ["sqlx"] }
+
 # Time & ID
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7", "serde"] }

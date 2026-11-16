@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -19,24 +18,6 @@ use crate::application::http::state::AppState;
 const TEST_API_TOKEN: &str = "test-openapi-upload-token";
 const EMBEDDING_DIMS: usize = 1536;
 const CHANNEL_ID: &str = "channel-a";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Start a local mock server that mimics the OpenAI embeddings API.
 ///
@@ -100,13 +81,7 @@ async fn mock_embeddings_handler(
 /// Starts a local mock embedding server so the upload pipeline can
 /// complete without calling the real OpenAI API.
 async fn test_app_state() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("openapi_upload").await;
 
     let (mock_base_url, _abort_handle) = start_mock_embedding_server().await;
 
@@ -120,7 +95,7 @@ async fn test_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -130,7 +105,7 @@ async fn test_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -465,17 +440,16 @@ async fn upload_openapi_with_channel_id_persists_channel_id() {
         "upload response must include the provided channelId"
     );
 
-    let stored_channel_id: String = state
-        .sqlite
-        .call(move |conn| {
-            conn.query_row(
-                "SELECT channel_id FROM documents WHERE id = ?",
-                rusqlite::params![doc_id],
-                |row| row.get::<_, String>(0),
-            )
-        })
-        .await
-        .expect("query document channel_id");
+    let stored_channel_id = {
+        use rwiki_core::infrastructure::storage::MetadataStore;
+        state
+            .store
+            .get_document(&doc_id, None)
+            .await
+            .expect("query document")
+            .expect("document row must exist")
+            .channel_id
+    };
     assert_eq!(
         stored_channel_id, CHANNEL_ID,
         "documents.channel_id must match the uploaded channelId"

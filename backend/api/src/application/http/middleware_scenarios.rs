@@ -7,7 +7,6 @@
 //! - Leaves health and chat routes accessible without authentication
 
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
@@ -21,24 +20,6 @@ use crate::application::http::state::AppState;
 
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
-
 /// Build a minimal `AppState` suitable for auth middleware tests.
 ///
 /// The tests only exercise the middleware layer. When a request is rejected
@@ -51,13 +32,7 @@ async fn test_app_state() -> Arc<AppState> {
 }
 
 async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("middleware").await;
 
     // Build a minimal embedding model so VectorStoreManager compiles.
     // We use a dummy OpenAI client with a fake key; embeddings are never called
@@ -71,7 +46,7 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -81,7 +56,7 @@ async fn test_app_state_with_ip_ranges(api_allowed_ip_ranges: Vec<IpNet>) -> Arc
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),

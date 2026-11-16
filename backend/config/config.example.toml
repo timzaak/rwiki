@@ -31,6 +31,20 @@ enable_openapi = true
 # SQLite database file path
 path = "data/rwiki.db"
 
+# [postgres] — 企业部署可选的 PostgreSQL 存储后端（pgvector）。
+# 省略整段 = 默认 SQLite 模式，现有行为完全不变（零依赖单文件）。
+# 段存在即启用 PG 模式；前提：实例已启用 pgvector 扩展（≥0.8，主流托管
+# 平台支持；私有实例需 DBA 预先 CREATE EXTENSION vector），否则启动失败
+# 并指明问题（快速失败，不静默回退到 SQLite）。
+# [postgres]
+# url = "postgres://user:pass@host:5432/rwiki?sslmode=require"
+# max_connections = 10        # 连接池上限（保守默认，避免挤占实例连接配额）
+# acquire_timeout_secs = 10   # 取连接超时（秒）
+# 环境变量 POSTGRES_URL 可覆盖 url（仅当 [postgres] 段存在时生效；
+# 段省略时环境变量被忽略，保持默认 SQLite 模式）。
+# 注意：PG 模式从空库开始，存量 SQLite 数据不迁移；[sqlite].path 在 PG
+# 模式下被忽略。检索/上传/聊天等全部能力与默认模式行为对等。
+
 [llm]
 # LLM API Key (required)
 api_key = ""

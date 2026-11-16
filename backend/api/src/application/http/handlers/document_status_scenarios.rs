@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -26,24 +25,6 @@ const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "channel-a";
 const CHANNEL_B: &str = "channel-b";
 const EMBEDDING_DIMS: usize = 1536;
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Start a local mock server that mimics the OpenAI embeddings API.
 ///
@@ -130,13 +111,8 @@ fn channels_config_with_a_and_b() -> rwiki_core::config::ChannelsConfig {
 
 /// Build a minimal `AppState` suitable for document status tests.
 async fn test_app_state() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage =
+        rwiki_core::infrastructure::storage_testing::make_storage("document_status").await;
 
     let (mock_base_url, _abort_handle) = start_mock_embedding_server().await;
 
@@ -150,7 +126,7 @@ async fn test_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -160,7 +136,7 @@ async fn test_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -188,22 +164,23 @@ async fn insert_test_document_with_channel(
     status: &str,
     channel_id: &str,
 ) -> Uuid {
+    use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
     let doc_id = Uuid::now_v7();
-    let doc_id_str = doc_id.to_string();
-    let file_name = "test.xlsx".to_string();
-    let status_val = status.to_string();
-    let channel_id_val = channel_id.to_string();
     state
-        .sqlite
-        .call(move |conn| {
-            conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, ?, ?, 0, ?)",
-                rusqlite::params![doc_id_str, file_name, status_val, channel_id_val],
-            )?;
-            Ok::<(), rusqlite::Error>(())
+        .store
+        .insert_document(NewDocument {
+            id: doc_id.to_string(),
+            file_name: "test.xlsx".to_string(),
+            row_count: 0,
+            channel_id: channel_id.to_string(),
         })
         .await
         .expect("insert test document");
+    state
+        .store
+        .set_document_status(&doc_id.to_string(), Some(channel_id), None, status)
+        .await
+        .expect("set test document status");
     doc_id
 }
 
@@ -217,25 +194,13 @@ async fn document_status_and_channel(
     state: &Arc<AppState>,
     doc_id: Uuid,
 ) -> Option<(String, String)> {
-    let doc_id_str = doc_id.to_string();
+    use rwiki_core::infrastructure::storage::MetadataStore;
     state
-        .sqlite
-        .call(move |conn| {
-            let result = conn
-                .query_row(
-                    "SELECT status, channel_id FROM documents WHERE id = ?",
-                    rusqlite::params![doc_id_str],
-                    |row| {
-                        let status: String = row.get(0)?;
-                        let channel_id: String = row.get(1)?;
-                        Ok((status, channel_id))
-                    },
-                )
-                .ok();
-            Ok::<_, rusqlite::Error>(result)
-        })
+        .store
+        .get_document(&doc_id.to_string(), None)
         .await
         .expect("query document status and channel")
+        .map(|doc| (doc.status, doc.channel_id))
 }
 
 /// Helper to parse the JSON response body into a serde_json::Value.

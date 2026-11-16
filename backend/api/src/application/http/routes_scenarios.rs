@@ -10,7 +10,6 @@
 //! survive full page loads and deep links.
 
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
@@ -21,32 +20,10 @@ use tower::ServiceExt;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 const TEST_API_TOKEN: &str = "test-api-token-12345";
 /// Marker written into the fake index.html so SPA-fallback assertions can prove
 /// the response is the SPA shell (not a 404 body, not an asset file).
 const SPA_MARKER: &str = "RWIKI_SPA_MARKER";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Build a minimal `AppState` that points `static_dir` at the given directory.
 ///
@@ -54,13 +31,7 @@ fn ensure_sqlite_vec_loaded() {
 /// need to satisfy type constraints; they are never exercised by these routing
 /// tests), but sets `static_dir` so `create_api_routes` wires up static serving.
 async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("routes").await;
 
     let embedding_model = rwiki_core::infrastructure::rig_client::connect(
         rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-static-tests-only"),
@@ -71,7 +42,7 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -81,7 +52,7 @@ async fn test_app_state_with_static_dir(static_dir: String) -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -136,10 +107,6 @@ async fn body_string(resp: axum::response::Response) -> String {
         .to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
 }
-
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: As a visitor, I want the site root to load the web app, so I can
 // use the admin console / landing page from a single deployed server.

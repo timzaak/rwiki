@@ -10,10 +10,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
 use rwiki_core::config::ChannelValidationError;
-
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+use rwiki_core::infrastructure::storage::{MetadataStore, NewFeedback};
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -58,10 +55,6 @@ pub struct FeedbackQueryParams {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
-
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
 
 /// Submit or cancel chat feedback.
 ///
@@ -115,31 +108,14 @@ pub async fn submit_feedback(
     }
 
     state
-        .sqlite
-        .call(move |conn| {
-            match req.feedback {
-                None => {
-                    // Idempotent: no error if the row doesn't exist.
-                    conn.execute(
-                        "DELETE FROM chat_feedback WHERE channel_id = ?1 AND session_id = ?2 AND message_id = ?3",
-                        rusqlite::params![channel_id, req.session_id, req.message_id],
-                    )?;
-                }
-                Some(ref feedback) => {
-                    conn.execute(
-                        "INSERT OR REPLACE INTO chat_feedback (channel_id, session_id, message_id, feedback, user_message, assistant_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        rusqlite::params![
-                            channel_id,
-                            req.session_id,
-                            req.message_id,
-                            feedback,
-                            req.user_message,
-                            req.assistant_message,
-                        ],
-                    )?;
-                }
-            }
-            Ok::<(), rusqlite::Error>(())
+        .store
+        .upsert_feedback(NewFeedback {
+            channel_id,
+            session_id: req.session_id,
+            message_id: req.message_id,
+            feedback: req.feedback,
+            user_message: req.user_message,
+            assistant_message: req.assistant_message,
         })
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -182,74 +158,34 @@ pub async fn list_feedback(
     let limit = params.limit.unwrap_or(20).min(100);
     let offset = params.offset.unwrap_or(0);
 
-    state
-        .sqlite
-        .call(move |conn| {
-            let filter_feedback = params.feedback.as_deref();
-            let base_where = "WHERE channel_id = ?1";
-
-            let (count_sql, data_sql) = if filter_feedback.is_some() {
-                (
-                    format!(
-                        "SELECT COUNT(*) FROM chat_feedback {base_where} AND feedback = ?2"
-                    ),
-                    format!(
-                        "SELECT id, channel_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
-                         FROM chat_feedback {base_where} AND feedback = ?2 \
-                         ORDER BY created_at DESC LIMIT ?3 OFFSET ?4"
-                    ),
-                )
-            } else {
-                (
-                    format!("SELECT COUNT(*) FROM chat_feedback {base_where}"),
-                    format!(
-                        "SELECT id, channel_id, session_id, message_id, feedback, user_message, assistant_message, created_at \
-                         FROM chat_feedback {base_where} \
-                         ORDER BY created_at DESC LIMIT ?2 OFFSET ?3"
-                    ),
-                )
-            };
-
-            let total = if let Some(feedback) = filter_feedback {
-                conn.query_row(
-                    &count_sql,
-                    rusqlite::params![channel_id, feedback],
-                    |row| row.get::<_, i64>(0),
-                )?
-            } else {
-                conn.query_row(&count_sql, rusqlite::params![channel_id], |row| {
-                    row.get::<_, i64>(0)
-                })?
-            };
-
-            let row_to_item = |row: &rusqlite::Row| -> Result<FeedbackItem, rusqlite::Error> {
-                Ok(FeedbackItem {
-                    id: row.get(0)?,
-                    channel_id: row.get(1)?,
-                    session_id: row.get(2)?,
-                    message_id: row.get(3)?,
-                    feedback: row.get(4)?,
-                    user_message: row.get(5)?,
-                    assistant_message: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            };
-
-            let items = if let Some(feedback) = filter_feedback {
-                conn.prepare(&data_sql)?.query_map(
-                    rusqlite::params![channel_id, feedback, limit, offset],
-                    row_to_item,
-                )?
-                .collect::<Result<Vec<_>, _>>()?
-            } else {
-                conn.prepare(&data_sql)?
-                    .query_map(rusqlite::params![channel_id, limit, offset], row_to_item)?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-
-            Ok::<FeedbackListResponse, rusqlite::Error>(FeedbackListResponse { items, total })
-        })
+    let page = state
+        .store
+        .list_feedback(
+            &channel_id,
+            params.feedback.as_deref(),
+            limit as i64,
+            offset as i64,
+        )
         .await
-        .map(Json)
-        .map_err(|e| ApiError::internal(e.to_string()))
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let items = page
+        .items
+        .into_iter()
+        .map(|record| FeedbackItem {
+            id: record.id,
+            channel_id: record.channel_id,
+            session_id: record.session_id,
+            message_id: record.message_id,
+            feedback: record.feedback,
+            user_message: record.user_message,
+            assistant_message: record.assistant_message,
+            created_at: record.created_at,
+        })
+        .collect();
+
+    Ok(Json(FeedbackListResponse {
+        items,
+        total: page.total,
+    }))
 }

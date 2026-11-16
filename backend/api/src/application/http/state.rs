@@ -9,6 +9,7 @@ use rwiki_core::config::RetrievalConfig;
 use rwiki_core::domain::chat::ChatSession;
 use rwiki_core::infrastructure::metrics::RwikiMetrics;
 use rwiki_core::infrastructure::reranker::RerankerProvider;
+use rwiki_core::infrastructure::storage::Storage;
 use rwiki_core::infrastructure::vector_store::VectorStoreManager;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -21,8 +22,8 @@ use tokio::sync::Mutex;
 /// 使用 Arc 包装以实现高效的共享所有权。
 #[derive(Clone)]
 pub struct AppState {
-    /// SQLite 连接 — 用于文档元数据和健康检查
-    pub sqlite: Arc<tokio_rusqlite::Connection>,
+    /// 存储边界（SQLite/PG 双轨单通道）— 用于文档元数据和健康检查
+    pub store: Arc<Storage>,
     /// 是否启用 OpenAPI/Swagger 文档
     pub enable_openapi: bool,
     /// 向量存储管理器 — 用于文档分块的向量检索

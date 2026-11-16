@@ -6,31 +6,12 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::Resource;
+use rwiki_core::infrastructure::storage::MetadataStore;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use std::sync::Once;
 use tracing_subscriber::prelude::*;
-
-static SQLITE_VEC_INIT: Once = Once::new();
-
-/// Register the sqlite-vec extension globally. Must be called before opening any
-/// SQLite connection that uses vec0 virtual tables. Safe to call multiple times.
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 fn parse_ip_ranges(name: &str, ranges: &[String]) -> Result<Vec<IpNet>> {
     ranges
@@ -216,17 +197,7 @@ async fn main() -> Result<()> {
     tracing::info!("Bind address: {}", config.server.bind_address);
     tracing::info!("OpenAPI enabled: {}", config.server.enable_openapi);
 
-    // 注册 sqlite-vec 扩展（必须在打开连接之前调用）
-    ensure_sqlite_vec_loaded();
-
-    // 确保数据目录存在
-    if let Some(parent) = std::path::Path::new(&config.sqlite.path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    // 创建 Embedding 客户端（在迁移之前，因为迁移需要知道维度）
+    // 创建 Embedding 客户端（在存储初始化之前，因为迁移需要知道维度）
     let api_key = config
         .embedding
         .api_key
@@ -250,55 +221,6 @@ async fn main() -> Result<()> {
     tracing::info!("Embedding model: {}", model_name);
     let model_dims = embedding_model.ndims();
 
-    // 打开 SQLite 连接
-    let mut conn = rusqlite::Connection::open(&config.sqlite.path)?;
-
-    // 启用 WAL 模式
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-
-    // 运行数据库迁移（vec_chunks 列宽由 embedding 模型维度决定）
-    rwiki_core::infrastructure::migration::migrations(model_dims).to_latest(&mut conn)?;
-    tracing::info!("Database migrations completed");
-
-    // 校验 vec_chunks schema 维度与模型输出一致
-    // sqlite_master 记录了建表 SQL，从中提取 float[N] 中的 N
-    {
-        let mut stmt =
-            conn.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'")?;
-        let schema_sql: String = stmt
-            .query_row([], |row| row.get(0))
-            .map_err(|e| anyhow::anyhow!("vec_chunks table not found in sqlite_master: {}", e))?;
-        if let Some(schema_dims) = schema_sql
-            .find("float[")
-            .and_then(|i| {
-                let rest = &schema_sql[i + 6..];
-                rest.find(']').map(|j| &rest[..j])
-            })
-            .and_then(|s| s.parse::<usize>().ok())
-        {
-            if schema_dims != model_dims {
-                panic!(
-                    "Embedding dimension mismatch: model outputs {} dims, but vec_chunks schema has float[{}]. \
-                     Delete the database to re-run migrations, or configure a compatible model.",
-                    model_dims, schema_dims
-                );
-            }
-        }
-    }
-    tracing::info!("Embedding dimension validation passed: {} dims", model_dims);
-
-    // 清理上次崩溃遗留的 processing 状态文档
-    let affected = conn.execute(
-        "UPDATE documents SET status = 'failed' WHERE status = 'processing'",
-        [],
-    )?;
-    if affected > 0 {
-        tracing::warn!(
-            "Marked {} stuck 'processing' document(s) as 'failed'",
-            affected
-        );
-    }
-
     // 校验 api_token 非空
     if config.api.token.is_empty() {
         panic!(
@@ -309,8 +231,80 @@ async fn main() -> Result<()> {
     let api_allowed_ip_ranges =
         parse_ip_ranges("api.allowed_ip_ranges", &config.api.allowed_ip_ranges)?;
 
-    // 包装为 tokio-rusqlite 异步连接
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    // 存储后端装配：[postgres] 段省略 → 现状 SQLite 链原样执行（零变更）；
+    // 段存在 → PG 启动链（连接 → pgvector 探测 → 迁移 → vec DDL → 维度检查
+    // → 崩溃恢复；任一前提不满足快速失败，禁止静默回退）
+    let storage = match config.postgres.as_ref() {
+        None => {
+            // 注册 sqlite-vec 扩展（必须在打开连接之前调用）
+            rwiki_core::infrastructure::storage_sqlite::ensure_sqlite_vec_loaded();
+
+            if let Some(parent) = std::path::Path::new(&config.sqlite.path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+
+            let mut conn = rusqlite::Connection::open(&config.sqlite.path)?;
+
+            conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
+            // vec_chunks 列宽由 embedding 模型维度决定
+            rwiki_core::infrastructure::migration::migrations(model_dims).to_latest(&mut conn)?;
+            tracing::info!("Database migrations completed");
+
+            // 校验 vec_chunks schema 维度与模型输出一致
+            // sqlite_master 记录了建表 SQL，从中提取 float[N] 中的 N
+            {
+                let mut stmt = conn.prepare(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
+                )?;
+                let schema_sql: String = stmt.query_row([], |row| row.get(0)).map_err(|e| {
+                    anyhow::anyhow!("vec_chunks table not found in sqlite_master: {}", e)
+                })?;
+                if let Some(schema_dims) = schema_sql
+                    .find("float[")
+                    .and_then(|i| {
+                        let rest = &schema_sql[i + 6..];
+                        rest.find(']').map(|j| &rest[..j])
+                    })
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    if schema_dims != model_dims {
+                        panic!(
+                            "Embedding dimension mismatch: model outputs {} dims, but vec_chunks schema has float[{}]. \
+                             Delete the database to re-run migrations, or configure a compatible model.",
+                            model_dims, schema_dims
+                        );
+                    }
+                }
+            }
+            tracing::info!("Embedding dimension validation passed: {} dims", model_dims);
+
+            let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+            let storage = rwiki_core::infrastructure::storage::Storage::Sqlite(
+                rwiki_core::infrastructure::storage_sqlite::SqliteStore::new(sqlite),
+            );
+
+            let affected = storage.recover_stuck_processing_documents().await?;
+            if affected > 0 {
+                tracing::warn!(
+                    "Marked {} stuck 'processing' document(s) as 'failed'",
+                    affected
+                );
+            }
+            storage
+        }
+        Some(pg_config) => {
+            tracing::info!(
+                "[postgres] 段存在，启用 PostgreSQL 存储后端（[sqlite].path 在 PG 模式下被忽略）"
+            );
+            rwiki_core::infrastructure::storage::Storage::Postgres(
+                rwiki_core::infrastructure::storage_postgres::startup(pg_config, model_dims)
+                    .await?,
+            )
+        }
+    };
 
     // 校验至少存在一个已配置频道
     if config.channels.is_empty() {
@@ -323,17 +317,13 @@ async fn main() -> Result<()> {
     // /mcp/{channelId} 均以频道标识作路径段；不以 [mcp] 是否启用为条件）
     config.channels.validate_channel_id_formats()?;
 
-    // 校验历史数据中不存在 channel_id 为空的行（documents / chat_feedback / low_recall_records）
-    rwiki_core::config::validate_historical_rows_have_channel_id(
-        &sqlite,
-        &["documents", "chat_feedback", "low_recall_records"],
-    )
-    .await?;
+    // PG 轨道三表 channel_id NOT NULL，该校验恒为 Ok；SQLite 轨道校验三表
+    storage.validate_historical_rows_have_channel_id().await?;
 
     // 创建向量存储管理器
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             embedding_model,
             model_name,
         ),
@@ -438,46 +428,38 @@ async fn main() -> Result<()> {
     let session_count = Arc::new(AtomicUsize::new(0));
 
     // 注册 ObservableGauges（知识库统计 + 活跃会话数）
+    // 回调运行在 OTel 导出线程（非 tokio worker），用启动期捕获的 runtime
+    // Handle 安全 block_on 异步计数方法，每次 scrape 实时。
     {
         let meter = global::meter("rwiki");
+        let runtime_handle = tokio::runtime::Handle::current();
 
         // 知识库文档数（按 status 分类）
-        let db_path = config.sqlite.path.clone();
+        let store_for_docs = storage.clone();
+        let handle_for_docs = runtime_handle.clone();
         meter
             .u64_observable_gauge("rag.knowledge_base.documents")
             .with_description("Knowledge base document count by status")
             .with_callback(move |observer| {
-                if let Ok(conn) = rusqlite::Connection::open_with_flags(
-                    &db_path,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                ) {
-                    let count: i64 = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM documents WHERE status = 'published'",
-                            [],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or(0);
-                    observer.observe(count as u64, &[KeyValue::new("status", "published")]);
-                }
+                let count = handle_for_docs.block_on(async {
+                    store_for_docs
+                        .count_documents_with_status("published")
+                        .await
+                        .unwrap_or(0)
+                });
+                observer.observe(count, &[KeyValue::new("status", "published")]);
             })
             .build();
 
         // 知识库 chunk 总数
-        let db_path_chunks = config.sqlite.path.clone();
+        let store_for_chunks = storage.clone();
         meter
             .u64_observable_gauge("rag.knowledge_base.chunks")
             .with_description("Knowledge base total chunk count")
             .with_callback(move |observer| {
-                if let Ok(conn) = rusqlite::Connection::open_with_flags(
-                    &db_path_chunks,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                ) {
-                    let count: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM chunk_metadata", [], |row| row.get(0))
-                        .unwrap_or(0);
-                    observer.observe(count as u64, &[]);
-                }
+                let count = runtime_handle
+                    .block_on(async { store_for_chunks.count_chunks().await.unwrap_or(0) });
+                observer.observe(count, &[]);
             })
             .build();
 
@@ -495,7 +477,7 @@ async fn main() -> Result<()> {
 
     // 构建应用状态
     let app_state = Arc::new(api::application::http::AppState {
-        sqlite: sqlite.clone(),
+        store: Arc::new(storage.clone()),
         enable_openapi: config.server.enable_openapi,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),

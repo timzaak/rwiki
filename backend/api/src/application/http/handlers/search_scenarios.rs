@@ -32,7 +32,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -55,24 +54,6 @@ const NO_MATCH_MARKER_QUERY: &str = "zzzzz-no-match-marker";
 /// display-stripping scenario.
 const MARKDOWN_CHUNK_SEED: &str = "# Setup Guide\n\nInstall via **npm** and see the [docs](https://example.com/docs).\n\n```bash\nnpm install rwiki\n```";
 
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum SeedKind {
     /// No chunks at all — global empty knowledge base.
@@ -94,14 +75,6 @@ enum SeedKind {
     /// the display-stripping contract (HTTP hits lexically via "npm
     /// install"; MCP hybrid recalls via its e1 embedding).
     MarkdownChunk,
-}
-
-fn embedding_blob(values: &[f64]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-    for &v in values {
-        bytes.extend_from_slice(&(v as f32).to_le_bytes());
-    }
-    bytes
 }
 
 /// 1536-dim unit vector along axis 0 — what the embeddings mock returns for
@@ -144,13 +117,26 @@ fn search_channels_config() -> rwiki_core::config::ChannelsConfig {
     rwiki_core::config::ChannelsConfig { channels }
 }
 
-fn seed_document(conn: &mut rusqlite::Connection, doc_id: &str, file_name: &str, channel_id: &str) {
-    conn.execute(
-        "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-         VALUES (?1, ?2, 'published', ?3, ?4)",
-        rusqlite::params![doc_id, file_name, "2026-01-01T00:00:00.000Z", channel_id],
-    )
-    .expect("seed documents");
+async fn seed_document(
+    storage: &rwiki_core::infrastructure::storage::Storage,
+    doc_id: &str,
+    file_name: &str,
+    channel_id: &str,
+) {
+    use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
+    storage
+        .insert_document(NewDocument {
+            id: doc_id.to_string(),
+            file_name: file_name.to_string(),
+            row_count: 1,
+            channel_id: channel_id.to_string(),
+        })
+        .await
+        .expect("seed document");
+    storage
+        .set_document_status(doc_id, Some(channel_id), Some("processing"), "published")
+        .await
+        .expect("publish seeded document");
 }
 
 struct SeedChunkSpec<'a> {
@@ -165,7 +151,11 @@ struct SeedChunkSpec<'a> {
     embedding: &'a [f64],
 }
 
-fn seed_chunk(conn: &mut rusqlite::Connection, spec: SeedChunkSpec<'_>) {
+async fn seed_chunk(
+    storage: &rwiki_core::infrastructure::storage::Storage,
+    spec: SeedChunkSpec<'_>,
+) {
+    use rwiki_core::infrastructure::storage::{NewChunkRow, RetrievalStore};
     let SeedChunkSpec {
         doc_id,
         chunk_id,
@@ -177,43 +167,39 @@ fn seed_chunk(conn: &mut rusqlite::Connection, spec: SeedChunkSpec<'_>) {
         content,
         embedding,
     } = spec;
-    conn.execute(
-        "INSERT INTO chunk_metadata \
-         (document_id, chunk_id, content, title, section, locale, link, page_id, sub_index, chunk_count) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        rusqlite::params![
+    // 与生产写入同路径：真实向量 + 全文作 FTS 词元（英文种子词间空格分隔，
+    // jieba/unicode61/simple 索引等价）+ 内容哈希。
+    storage
+        .insert_chunks(
             doc_id,
-            chunk_id,
-            content,
-            title,
-            section,
-            "en",
-            format!("https://example.com/{chunk_id}"),
-            page_id,
-            sub_index,
-            chunk_count
-        ],
-    )
-    .expect("seed chunk_metadata");
-    let rowid = conn.last_insert_rowid();
-    conn.execute(
-        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
-        rusqlite::params![rowid, embedding_blob(embedding)],
-    )
-    .expect("seed vec_chunks");
-    // FTS 行：生产侧写入 jieba 分词结果，英文种子词间本以空格分隔，
-    // unicode61 建索引时与原始文本等价，直接种 content 即可。
-    conn.execute(
-        "INSERT INTO fts_chunks (rowid, tokens) VALUES (?1, ?2)",
-        rusqlite::params![rowid, content],
-    )
-    .expect("seed fts_chunks");
+            vec![NewChunkRow {
+                chunk_id: chunk_id.to_string(),
+                content: content.to_string(),
+                title: title.to_string(),
+                locale: Some("en".to_string()),
+                link: Some(format!("https://example.com/{chunk_id}")),
+                tags: vec![],
+                section: Some(section.to_string()),
+                page_id: page_id.to_string(),
+                sub_index: Some(sub_index),
+                chunk_count: Some(chunk_count),
+                content_hash: format!("seed-hash-{chunk_id}"),
+                embedding_model: "text-embedding-3-small".to_string(),
+                embedding: embedding.iter().map(|&v| v as f32).collect(),
+                fts_tokens: content.to_string(),
+            }],
+        )
+        .await
+        .expect("seed chunk");
 }
 
-fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
-    seed_document(conn, "doc-a", "alpha.md", channel);
+async fn seed_design_vector_set(
+    storage: &rwiki_core::infrastructure::storage::Storage,
+    channel: &str,
+) {
+    seed_document(storage, "doc-a", "alpha.md", channel).await;
     seed_chunk(
-        conn,
+        storage,
         SeedChunkSpec {
             doc_id: "doc-a",
             chunk_id: "a-sub0",
@@ -225,10 +211,11 @@ fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
             content: "Alpha part",
             embedding: &e2(),
         },
-    );
-    seed_document(conn, "doc-b", "beta.md", channel);
+    )
+    .await;
+    seed_document(storage, "doc-b", "beta.md", channel).await;
     seed_chunk(
-        conn,
+        storage,
         SeedChunkSpec {
             doc_id: "doc-b",
             chunk_id: "b-sub0",
@@ -240,9 +227,10 @@ fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
             content: "Beta leading part",
             embedding: &mid(),
         },
-    );
+    )
+    .await;
     seed_chunk(
-        conn,
+        storage,
         SeedChunkSpec {
             doc_id: "doc-b",
             chunk_id: "b-sub1",
@@ -254,7 +242,8 @@ fn seed_design_vector_set(conn: &mut rusqlite::Connection, channel: &str) {
             content: "Beta part",
             embedding: &e1(),
         },
-    );
+    )
+    .await;
 }
 
 /// Start an UNPOOLED mockito server and leak it for the test binary's
@@ -290,23 +279,18 @@ async fn search_app_state_with_mode(
     max_context_chunks: usize,
     public_search_mode: rwiki_core::config::PublicSearchMode,
 ) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("search").await;
 
     match seed {
         SeedKind::Empty => {}
         SeedKind::DesignVector => {
-            seed_design_vector_set(&mut conn, HIT_CHANNEL);
+            seed_design_vector_set(&storage, HIT_CHANNEL).await;
         }
         SeedKind::DualChannel => {
-            seed_design_vector_set(&mut conn, HIT_CHANNEL);
-            seed_document(&mut conn, "doc-c", "gamma.md", SECOND_CHANNEL);
+            seed_design_vector_set(&storage, HIT_CHANNEL).await;
+            seed_document(&storage, "doc-c", "gamma.md", SECOND_CHANNEL).await;
             seed_chunk(
-                &mut conn,
+                &storage,
                 SeedChunkSpec {
                     doc_id: "doc-c",
                     chunk_id: "c-sub0",
@@ -318,10 +302,11 @@ async fn search_app_state_with_mode(
                     content: "Gamma only part",
                     embedding: &e1(),
                 },
-            );
+            )
+            .await;
         }
         SeedKind::TwentyFivePages => {
-            seed_document(&mut conn, "doc-many", "many-pages.md", HIT_CHANNEL);
+            seed_document(&storage, "doc-many", "many-pages.md", HIT_CHANNEL).await;
             // 25 independent pages; query "angle" hits all of them, the FTS
             // LIMIT (default topK cap) keeps 20.
             for i in 0..25 {
@@ -330,7 +315,7 @@ async fn search_app_state_with_mode(
                 embedding[0] = theta.cos();
                 embedding[1] = theta.sin();
                 seed_chunk(
-                    &mut conn,
+                    &storage,
                     SeedChunkSpec {
                         doc_id: "doc-many",
                         chunk_id: &format!("many-sub-{i:02}"),
@@ -342,13 +327,14 @@ async fn search_app_state_with_mode(
                         content: &format!("Angle content {i:02}"),
                         embedding: &embedding,
                     },
-                );
+                )
+                .await;
             }
         }
         SeedKind::MarkdownChunk => {
-            seed_document(&mut conn, "doc-md", "setup-guide.md", HIT_CHANNEL);
+            seed_document(&storage, "doc-md", "setup-guide.md", HIT_CHANNEL).await;
             seed_chunk(
-                &mut conn,
+                &storage,
                 SeedChunkSpec {
                     doc_id: "doc-md",
                     chunk_id: "md-sub0",
@@ -360,10 +346,10 @@ async fn search_app_state_with_mode(
                     content: MARKDOWN_CHUNK_SEED,
                     embedding: &e1(),
                 },
-            );
+            )
+            .await;
         }
     }
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     let embed_server = leak_unpooled_mock_server().await;
     let embed_body = serde_json::json!({
@@ -391,7 +377,7 @@ async fn search_app_state_with_mode(
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -421,7 +407,7 @@ async fn search_app_state_with_mode(
     };
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -1062,7 +1048,7 @@ async fn search_hybrid_mode_retrieval_failure_returns_generic_500() {
     let mut state = (*base).clone();
     state.vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            state.sqlite.clone(),
+            rwiki_core::infrastructure::storage::Storage::clone(&state.store),
             rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model),
             "text-embedding-3-small".to_string(),
         ),

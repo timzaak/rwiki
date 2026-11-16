@@ -23,6 +23,7 @@ use rwiki_core::domain::chat::{evict_expired_sessions, ChatMessage};
 use rwiki_core::domain::search::{
     max_relevance_score, rewrite_query, search_and_rerank, strip_markdown_fences,
 };
+use rwiki_core::infrastructure::storage::{MetadataStore, NewLowRecallRecord};
 use rwiki_core::infrastructure::vector_store::SearchResult;
 
 /// Post-answer suggestion LLM call timeout (ms)
@@ -455,8 +456,7 @@ pub(crate) fn session_key(channel_id: Option<&[String]>, session_id: &str) -> St
 /// 持久化一轮对话到会话记忆：user 消息总是写入；assistant 消息仅在非空时
 /// 写入，`interrupted=true` 时标记为客户端断开导致的截断（正常完成为 false）。
 /// 不触发压缩检查——单轮最多新增两条消息，超阈会话由下一个正常完成轮次的
-/// 既有 should_compact 检查补上。按值接收消息文本：三个调用点在持久化后
-/// 都不再使用原字符串，避免整段克隆。
+/// 既有 should_compact 检查补上。按值接收消息文本以避免克隆。
 async fn persist_round(
     chat_sessions: &tokio::sync::Mutex<HashMap<String, rwiki_core::domain::chat::ChatSession>>,
     storage_key: &str,
@@ -647,26 +647,18 @@ async fn chat_inner(
                             score: r.score,
                         })
                         .collect();
-                    let sqlite = state.sqlite.clone();
+                    let store = state.store.clone();
                     tokio::spawn(async move {
                         let sources_json =
                             serde_json::to_string(&sources).unwrap_or_else(|_| "[]".to_string());
-                        let res = sqlite
-                            .call(move |conn| {
-                                conn.execute(
-                                    "INSERT INTO low_recall_records \
-                                     (session_id, channel_id, query, top_score, result_count, sources) \
-                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                    rusqlite::params![
-                                        session_id,
-                                        channel_id_for_low_recall,
-                                        query,
-                                        top_score,
-                                        result_count,
-                                        sources_json,
-                                    ],
-                                )?;
-                                Ok::<(), rusqlite::Error>(())
+                        let res = store
+                            .insert_low_recall_record(NewLowRecallRecord {
+                                session_id: Some(session_id),
+                                channel_id: channel_id_for_low_recall,
+                                query,
+                                top_score,
+                                result_count,
+                                sources_json,
                             })
                             .await;
                         if let Err(e) = res {

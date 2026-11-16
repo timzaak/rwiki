@@ -34,7 +34,7 @@ export const en: HomeTexts = {
     { title: "Streaming Q&A", desc: "Real-time streaming responses" },
     { title: "SQLite only", desc: "No external database needed" },
     { title: "Embeddable widget", desc: "Drop into any website" },
-    { title: "Multi-format", desc: "PDF, Markdown, DOCX, URLs" },
+    { title: "Multi-format", desc: "Markdown, XLSX, OpenAPI specs" },
     { title: "Any LLM provider", desc: "OpenAI, Claude, Gemini, local" },
     { title: "Self-hosted", desc: "Your data, your infrastructure" },
   ],
@@ -43,7 +43,7 @@ export const en: HomeTexts = {
   steps: [
     {
       title: "Upload",
-      desc: "Upload your docs, files, and links directly into the system for secure local processing.",
+      desc: "Upload your docs and files directly into the system for secure local processing.",
     },
     {
       title: "Publish",
@@ -85,7 +85,7 @@ export const zh: HomeTexts = {
     { title: "流式问答", desc: "实时流式响应" },
     { title: "仅需 SQLite", desc: "无需外部数据库" },
     { title: "可嵌入组件", desc: "嵌入任意网站" },
-    { title: "多格式支持", desc: "PDF、Markdown、DOCX、URL" },
+    { title: "多格式支持", desc: "Markdown、XLSX、OpenAPI 规格" },
     { title: "任意 LLM 提供商", desc: "OpenAI、Claude、Gemini、本地模型" },
     { title: "自托管", desc: "你的数据，你的基础设施" },
   ],
@@ -94,7 +94,7 @@ export const zh: HomeTexts = {
   steps: [
     {
       title: "上传",
-      desc: "上传文档、文件和链接，系统将在本地安全处理。",
+      desc: "上传文档和文件，系统将在本地安全处理。",
     },
     {
       title: "发布",

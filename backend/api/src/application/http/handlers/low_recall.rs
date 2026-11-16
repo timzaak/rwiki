@@ -9,10 +9,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::application::http::errors::ApiError;
 use crate::application::http::state::AppState;
 use rwiki_core::config::ChannelValidationError;
-
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+use rwiki_core::infrastructure::storage::{LowRecallFilter, MetadataStore};
 
 /// Query parameters (channelId required, others optional)
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -67,10 +64,6 @@ pub struct LowRecallListResponse {
     pub items: Vec<LowRecallRecord>,
     pub total: i64,
 }
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
 
 /// Query low-relevance recall records (score range + time range + pagination).
 ///
@@ -142,102 +135,46 @@ pub async fn list_low_recall_records(
         }
     }
 
-    // 移入闭包的拥有值（闭包要求 'static + Send）
-    let min_score = params.min_score;
-    let max_score = params.max_score;
-
-    state
-        .sqlite
-        .call(move |conn| {
-            // 动态拼 WHERE 与参数；channel_id 必须放在最前，作为首条过滤条件
-            let mut where_clauses: Vec<String> = Vec::new();
-            let mut sql_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-            let mut idx = 1usize;
-
-            where_clauses.push(format!("channel_id = ?{}", idx));
-            sql_params.push(Box::new(channel_id));
-            idx += 1;
-
-            if let Some(min) = min_score {
-                where_clauses.push(format!("top_score >= ?{}", idx));
-                sql_params.push(Box::new(min));
-                idx += 1;
-            }
-            if let Some(max) = max_score {
-                where_clauses.push(format!("top_score <= ?{}", idx));
-                sql_params.push(Box::new(max));
-                idx += 1;
-            }
-            if let Some(f) = from_ts {
-                where_clauses.push(format!("created_at >= ?{}", idx));
-                sql_params.push(Box::new(f));
-                idx += 1;
-            }
-            if let Some(t) = to_ts {
-                where_clauses.push(format!("created_at <= ?{}", idx));
-                sql_params.push(Box::new(t));
-                idx += 1;
-            }
-
-            let where_sql = if where_clauses.is_empty() {
-                String::new()
-            } else {
-                format!("WHERE {}", where_clauses.join(" AND "))
-            };
-
-            // COUNT(*) 取 total
-            let count_sql = format!("SELECT COUNT(*) FROM low_recall_records {}", where_sql);
-            let total: i64 = {
-                let param_refs: Vec<&dyn rusqlite::ToSql> =
-                    sql_params.iter().map(|p| p.as_ref()).collect();
-                conn.query_row(&count_sql, param_refs.as_slice(), |row| row.get(0))?
-            };
-
-            // 数据查询：追加 LIMIT/OFFSET 占位
-            let limit_idx = idx;
-            let offset_idx = idx + 1;
-            let data_sql = format!(
-                "SELECT id, channel_id, session_id, query, top_score, result_count, sources, created_at \
-                 FROM low_recall_records {} \
-                 ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
-                where_sql, limit_idx, offset_idx
-            );
-
-            // 完整参数顺序：where 参数 + limit + offset
-            let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = sql_params;
-            all_params.push(Box::new(limit));
-            all_params.push(Box::new(offset));
-            let param_refs: Vec<&dyn rusqlite::ToSql> =
-                all_params.iter().map(|p| p.as_ref()).collect();
-
-            let mut stmt = conn.prepare(&data_sql)?;
-            let items: Vec<LowRecallRecord> = stmt
-                .query_map(param_refs.as_slice(), |row| {
-                    let sources_json: String = row.get(6)?;
-                    let sources = serde_json::from_str::<Vec<LowRecallSource>>(&sources_json)
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(
-                                error = %e,
-                                "failed to deserialize low_recall sources JSON; falling back to empty vec"
-                            );
-                            Vec::new()
-                        });
-                    Ok(LowRecallRecord {
-                        id: row.get(0)?,
-                        channel_id: row.get(1)?,
-                        session_id: row.get(2)?,
-                        query: row.get(3)?,
-                        top_score: row.get(4)?,
-                        result_count: row.get(5)?,
-                        sources,
-                        created_at: row.get(7)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
-            Ok::<LowRecallListResponse, rusqlite::Error>(LowRecallListResponse { items, total })
-        })
+    // 动态过滤由存储边界渲染为各自方言谓词
+    let page = state
+        .store
+        .list_low_recall_records(
+            LowRecallFilter {
+                channel_id,
+                min_score: params.min_score,
+                max_score: params.max_score,
+                from_ts,
+                to_ts,
+            },
+            limit as i64,
+            offset as i64,
+        )
         .await
-        .map(Json)
-        .map_err(|e| ApiError::internal(e.to_string()))
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let items: Vec<LowRecallRecord> = page
+        .items
+        .into_iter()
+        .map(|row| LowRecallRecord {
+            id: row.id,
+            channel_id: row.channel_id,
+            session_id: row.session_id,
+            query: row.query,
+            top_score: row.top_score,
+            result_count: row.result_count,
+            sources: serde_json::from_str(&row.sources_json).unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "failed to deserialize low_recall sources JSON; falling back to empty vec"
+                );
+                Vec::new()
+            }),
+            created_at: row.created_at,
+        })
+        .collect();
+
+    Ok(Json(LowRecallListResponse {
+        items,
+        total: page.total,
+    }))
 }

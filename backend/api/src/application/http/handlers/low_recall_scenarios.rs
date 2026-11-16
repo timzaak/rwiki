@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -25,24 +24,6 @@ const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
 const UNKNOWN_CHANNEL: &str = "unknown_channel";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Build a `ChannelsConfig` with two configured channels for isolation scenarios.
 fn test_channels_config() -> ChannelsConfig {
@@ -72,13 +53,7 @@ fn test_channels_config() -> ChannelsConfig {
 /// `low_recall_config: None` — these scenarios only exercise the read endpoint,
 /// the bypass write path is covered in `chat_scenarios.rs`.
 async fn test_app_state() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("low_recall").await;
 
     let embedding_model = rwiki_core::infrastructure::rig_client::connect(
         rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-low-recall-tests-only"),
@@ -89,7 +64,7 @@ async fn test_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -99,7 +74,7 @@ async fn test_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -154,35 +129,17 @@ async fn insert_test_record(
     sources_json: &str,
     created_at: Option<&str>,
 ) {
-    let sid = channel_id.to_string();
-    let sess = session_id.map(|s| s.to_string());
-    let q = query.to_string();
-    let rc = result_count;
-    let sj = sources_json.to_string();
-    let ca = created_at.map(|s| s.to_string());
-
-    state
-        .sqlite
-        .call(move |conn| -> Result<(), rusqlite::Error> {
-            if let Some(ref ts) = ca {
-                conn.execute(
-                    "INSERT INTO low_recall_records \
-                     (channel_id, session_id, query, top_score, result_count, sources, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![sid, sess, q, top_score, rc, sj, ts],
-                )?;
-            } else {
-                conn.execute(
-                    "INSERT INTO low_recall_records \
-                     (channel_id, session_id, query, top_score, result_count, sources) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![sid, sess, q, top_score, rc, sj],
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .expect("insert test low_recall_records row");
+    rwiki_core::infrastructure::storage_testing::seed_low_recall_record(
+        &state.store,
+        channel_id,
+        session_id,
+        query,
+        top_score,
+        result_count,
+        sources_json,
+        created_at,
+    )
+    .await;
 }
 
 // User Story: US-CORE-038 -- As an operator, I want to view low-recall records

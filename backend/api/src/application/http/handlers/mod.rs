@@ -52,6 +52,7 @@ mod search_scenarios;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use rwiki_core::domain::health::HealthStatus;
+use rwiki_core::infrastructure::storage::MetadataStore;
 use std::sync::Arc;
 
 use crate::application::http::errors::ApiError;
@@ -73,14 +74,7 @@ use crate::application::http::state::AppState;
 pub async fn health_check(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, ApiError> {
-    let db_status = match state
-        .sqlite
-        .call(|conn| {
-            conn.query_row("SELECT 1", [], |_| Ok::<(), rusqlite::Error>(()))?;
-            Ok::<(), rusqlite::Error>(())
-        })
-        .await
-    {
+    let db_status = match state.store.ping().await {
         Ok(()) => "connected".to_string(),
         Err(e) => {
             tracing::error!("Database health check failed: {}", e);

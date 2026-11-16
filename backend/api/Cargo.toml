@@ -47,6 +47,7 @@ utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono", "openapi_
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 
 [dev-dependencies]
+rwiki-core = { path = "../core", features = ["test-support"] }
 tower = { workspace = true }
 rust_xlsxwriter = "0.96"
 sqlite-vec = { workspace = true }

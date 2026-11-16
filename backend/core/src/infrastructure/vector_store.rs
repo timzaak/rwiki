@@ -1,14 +1,13 @@
-use std::sync::Arc;
 use std::sync::OnceLock;
 
 use jieba_rs::Jieba;
-use tokio_rusqlite::Connection;
 use uuid::Uuid;
 
 use crate::domain::errors::CoreError;
 
 use super::document_chunk::DocumentChunk;
 use super::embedding_model::AppEmbeddingModel;
+use super::storage::{MetadataStore, NewChunkRow, RetrievalStore, Storage};
 use super::xlsx_parser::ContentType;
 
 static JIEBA: OnceLock<Jieba> = OnceLock::new();
@@ -37,7 +36,7 @@ pub(crate) fn tokenize_fallback(text: &str) -> String {
 }
 
 /// Tokenize with jieba, falling back to simple split on panic.
-fn tokenize_safe(text: &str) -> String {
+pub(crate) fn tokenize_safe(text: &str) -> String {
     std::panic::catch_unwind(|| tokenize_for_fts(text)).unwrap_or_else(|_| {
         tracing::warn!("jieba tokenize failed, using fallback");
         tokenize_fallback(text)
@@ -70,12 +69,12 @@ pub(crate) fn sanitize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
-/// Manages the sqlite-vec backed vector store for document chunks.
+/// Manages the retrieval pipeline for document chunks.
 ///
-/// Wraps a tokio_rusqlite connection with sqlite-vec virtual table for
-/// vector similarity search and a metadata table for chunk attributes.
+/// 持有 `Storage`（SQLite/PG 双轨统一边界）负责 embedding 编排、去重决策、
+/// 混合检索（RRF 融合）与窗口扩展；全部 SQL 经 `RetrievalStore` 委托执行。
 pub struct VectorStoreManager {
-    pub(crate) conn: Arc<Connection>,
+    pub(crate) store: Storage,
     embedding_model: AppEmbeddingModel,
     /// Human-readable model name for dedup checks (e.g. "text-embedding-3-small").
     pub model_name: String,
@@ -117,17 +116,8 @@ pub struct NeighborChunk {
     pub document_id: String,
 }
 
-/// Convert f64 embedding vector to f32 little-endian bytes for sqlite-vec storage.
-fn embedding_to_bytes(vec: &[f64]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(vec.len() * 4);
-    for &v in vec {
-        bytes.extend_from_slice(&(v as f32).to_le_bytes());
-    }
-    bytes
-}
-
 /// Compute MD5 hex hash of text content for dedup.
-fn content_hash(text: &str) -> String {
+pub(crate) fn content_hash(text: &str) -> String {
     let digest = md5::compute(text.as_bytes());
     format!("{:x}", digest)
 }
@@ -144,7 +134,6 @@ pub enum RetrievalScope {
     /// 频道作用域：仅命中指定频道且 status='published' 的文档
     Channel(String),
     /// 多频道作用域：命中任一指定频道的已发布文档。
-    /// 与 Channel 等价于"频道 = ?" 改为 "频道 IN (...)"；语义为跨频道并集检索。
     Channels(Vec<String>),
 }
 
@@ -155,49 +144,6 @@ impl RetrievalScope {
         match ids {
             Some(ids) if !ids.is_empty() => RetrievalScope::Collection(ids.clone()),
             _ => RetrievalScope::Published,
-        }
-    }
-
-    /// 返回 `(WHERE 片段, 绑定参数列表)`，供检索 SQL 拼接：
-    /// - Channel → `AND d.channel_id = ? AND d.status = 'published'` + channel_id
-    /// - Channels → `AND d.channel_id IN (?,...) AND d.status = 'published'` + channel_ids
-    /// - 非空 Collection → `AND cm.document_id IN (?, ...)` + 文档 id 列表
-    /// - Published / 空 Collection → `AND d.status = 'published'`（无绑定参数）
-    ///
-    /// 注意：返回的绑定参数必须在 SQL 中**按片段出现顺序**填入。
-    /// search_by_keyword 的 `LIMIT ?` 位于该片段**之后**，故 top_k 必须最后压入 params。
-    pub fn filter_sql(&self) -> (String, Vec<String>) {
-        match self {
-            RetrievalScope::Channel(channel_id) => (
-                "AND d.channel_id = ? AND d.status = 'published'".to_string(),
-                vec![channel_id.clone()],
-            ),
-            RetrievalScope::Channels(channel_ids) if !channel_ids.is_empty() => {
-                let placeholders = (0..channel_ids.len())
-                    .map(|_| "?")
-                    .collect::<Vec<_>>()
-                    .join(",");
-                (
-                    format!(
-                        "AND d.channel_id IN ({}) AND d.status = 'published'",
-                        placeholders
-                    ),
-                    channel_ids.clone(),
-                )
-            }
-            RetrievalScope::Collection(ids) if !ids.is_empty() => {
-                let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-                (
-                    format!("AND cm.document_id IN ({})", placeholders),
-                    ids.clone(),
-                )
-            }
-            // Published / 空 Channels / 空 Collection 都回退到"仅已发布"线上行为
-            RetrievalScope::Published
-            | RetrievalScope::Channels(_)
-            | RetrievalScope::Collection(_) => {
-                ("AND d.status = 'published'".to_string(), Vec::new())
-            }
         }
     }
 }
@@ -218,96 +164,18 @@ pub struct IndexStats {
     pub reused: usize,
 }
 
-/// Existing embedding lookup result for a content_hash.
-#[derive(Debug, Clone)]
-struct ExistingEmbedding {
-    /// Cached embedding bytes (for reuse, avoiding a re-call to the embedding API).
-    embedding_bytes: Vec<u8>,
-}
-
 impl VectorStoreManager {
-    /// Create a new VectorStoreManager with the given sqlite connection and embedding model.
+    /// Create a new VectorStoreManager with the given storage backend and embedding model.
     pub fn ndims(&self) -> usize {
         self.embedding_model.ndims()
     }
 
-    pub fn new(
-        conn: Arc<Connection>,
-        embedding_model: AppEmbeddingModel,
-        model_name: String,
-    ) -> Self {
+    pub fn new(storage: Storage, embedding_model: AppEmbeddingModel, model_name: String) -> Self {
         Self {
-            conn,
+            store: storage,
             embedding_model,
             model_name,
         }
-    }
-
-    /// 根据 content_hash 批量查找已有向量（仅缓存，不判断上线状态）。
-    /// 排除 content_hash IS NULL 的旧记录，且只返回与当前模型一致的记录。
-    /// 注意：若同一 content_hash 匹配多行，任取一行读 bytes 即可（向量相同）。
-    async fn find_existing_embeddings(
-        &self,
-        content_hashes: &[String],
-    ) -> Result<std::collections::HashMap<String, ExistingEmbedding>, CoreError> {
-        if content_hashes.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-
-        let model = self.model_name.clone();
-        let hashes = content_hashes.to_vec();
-
-        self.conn
-            .call(move |conn| {
-                // Step 1: 从 chunk_metadata 查找匹配的 rowid（仅取缓存向量）
-                let placeholders: Vec<String> = hashes.iter().map(|_| "?".to_string()).collect();
-                let sql = format!(
-                    "SELECT cm.content_hash, cm.rowid \
-                     FROM chunk_metadata cm \
-                     WHERE cm.content_hash IN ({}) \
-                     AND cm.content_hash IS NOT NULL \
-                     AND cm.embedding_model = ? \
-                     GROUP BY cm.content_hash",
-                    placeholders.join(",")
-                );
-
-                let mut stmt = conn.prepare(&sql)?;
-                let params: Vec<&dyn rusqlite::types::ToSql> = hashes
-                    .iter()
-                    .map(|h| h as &dyn rusqlite::types::ToSql)
-                    .chain(std::iter::once(&model as &dyn rusqlite::types::ToSql))
-                    .collect();
-                let rows = stmt.query_map(params.as_slice(), |row| {
-                    let hash: String = row.get(0)?;
-                    let rowid: i64 = row.get(1)?;
-                    Ok((hash, rowid))
-                })?;
-
-                let mut rowid_map: std::collections::HashMap<String, i64> =
-                    std::collections::HashMap::new();
-                for (hash, rowid) in rows.flatten() {
-                    rowid_map.insert(hash, rowid);
-                }
-
-                // Step 2: 逐行从 vec_chunks 读取 embedding bytes
-                let mut result = std::collections::HashMap::new();
-                for (hash, rowid) in rowid_map {
-                    let bytes: Vec<u8> = conn.query_row(
-                        "SELECT embedding FROM vec_chunks WHERE rowid = ?",
-                        rusqlite::params![rowid],
-                        |row| row.get(0),
-                    )?;
-                    result.insert(
-                        hash,
-                        ExistingEmbedding {
-                            embedding_bytes: bytes,
-                        },
-                    );
-                }
-                Ok::<std::collections::HashMap<String, ExistingEmbedding>, rusqlite::Error>(result)
-            })
-            .await
-            .map_err(|e| CoreError::DatabaseError(format!("查找已有向量失败: {e}")))
     }
 
     /// Embed document chunks and insert them into sqlite-vec.
@@ -345,15 +213,18 @@ impl VectorStoreManager {
                 .map(|c| content_hash(&c.content.join("\n")))
                 .collect();
 
-            let existing = self.find_existing_embeddings(&hashes).await?;
+            let existing = self
+                .store
+                .find_cached_embeddings(&hashes, &self.model_name)
+                .await?;
 
             let mut reusable = Vec::new();
             let mut new_chunks = Vec::new();
             for (chunk, hash) in chunks.into_iter().zip(hashes) {
                 match existing.get(&hash) {
                     // 有缓存向量且未强制刷新 → 复用向量写入
-                    Some(info) if !options.refresh_embed => {
-                        reusable.push((chunk, hash, info.embedding_bytes.clone()));
+                    Some(cached) if !options.refresh_embed => {
+                        reusable.push((chunk, hash, cached.clone()));
                     }
                     _ => {
                         new_chunks.push(chunk);
@@ -365,217 +236,91 @@ impl VectorStoreManager {
             (Vec::new(), Vec::new())
         };
 
-        // indexed = 实际写入数；在 reusable/new_chunks 被 move 进事务前记录
-        let indexed = reusable.len() + new_chunks.len();
-        // reused = 复用缓存向量的 chunk 数
+        // indexed = 实际写入数；reused = 复用缓存向量的 chunk 数
         let reused = reusable.len();
+        let indexed = reusable.len() + new_chunks.len();
 
         // new_chunks 走正常 embedding 流程（内部按 64 条分批，避免超出 API 限制）
         let embedded = self.embedding_model.embed_documents(new_chunks).await?;
 
-        let doc_id_str = document_id.to_string();
-        let model_name_for_insert = self.model_name.clone();
+        // Assemble rows: reusable 组直接复用缓存向量；embedded 组用新向量（f64→f32，
+        // 沿用现状精度口径）。分词（resolve_fts_tokens）与 hash 计算在此单源完成。
+        let mut rows: Vec<NewChunkRow> = Vec::with_capacity(indexed);
 
-        // Insert all chunks in a single transaction
-        self.conn
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                {
-                    let mut insert_metadata = tx.prepare(
-                        "INSERT INTO chunk_metadata (document_id, chunk_id, content, title, locale, link, tags, section, page_id, sub_index, chunk_count, content_hash, embedding_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    )?;
-                    let mut insert_vec = tx.prepare(
-                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)"
-                    )?;
-                    let mut insert_fts = tx.prepare(
-                        "INSERT OR IGNORE INTO fts_chunks(rowid, tokens) VALUES (?, ?)"
-                    )?;
+        // 13 个字段的装配单源（两循环仅 hash/embedding 来源不同）；
+        // content 先算 fts_tokens 再整体 move，避免整段正文 clone。
+        fn build_row(
+            model_name: &str,
+            chunk: DocumentChunk,
+            content_text: String,
+            hash: String,
+            embedding: Vec<f32>,
+        ) -> NewChunkRow {
+            let fts_tokens =
+                resolve_fts_tokens(&chunk.content_type, &chunk.fts_tokens, &content_text);
+            NewChunkRow {
+                chunk_id: chunk.id,
+                content: content_text,
+                title: chunk.title,
+                locale: chunk.locale,
+                link: chunk.link,
+                tags: chunk.tags,
+                section: chunk.section,
+                page_id: chunk.page_id,
+                sub_index: chunk.sub_index.map(|s| s as i64),
+                chunk_count: chunk.chunk_count.map(|c| c as i64),
+                content_hash: hash,
+                embedding_model: model_name.to_string(),
+                embedding,
+                fts_tokens,
+            }
+        }
 
-                    // 插入 reusable 组：直接写入已有 bytes
-                    for (chunk, hash, bytes) in &reusable {
-                        let content_text = chunk.content.join("\n");
-                        let tags_text = chunk.tags.join("\x00");
-                        let section_val = chunk.section.as_deref();
+        for (chunk, hash, embedding) in reusable {
+            let content_text = chunk.content.join("\n");
+            rows.push(build_row(
+                &self.model_name,
+                chunk,
+                content_text,
+                hash,
+                embedding,
+            ));
+        }
 
-                        insert_metadata.execute(rusqlite::params![
-                            doc_id_str,
-                            chunk.id,
-                            content_text,
-                            chunk.title,
-                            chunk.locale,
-                            chunk.link,
-                            tags_text,
-                            section_val,
-                            chunk.page_id,
-                            chunk.sub_index.map(|s| s as i64),
-                            chunk.chunk_count.map(|c| c as i64),
-                            hash,
-                            model_name_for_insert,
-                        ])?;
+        for (chunk, embeddings) in embedded {
+            let content_text = chunk.content.join("\n");
+            let emb = embeddings
+                .first()
+                .expect("embedded chunk carries at least one vector")
+                .vec
+                .iter()
+                .map(|&v| v as f32)
+                .collect();
+            let hash = content_hash(&content_text);
+            rows.push(build_row(&self.model_name, chunk, content_text, hash, emb));
+        }
 
-                        let rowid = tx.last_insert_rowid();
-                        insert_vec.execute(rusqlite::params![rowid, bytes])?;
-
-                        let fts_tokens = resolve_fts_tokens(&chunk.content_type, &chunk.fts_tokens, &content_text);
-                        insert_fts.execute(rusqlite::params![rowid, fts_tokens])?;
-                    }
-
-                    // 插入 new_chunks 组：走正常 embedding 结果
-                    for (chunk, embeddings) in &embedded {
-                        let content_text = chunk.content.join("\n");
-                        let tags_text = chunk.tags.join("\x00");
-                        let section_val = chunk.section.as_deref();
-                        let hash = content_hash(&content_text);
-
-                        insert_metadata.execute(rusqlite::params![
-                            doc_id_str,
-                            chunk.id,
-                            content_text,
-                            chunk.title,
-                            chunk.locale,
-                            chunk.link,
-                            tags_text,
-                            section_val,
-                            chunk.page_id,
-                            chunk.sub_index.map(|s| s as i64),
-                            chunk.chunk_count.map(|c| c as i64),
-                            hash,
-                            model_name_for_insert,
-                        ])?;
-
-                        let rowid = tx.last_insert_rowid();
-
-                        let emb = embeddings
-                            .first()
-                            .expect("embedded chunk carries at least one vector");
-                        let bytes = embedding_to_bytes(&emb.vec);
-                        insert_vec.execute(rusqlite::params![rowid, bytes])?;
-
-                        let fts_tokens = resolve_fts_tokens(&chunk.content_type, &chunk.fts_tokens, &content_text);
-                        insert_fts.execute(rusqlite::params![rowid, fts_tokens])?;
-                    }
-                }
-                tx.commit()?;
-                Ok::<(), rusqlite::Error>(())
-            })
-            .await
-            .map_err(|e| CoreError::DatabaseError(format!("插入文档向量失败: {e}")))?;
+        // 全部行经存储边界单事务写入（chunk_metadata + 向量 + 预分词文本）
+        self.store
+            .insert_chunks(&document_id.to_string(), rows)
+            .await?;
 
         Ok(IndexStats { indexed, reused })
     }
 
-    /// 分批补齐旧数据的 content_hash 和 embedding_model。
-    /// 每个批次单独调用 conn.call()，避免长时间锁定连接。
+    /// 分批补齐旧数据的 content_hash 和 embedding_model（SQLite 旧数据专用；
+    /// PG 新库恒为 0 行）。
     pub async fn backfill_content_hash(&self) -> Result<(), CoreError> {
-        let model = self.model_name.clone();
-        let mut total = 0u64;
-        loop {
-            let model_for_update = model.clone();
-            let updated = self
-                .conn
-                .call(move |conn| {
-                    let rows: Vec<(i64, String)> = conn
-                        .prepare(
-                            "SELECT rowid, content FROM chunk_metadata \
-                             WHERE content_hash IS NULL LIMIT 100",
-                        )?
-                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .filter_map(|r| r.ok())
-                        .collect();
-
-                    if rows.is_empty() {
-                        return Ok::<usize, rusqlite::Error>(0);
-                    }
-
-                    for (rowid, content) in &rows {
-                        let hash = content_hash(content);
-                        conn.execute(
-                            "UPDATE chunk_metadata SET content_hash = ?1, embedding_model = ?2 WHERE rowid = ?3",
-                            rusqlite::params![hash, model_for_update, rowid],
-                        )?;
-                    }
-                    Ok(rows.len())
-                })
-                .await
-                .map_err(|e| CoreError::DatabaseError(format!("Backfill batch failed: {e}")))?;
-
-            if updated == 0 {
-                break;
-            }
-            total += updated as u64;
-            tracing::info!("Backfill progress: processed {} rows", total);
-        }
-        tracing::info!("Backfill complete: {} rows updated", total);
-        Ok(())
+        self.store
+            .backfill_content_hash(&self.model_name)
+            .await
+            .map(|_| ())
     }
 
-    const FTS_BACKFILL_BATCH_SIZE: usize = 1000;
-
     /// Backfill the fts_chunks FTS5 index for existing chunk_metadata rows.
-    /// Idempotent: uses INSERT OR IGNORE to skip already-indexed rows.
-    /// Should be called once during application startup after migrations.
+    /// SQLite 轨道固有能力；PG 侧由生成列自动维护（trait 实现恒为 Ok(())）。
     pub async fn backfill_fts_index(&self) -> Result<(), CoreError> {
-        let mut total = 0u64;
-        let mut last_rowid: i64 = 0;
-
-        loop {
-            let last = last_rowid;
-            let batch_size = Self::FTS_BACKFILL_BATCH_SIZE as i64;
-
-            let result = self
-                .conn
-                .call(move |conn| {
-                    let mut stmt = conn.prepare(
-                        "SELECT rowid, content FROM chunk_metadata \
-                         WHERE rowid > ? ORDER BY rowid LIMIT ?",
-                    )?;
-                    let rows: Vec<(i64, String)> = stmt
-                        .query_map(rusqlite::params![last, batch_size], |row| {
-                            Ok((row.get(0)?, row.get(1)?))
-                        })?
-                        .filter_map(|r| r.ok())
-                        .collect();
-
-                    if rows.is_empty() {
-                        return Ok::<(usize, i64), rusqlite::Error>((0, last));
-                    }
-
-                    let max_rowid = rows.iter().map(|(id, _)| *id).max().unwrap_or(last);
-
-                    for (rowid, content) in &rows {
-                        let tokens = tokenize_safe(content);
-                        conn.execute(
-                            "INSERT OR IGNORE INTO fts_chunks(rowid, tokens) VALUES (?, ?)",
-                            rusqlite::params![rowid, tokens],
-                        )?;
-                    }
-
-                    Ok::<(usize, i64), rusqlite::Error>((rows.len(), max_rowid))
-                })
-                .await
-                .map_err(|e| CoreError::DatabaseError(format!("FTS backfill batch failed: {e}")))?;
-
-            let (processed, max_rowid) = result;
-
-            if processed == 0 {
-                break;
-            }
-            total += processed as u64;
-            last_rowid = max_rowid;
-
-            tracing::debug!(
-                "FTS backfill progress: {} rows processed, last_rowid={}",
-                total,
-                last_rowid
-            );
-        }
-
-        if total > 0 {
-            tracing::info!("FTS backfill complete: {} rows processed", total);
-        } else {
-            tracing::debug!("FTS backfill: no rows to process, fts_chunks already up to date");
-        }
-        Ok(())
+        self.store.backfill_fts_index().await
     }
 
     /// Vector search by pre-computed embedding vector.
@@ -586,86 +331,12 @@ impl VectorStoreManager {
         top_k: usize,
         scope: &RetrievalScope,
     ) -> Result<Vec<SearchResult>, CoreError> {
-        let query_bytes = embedding_to_bytes(query_vec);
-        let top_k_i64 = top_k as i64;
-
-        let (status_filter, collection_ids) = scope.filter_sql();
-
-        self.conn
-            .call(move |conn| {
-                let sql = format!(
-                    "SELECT cm.chunk_id, cm.content, cm.title, cm.locale, cm.link, cm.tags, cm.section, \
-                            cm.document_id, cm.page_id, cm.sub_index, cm.chunk_count, v.distance \
-                     FROM vec_chunks v \
-                     LEFT JOIN chunk_metadata cm ON v.rowid = cm.rowid \
-                     JOIN documents d ON cm.document_id = d.id \
-                     WHERE v.embedding MATCH ? AND k = ? \
-                       {}",
-                    status_filter
-                );
-
-                let mut stmt = conn.prepare(&sql)?;
-
-                // Build params based on scope
-                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-                    Box::new(query_bytes),
-                    Box::new(top_k_i64),
-                ];
-                for id in &collection_ids {
-                    params.push(Box::new(id.clone()));
-                }
-
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(params.iter()),
-                    |row| {
-                    let chunk_id: String = row.get(0)?;
-                    let content_text: String = row.get(1)?;
-                    let title: String = row.get(2)?;
-                    let locale: Option<String> = row.get(3)?;
-                    let link: Option<String> = row.get(4)?;
-                    let tags_text: String = row.get(5)?;
-                    let section: Option<String> = row.get(6)?;
-                    let document_id: String = row.get(7)?;
-                    let page_id: String = row.get(8)?;
-                    let sub_index: Option<i64> = row.get(9)?;
-                    let chunk_count: Option<i64> = row.get(10)?;
-                    let distance: f32 = row.get(11)?;
-
-                    let content = content_text;
-                    let tags: Vec<String> = tags_text
-                        .split('\x00')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-
-                    Ok(SearchResult {
-                        chunk_id,
-                        content,
-                        score: 1.0 - distance as f64,
-                        document_id,
-                        page_id,
-                        sub_index,
-                        chunk_count,
-                        title,
-                        locale,
-                        link,
-                        tags,
-                        section,
-                    })
-                })?;
-
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row.map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?);
-                }
-                Ok::<Vec<SearchResult>, rusqlite::Error>(results)
-            })
-            .await
-            .map_err(|e| CoreError::ProcessingError(format!("搜索失败: {e}")))
+        self.store.search_by_vector(query_vec, top_k, scope).await
     }
 
-    /// Search by keyword using FTS5 BM25 ranking.
-    /// Tokenizes the query with jieba, sanitizes FTS operators, then runs MATCH.
+    /// Search by keyword using FTS5 BM25 ranking (SQLite) / tsvector (PG).
+    /// Tokenizes the query with jieba (分词单源：索引与查询同函数), sanitizes FTS
+    /// operators, then delegates the pre-tokenized query string to the store.
     /// Only returns chunks from published documents (or collection-specified documents).
     /// Returns Ok(empty) if the FTS index is missing or corrupted, degrading gracefully.
     pub async fn search_by_keyword(
@@ -681,99 +352,7 @@ impl VectorStoreManager {
             return Ok(Vec::new());
         }
 
-        let top_k_i64 = top_k as i64;
-
-        let (status_filter, collection_ids) = scope.filter_sql();
-
-        let result = self
-            .conn
-            .call(move |conn| {
-                let sql = format!(
-                    "SELECT cm.chunk_id, cm.content, cm.title, cm.locale, cm.link, cm.tags, cm.section, \
-                            cm.document_id, cm.page_id, cm.sub_index, cm.chunk_count, \
-                            bm25(fts_chunks) as score \
-                     FROM fts_chunks fts \
-                     JOIN chunk_metadata cm ON fts.rowid = cm.rowid \
-                     JOIN documents d ON cm.document_id = d.id \
-                     WHERE fts_chunks MATCH ? \
-                       {} \
-                     ORDER BY score \
-                     LIMIT ?",
-                    status_filter
-                );
-
-                let mut stmt = match conn.prepare(&sql) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("FTS keyword search prepare failed (FTS index may be missing): {e}");
-                        return Ok::<Vec<SearchResult>, rusqlite::Error>(Vec::new());
-                    }
-                };
-
-                // Build params based on scope. SQL placeholder order is:
-                //   MATCH ?  ,  (status_filter: cm.document_id IN (?, ...))  ,  LIMIT ?
-                // so the collection ids must be bound BEFORE top_k (which fills LIMIT).
-                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query)];
-                for id in &collection_ids {
-                    params.push(Box::new(id.clone()));
-                }
-                params.push(Box::new(top_k_i64));
-
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(params.iter()),
-                    |row| {
-                    let chunk_id: String = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let title: String = row.get(2)?;
-                    let locale: Option<String> = row.get(3)?;
-                    let link: Option<String> = row.get(4)?;
-                    let tags_text: String = row.get(5)?;
-                    let section: Option<String> = row.get(6)?;
-                    let document_id: String = row.get(7)?;
-                    let page_id: String = row.get(8)?;
-                    let sub_index: Option<i64> = row.get(9)?;
-                    let chunk_count: Option<i64> = row.get(10)?;
-                    let raw_score: f64 = row.get(11)?;
-
-                    let tags: Vec<String> = tags_text
-                        .split('\x00')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-
-                    Ok(SearchResult {
-                        chunk_id,
-                        content,
-                        // BM25 returns negative scores; negate for positive ranking.
-                        // RRF only needs relative ordering, but consumers expect higher = better.
-                        score: -raw_score,
-                        document_id,
-                        page_id,
-                        sub_index,
-                        chunk_count,
-                        title,
-                        locale,
-                        link,
-                        tags,
-                        section,
-                    })
-                })?;
-
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row.map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?);
-                }
-                Ok::<Vec<SearchResult>, rusqlite::Error>(results)
-            })
-            .await;
-
-        match result {
-            Ok(results) => Ok(results),
-            Err(e) => {
-                tracing::warn!("FTS keyword search failed, degrading to empty results: {e}");
-                Ok(Vec::new())
-            }
-        }
+        self.store.search_by_keyword(&fts_query, top_k, scope).await
     }
 
     /// Search the vector store for similar document chunks.
@@ -817,80 +396,9 @@ impl VectorStoreManager {
         end_sub: i64,
         scope: &RetrievalScope,
     ) -> Result<Vec<NeighborChunk>, CoreError> {
-        let pid = page_id.to_string();
-
-        let (status_filter, collection_ids) = scope.filter_sql();
-
-        self.conn
-            .call(move |conn| {
-                let sql = format!(
-                    "SELECT chunk_id, content, sub_index, chunk_count, title, locale, link, tags, section, page_id, document_id \
-                     FROM chunk_metadata cm \
-                     JOIN documents d ON cm.document_id = d.id \
-                     WHERE cm.page_id = ? AND cm.sub_index >= ? AND cm.sub_index < ? \
-                       AND cm.chunk_count IS NOT NULL \
-                       {} \
-                     ORDER BY cm.sub_index",
-                    status_filter
-                );
-
-                let mut stmt = conn.prepare(&sql)?;
-
-                // Build params based on scope
-                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-                    Box::new(pid),
-                    Box::new(start_sub),
-                    Box::new(end_sub),
-                ];
-                for id in &collection_ids {
-                    params.push(Box::new(id.clone()));
-                }
-
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(params.iter()),
-                    |row| {
-                        let chunk_id: String = row.get(0)?;
-                        let content: String = row.get(1)?;
-                        let sub_index: Option<i64> = row.get(2)?;
-                        let chunk_count: Option<i64> = row.get(3)?;
-                        let title: String = row.get(4)?;
-                        let locale: Option<String> = row.get(5)?;
-                        let link: Option<String> = row.get(6)?;
-                        let tags_text: String = row.get(7)?;
-                        let section: Option<String> = row.get(8)?;
-                        let page_id: String = row.get(9)?;
-                        let document_id: String = row.get(10)?;
-
-                        let tags: Vec<String> = tags_text
-                            .split('\x00')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-
-                        Ok(NeighborChunk {
-                            chunk_id,
-                            content,
-                            sub_index,
-                            chunk_count,
-                            title,
-                            locale,
-                            link,
-                            tags,
-                            section,
-                            page_id,
-                            document_id,
-                        })
-                    },
-                )?;
-
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row.map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?);
-                }
-                Ok::<Vec<NeighborChunk>, rusqlite::Error>(results)
-            })
+        self.store
+            .get_neighbor_chunks(page_id, start_sub, end_sub, scope)
             .await
-            .map_err(|e| CoreError::DatabaseError(format!("查询邻居分块失败: {e}")))
     }
 
     /// Internal: window expansion on seed hits.
@@ -1086,32 +594,14 @@ impl VectorStoreManager {
     /// 伪装成「空库」，使调用方把基础设施故障当零命中静默放行；失败语义
     /// 由调用方决定（空库短路仅在 `Ok(true)` 时生效）。
     pub async fn is_empty(&self) -> Result<bool, CoreError> {
-        let count: i64 = self
-            .conn
-            .call(move |conn| {
-                let count: i64 =
-                    conn.query_row("SELECT COUNT(*) FROM chunk_metadata", [], |row| row.get(0))?;
-                Ok::<i64, rusqlite::Error>(count)
-            })
-            .await
-            .map_err(|e| CoreError::DatabaseError(format!("空库检查失败: {e}")))?;
-        Ok(count == 0)
+        self.store.is_empty().await
     }
 
     /// Check if the vector store has any published documents for a given channel.
     pub async fn has_published_documents_for_channel(&self, channel_id: &str) -> bool {
-        let channel_id = channel_id.to_string();
-        self.conn
-            .call(move |conn| {
-                let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM documents WHERE channel_id = ? AND status = 'published'",
-                    rusqlite::params![channel_id],
-                    |row| row.get(0),
-                )?;
-                Ok::<bool, rusqlite::Error>(count > 0)
-            })
+        self.store
+            .has_published_documents_for_channel(channel_id)
             .await
-            .unwrap_or(false)
     }
 
     /// Check if the vector store has any published documents across the given channels.
@@ -1120,91 +610,16 @@ impl VectorStoreManager {
     /// **any** of the channels has at least one published document (union semantics,
     /// matching `RetrievalScope::Channels`). Returns false for an empty channel list.
     pub async fn has_published_documents_for_channels(&self, channel_ids: &[String]) -> bool {
-        if channel_ids.is_empty() {
-            return false;
-        }
-        let channel_ids = channel_ids.to_vec();
-        self.conn
-            .call(move |conn| {
-                let placeholders = (0..channel_ids.len())
-                    .map(|_| "?")
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT COUNT(*) FROM documents \
-                     WHERE channel_id IN ({}) AND status = 'published'",
-                    placeholders
-                );
-                let params: Vec<&dyn rusqlite::ToSql> = channel_ids
-                    .iter()
-                    .map(|id| id as &dyn rusqlite::ToSql)
-                    .collect();
-                let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
-                Ok::<bool, rusqlite::Error>(count > 0)
-            })
+        self.store
+            .has_published_documents_for_channels(channel_ids)
             .await
-            .unwrap_or(false)
     }
 
     /// Remove all chunks for a document from both vec_chunks and chunk_metadata.
     pub async fn remove_document(&self, document_id: &Uuid) -> Result<(), CoreError> {
-        let doc_id_str = document_id.to_string();
-
-        self.conn
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                let rowids: Vec<i64> = {
-                    let mut stmt =
-                        tx.prepare("SELECT rowid FROM chunk_metadata WHERE document_id = ?")?;
-                    let rows = stmt.query_map(rusqlite::params![doc_id_str], |row| row.get(0))?;
-                    rows.collect::<Result<Vec<_>, _>>()?
-                };
-
-                if rowids.is_empty() {
-                    // Document has no indexed chunks (may have failed during indexing).
-                    // This is a valid state — return Ok to make removal idempotent.
-                    tx.commit()?;
-                    return Ok::<(), rusqlite::Error>(());
-                }
-
-                {
-                    // Delete from fts_chunks first (FTS external content table).
-                    // FTS5 external-content tables may fail on DELETE if the content table
-                    // schema does not exactly match the FTS columns. Tolerate this failure:
-                    // orphaned FTS entries are filtered out by the JOIN on chunk_metadata
-                    // during search, and backfill_fts_index (INSERT OR IGNORE) handles cleanup.
-                    for rowid in &rowids {
-                        if let Err(e) = tx.execute(
-                            "DELETE FROM fts_chunks WHERE rowid = ?",
-                            rusqlite::params![rowid],
-                        ) {
-                            tracing::debug!(
-                                "FTS delete for rowid {} failed (non-critical): {}",
-                                rowid,
-                                e
-                            );
-                        }
-                    }
-                    // Delete from vec_chunks first (foreign data depends on chunk_metadata rowid)
-                    for rowid in &rowids {
-                        tx.execute(
-                            "DELETE FROM vec_chunks WHERE rowid = ?",
-                            rusqlite::params![rowid],
-                        )?;
-                    }
-                    tx.execute(
-                        "DELETE FROM chunk_metadata WHERE document_id = ?",
-                        rusqlite::params![doc_id_str],
-                    )?;
-                }
-
-                tx.commit()?;
-                Ok::<(), rusqlite::Error>(())
-            })
+        self.store
+            .remove_document_chunks(&document_id.to_string())
             .await
-            .map_err(|e| CoreError::DatabaseError(format!("删除文档向量失败: {e}")))?;
-
-        Ok(())
     }
 
     /// Hybrid search combining FTS keyword search and vector search via RRF fusion.
@@ -1622,47 +1037,29 @@ fn trim_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
-
-    static SQLITE_VEC_INIT: Once = Once::new();
-    fn ensure_sqlite_vec_loaded() {
-        SQLITE_VEC_INIT.call_once(|| unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-                *const (),
-                unsafe extern "C" fn(
-                    *mut rusqlite::ffi::sqlite3,
-                    *mut *mut std::os::raw::c_char,
-                    *const rusqlite::ffi::sqlite3_api_routines,
-                ) -> i32,
-            >(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        });
-    }
+    use std::sync::Arc;
 
     /// Create an in-memory SQLite connection with WAL, migrations, and sqlite-vec loaded.
     fn make_sqlite_conn() -> Arc<tokio_rusqlite::Connection> {
-        ensure_sqlite_vec_loaded();
-
-        let mut conn =
-            rusqlite::Connection::open_in_memory().expect("in-memory SQLite should open");
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .expect("WAL mode should be settable");
-        super::super::migration::migrations(1536) // matches text-embedding-3-small default
-            .to_latest(&mut conn)
-            .expect("migrations should run");
-
-        Arc::new(tokio_rusqlite::Connection::from(conn))
+        super::super::storage_sqlite::ensure_sqlite_vec_loaded();
+        Arc::new(tokio_rusqlite::Connection::from(
+            super::super::storage_testing::migrated_memory_conn(1536),
+        ))
     }
 
     /// Build a VectorStoreManager over a fresh in-memory SQLite store using the given
     /// embedding model and the shared test model name ("test-dummy").
     fn make_store(embedding_model: AppEmbeddingModel) -> VectorStoreManager {
-        VectorStoreManager::new(
+        let storage = Storage::Sqlite(super::super::storage_sqlite::SqliteStore::new(
             make_sqlite_conn(),
-            embedding_model,
-            "test-dummy".to_string(),
-        )
+        ));
+        VectorStoreManager::new(storage, embedding_model, "test-dummy".to_string())
+    }
+
+    /// SQLite-only 源内测试专用：取回底层 tokio_rusqlite 连接做数据预置/校验。
+    fn sqlite_conn(store: &VectorStoreManager) -> Arc<tokio_rusqlite::Connection> {
+        super::super::storage_testing::sqlite_handle(&store.store)
+            .expect("SQLite-only 测试不应在 PG 轨道运行")
     }
 
     /// Create a VectorStoreManager backed by in-memory SQLite with all migrations
@@ -1703,8 +1100,7 @@ mod tests {
         let doc_id = document_id.to_string();
         let status_val = status.to_string();
         let channel_id_val = channel_id.map(|s| s.to_string());
-        store
-            .conn
+        sqlite_conn(store)
             .call(move |conn| {
                 conn.execute(
                     "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
@@ -1734,8 +1130,7 @@ mod tests {
         let cc = chunk_count;
         let ndims = store.ndims();
 
-        store
-            .conn
+        sqlite_conn(store)
             .call(move |conn| {
                 let dummy_embedding = vec![0u8; ndims * 4];
 
@@ -1958,32 +1353,6 @@ mod tests {
         );
         assert_eq!(results[0].chunk_id, "r0_chunk_0");
         assert_eq!(results[1].chunk_id, "r0_chunk_1");
-    }
-
-    // Covers: RetrievalScope::Channel generates the correct SQL predicate and binds channel_id.
-    #[test]
-    fn retrieval_scope_channel_filter_sql_includes_channel_and_published() {
-        let scope = RetrievalScope::Channel("help_center".to_string());
-        let (sql, params) = scope.filter_sql();
-        assert_eq!(sql, "AND d.channel_id = ? AND d.status = 'published'");
-        assert_eq!(params, vec!["help_center".to_string()]);
-    }
-
-    // Covers: RetrievalScope::Published keeps the original published-only predicate.
-    #[test]
-    fn retrieval_scope_published_filter_sql_unchanged() {
-        let (sql, params) = RetrievalScope::Published.filter_sql();
-        assert_eq!(sql, "AND d.status = 'published'");
-        assert!(params.is_empty());
-    }
-
-    // Covers: RetrievalScope::Collection binds document ids and skips status filter.
-    #[test]
-    fn retrieval_scope_collection_filter_sql_uses_document_ids() {
-        let ids = vec!["doc_a".to_string(), "doc_b".to_string()];
-        let (sql, params) = RetrievalScope::Collection(ids).filter_sql();
-        assert_eq!(sql, "AND cm.document_id IN (?,?)");
-        assert_eq!(params, vec!["doc_a".to_string(), "doc_b".to_string()]);
     }
 
     // Covers: has_published_documents_for_channel returns true only when the channel has published docs.
@@ -2398,9 +1767,7 @@ mod tests {
         .await;
 
         // Manually insert FTS index for the chunk
-        let store_ref = &store;
-        store_ref
-            .conn
+        sqlite_conn(&store)
             .call(move |conn| {
                 // Find the rowid for the chunk we just inserted
                 let rowid: i64 = conn.query_row(
@@ -2469,8 +1836,7 @@ mod tests {
             .expect("first backfill should succeed");
 
         // Count by matching a term present in both chunks — "backfill"
-        let count_after_first: i64 = store
-            .conn
+        let count_after_first: i64 = sqlite_conn(&store)
             .call(move |conn| {
                 conn.query_row(
                     "SELECT COUNT(*) FROM fts_chunks WHERE fts_chunks MATCH ?",
@@ -2490,8 +1856,7 @@ mod tests {
             .await
             .expect("second backfill should succeed");
 
-        let count_after_second: i64 = store
-            .conn
+        let count_after_second: i64 = sqlite_conn(&store)
             .call(move |conn| {
                 conn.query_row(
                     "SELECT COUNT(*) FROM fts_chunks WHERE fts_chunks MATCH ?",
@@ -2602,8 +1967,7 @@ mod tests {
         let model = store.model_name.clone();
         let hash = super::content_hash(content);
         let cid = chunk_id.to_string();
-        store
-            .conn
+        sqlite_conn(store)
             .call(move |conn| {
                 conn.execute(
                     "UPDATE chunk_metadata SET content_hash = ?, embedding_model = ? WHERE chunk_id = ?",
@@ -2628,8 +1992,7 @@ mod tests {
 
     async fn count_chunks_for_doc(store: &VectorStoreManager, document_id: &str) -> i64 {
         let doc_id = document_id.to_string();
-        store
-            .conn
+        sqlite_conn(store)
             .call(move |conn| {
                 let count: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",

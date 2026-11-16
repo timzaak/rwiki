@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -27,24 +26,6 @@ const MCP_TEST_API_TOKEN: &str = "mcp-test-api-token-12345";
 const HIT_CHANNEL: &str = "help_center";
 const NO_DOCS_CHANNEL: &str = "empty_channel";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 fn mcp_test_channels_config() -> rwiki_core::config::ChannelsConfig {
     let mut channels = HashMap::new();
@@ -85,46 +66,56 @@ async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
 }
 
 async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("mcp").await;
 
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-
+    // 有向量、无 FTS 命中的种子（fts_tokens 为空）：向量可命中、
+    // 关键词不命中；经生产写入路径建行。
     if seed_published {
-        conn.execute(
-            "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-             VALUES (?1, ?2, 'published', ?3, ?4)",
-            rusqlite::params![
+        use rwiki_core::infrastructure::storage::{
+            MetadataStore, NewChunkRow, NewDocument, RetrievalStore,
+        };
+        storage
+            .insert_document(NewDocument {
+                id: "doc-mcp-001".to_string(),
+                file_name: "mcp-seed.md".to_string(),
+                row_count: 1,
+                channel_id: HIT_CHANNEL.to_string(),
+            })
+            .await
+            .expect("seed documents");
+        storage
+            .set_document_status(
                 "doc-mcp-001",
-                "mcp-seed.md",
-                "2026-01-01T00:00:00.000Z",
-                HIT_CHANNEL
-            ],
-        )
-        .expect("seed documents");
-        conn.execute(
-            "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) \
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
+                Some(HIT_CHANNEL),
+                Some("processing"),
+                "published",
+            )
+            .await
+            .expect("publish seed document");
+        storage
+            .insert_chunks(
                 "doc-mcp-001",
-                "chunk-mcp-001",
-                "Rust is a systems programming language.",
-                "Rust Introduction"
-            ],
-        )
-        .expect("seed chunk_metadata");
-        let rowid = conn.last_insert_rowid();
-        // 1536-dim zero embedding (blob), matching text-embedding-3-small.
-        let dummy_embedding = vec![0u8; 1536 * 4];
-        conn.execute(
-            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
-            rusqlite::params![rowid, dummy_embedding],
-        )
-        .expect("seed vec_chunks");
+                vec![NewChunkRow {
+                    chunk_id: "chunk-mcp-001".to_string(),
+                    content: "Rust is a systems programming language.".to_string(),
+                    title: "Rust Introduction".to_string(),
+                    locale: None,
+                    link: None,
+                    tags: vec![],
+                    section: None,
+                    page_id: String::new(),
+                    sub_index: Some(0),
+                    chunk_count: Some(1),
+                    content_hash: "seed-hash-mcp".to_string(),
+                    embedding_model: "text-embedding-3-small".to_string(),
+                    // 1536 维零向量
+                    embedding: vec![0.0; 1536],
+                    fts_tokens: String::new(),
+                }],
+            )
+            .await
+            .expect("seed chunks");
     }
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     // Mockito embeddings mock so query embedding works offline.
     let embed_server = leak_unpooled_mock_server().await;
@@ -153,7 +144,7 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -188,7 +179,7 @@ async fn mcp_app_state(mcp_enabled: bool, seed_published: bool) -> Arc<AppState>
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -977,56 +968,59 @@ async fn mcp_repeated_calls_are_independent() {
 //         isError("topK 必须在 1 到 20 之间") 失败。
 #[tokio::test]
 async fn mcp_search_default_top_k_is_capped_by_limit() {
-    ensure_sqlite_vec_loaded();
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("mcp_cap").await;
 
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    conn.execute(
-        "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-         VALUES (?1, ?2, 'published', ?3, ?4)",
-        rusqlite::params![
+    use rwiki_core::infrastructure::storage::{
+        MetadataStore, NewChunkRow, NewDocument, RetrievalStore,
+    };
+    storage
+        .insert_document(NewDocument {
+            id: "doc-mcp-cap".to_string(),
+            file_name: "cap-seed.md".to_string(),
+            row_count: 25,
+            channel_id: HIT_CHANNEL.to_string(),
+        })
+        .await
+        .expect("seed documents");
+    storage
+        .set_document_status(
             "doc-mcp-cap",
-            "cap-seed.md",
-            "2026-01-01T00:00:00.000Z",
-            HIT_CHANNEL
-        ],
-    )
-    .expect("seed documents");
+            Some(HIT_CHANNEL),
+            Some("processing"),
+            "published",
+        )
+        .await
+        .expect("publish seed document");
     // 25 independent single-chunk pages with strictly increasing distance to
     // the query vector e1, so the KNN top-20 is fixed and asserting the cap
     // is meaningful (the 21st..25th chunks are recallable but must be cut).
+    let mut rows = Vec::with_capacity(25);
     for i in 0..25 {
         let theta = i as f64 * 0.01;
-        conn.execute(
-            "INSERT INTO chunk_metadata \
-             (document_id, chunk_id, content, title, page_id, sub_index, chunk_count) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 1)",
-            rusqlite::params![
-                "doc-mcp-cap",
-                format!("cap-sub-{i:02}"),
-                format!("cap content {i:02}"),
-                format!("Cap Page {i:02}"),
-                format!("cap-page-{i:02}")
-            ],
-        )
-        .expect("seed chunk_metadata");
-        let rowid = conn.last_insert_rowid();
         let mut embedding = vec![0.0f32; 1536];
         embedding[0] = theta.cos() as f32;
         embedding[1] = theta.sin() as f32;
-        let mut blob = Vec::with_capacity(1536 * 4);
-        for &v in &embedding {
-            blob.extend_from_slice(&v.to_le_bytes());
-        }
-        conn.execute(
-            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
-            rusqlite::params![rowid, blob],
-        )
-        .expect("seed vec_chunks");
+        rows.push(NewChunkRow {
+            chunk_id: format!("cap-sub-{i:02}"),
+            content: format!("cap content {i:02}"),
+            title: format!("Cap Page {i:02}"),
+            locale: None,
+            link: None,
+            tags: vec![],
+            section: None,
+            page_id: format!("cap-page-{i:02}"),
+            sub_index: Some(0),
+            chunk_count: Some(1),
+            content_hash: format!("seed-hash-cap-{i:02}"),
+            embedding_model: "text-embedding-3-small".to_string(),
+            embedding,
+            fts_tokens: String::new(),
+        });
     }
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    storage
+        .insert_chunks("doc-mcp-cap", rows)
+        .await
+        .expect("seed chunks");
 
     // Embeddings mock returns the unit vector e1 (axis 0) so query embedding
     // works offline and the KNN order matches the seeded angles.
@@ -1056,7 +1050,7 @@ async fn mcp_search_default_top_k_is_capped_by_limit() {
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -1091,7 +1085,7 @@ async fn mcp_search_default_top_k_is_capped_by_limit() {
     // max_context_chunks = 50 (> MAX_TOP_K): an unclamped default would
     // reject the call with a topK range error.
     let state = Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

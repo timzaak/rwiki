@@ -4,11 +4,12 @@ use axum::{
     Json,
 };
 use rwiki_core::config::ChannelValidationError;
-use rwiki_core::domain::document::{DocumentRow, DocumentStatus};
+use rwiki_core::domain::document::DocumentStatus;
 use rwiki_core::infrastructure::document_chunk::DocumentChunk;
 use rwiki_core::infrastructure::faq_parser;
 use rwiki_core::infrastructure::markdown_parser;
 use rwiki_core::infrastructure::openapi_parser;
+use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
 use rwiki_core::infrastructure::text_chunker;
 use rwiki_core::infrastructure::vector_store::IndexOptions;
 use rwiki_core::infrastructure::xlsx_parser;
@@ -20,10 +21,6 @@ use uuid::Uuid;
 
 use crate::application::http::errors::{ApiError, ErrorResponse};
 use crate::application::http::state::AppState;
-
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -120,10 +117,6 @@ pub struct BatchStatusItem {
 pub struct BatchStatusResponse {
     pub results: Vec<BatchStatusItem>,
 }
-
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
 
 /// Upload and index a document (.xlsx / .md / .mdx / .json / .jsonl).
 ///
@@ -296,20 +289,15 @@ pub async fn upload_document(
     let parsed_chunks = text_chunker::split_long_chunks_with_section_default(parsed_chunks);
 
     // Insert document record with status `processing`
-    let doc_id_str = document_id.to_string();
-    let file_name_clone = file_name.clone();
-    let channel_id_for_insert = channel_id.clone();
     state
-        .sqlite
-        .call(move |conn| {
-            conn.execute(
-                "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, ?, 'processing', ?, ?)",
-                rusqlite::params![doc_id_str, file_name_clone, row_count, channel_id_for_insert],
-            )?;
-            Ok::<(), rusqlite::Error>(())
+        .store
+        .insert_document(NewDocument {
+            id: document_id.to_string(),
+            file_name: file_name.clone(),
+            row_count,
+            channel_id: channel_id.clone(),
         })
-        .await
-        .map_err(|e| ApiError::internal(format!("数据库写入失败: {e}")))?;
+        .await?;
 
     // Convert parsed chunks to embeddable DocumentChunks
     let chunks: Vec<DocumentChunk> = parsed_chunks
@@ -335,33 +323,21 @@ pub async fn upload_document(
             } else {
                 tracing::info!(%document_id, indexed = stats.indexed, "上传文档索引完成");
             }
-            // Update status to `draft`
-            let doc_id_str = document_id.to_string();
+            // Update status to `draft` (upload success path: by id only, no from-status guard)
             state
-                .sqlite
-                .call(move |conn| {
-                    conn.execute(
-                        "UPDATE documents SET status = 'draft' WHERE id = ?",
-                        rusqlite::params![doc_id_str],
-                    )?;
-                    Ok::<(), rusqlite::Error>(())
-                })
+                .store
+                .set_document_status(&document_id.to_string(), None, None, "draft")
                 .await
                 .map_err(|e| ApiError::internal(format!("更新文档状态失败: {e}")))?;
 
-            let doc_id_str = document_id.to_string();
-            let created_at: String = state
-                .sqlite
-                .call(move |conn| {
-                    let created_at: String = conn.query_row(
-                        "SELECT created_at FROM documents WHERE id = ?",
-                        rusqlite::params![doc_id_str],
-                        |row| row.get(0),
-                    )?;
-                    Ok::<String, rusqlite::Error>(created_at)
-                })
+            let record = state
+                .store
+                .get_document(&document_id.to_string(), None)
                 .await
-                .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?;
+                .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?
+                .ok_or_else(|| ApiError::internal("查询文档失败: 文档不存在"))?;
+
+            let created_at = record.created_at;
 
             Ok(Json(UploadDocumentResponse {
                 id: document_id,
@@ -375,16 +351,9 @@ pub async fn upload_document(
         Err(e) => {
             // Update status to `failed`
             let err_msg = e.to_string();
-            let doc_id_str = document_id.to_string();
             let _ = state
-                .sqlite
-                .call(move |conn| {
-                    conn.execute(
-                        "UPDATE documents SET status = 'failed', error_message = ? WHERE id = ?",
-                        rusqlite::params![err_msg, doc_id_str],
-                    )?;
-                    Ok::<(), rusqlite::Error>(())
-                })
+                .store
+                .mark_document_failed(&document_id.to_string(), &err_msg)
                 .await;
 
             Err(ApiError::internal("文件处理失败，请稍后重试"))
@@ -421,27 +390,9 @@ pub async fn list_documents(
         })?
         .to_string();
 
-    let rows: Vec<DocumentRow> = state
-        .sqlite
-        .call(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, file_name, status, row_count, channel_id, error_message, created_at FROM documents WHERE channel_id = ? ORDER BY created_at DESC",
-            )?;
-            let rows = stmt
-                .query_map(rusqlite::params![channel_id], |row| {
-                    Ok(DocumentRow {
-                        id: row.get(0)?,
-                        file_name: row.get(1)?,
-                        status: row.get(2)?,
-                        row_count: row.get(3)?,
-                        channel_id: row.get(4)?,
-                        error_message: row.get(5)?,
-                        created_at: row.get(6)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<Vec<DocumentRow>, rusqlite::Error>(rows)
-        })
+    let rows = state
+        .store
+        .list_documents_by_channel(&channel_id)
         .await
         .map_err(|e| ApiError::internal(format!("获取文档列表失败: {e}")))?;
 
@@ -502,17 +453,12 @@ pub async fn delete_document(
     let doc_id_str = document_id.to_string();
 
     // Verify the document exists and belongs to the requested channel
-    let exists: bool = state
-        .sqlite
-        .call(move |conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
-                rusqlite::params![doc_id_str, channel_id],
-                |row| row.get(0),
-            )
-        })
+    let exists = state
+        .store
+        .get_document(&doc_id_str, Some(&channel_id))
         .await
-        .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?
+        .is_some();
 
     if !exists {
         return Err(ApiError::not_found("文档不存在"));
@@ -526,17 +472,9 @@ pub async fn delete_document(
     }
 
     // Now safe to delete from DB
-    let doc_id_str = document_id.to_string();
-    let channel_id = query.channel_id.trim().to_string();
     state
-        .sqlite
-        .call(move |conn| {
-            conn.execute(
-                "DELETE FROM documents WHERE id = ? AND channel_id = ?",
-                rusqlite::params![doc_id_str, channel_id],
-            )?;
-            Ok::<(), rusqlite::Error>(())
-        })
+        .store
+        .delete_document_row(&doc_id_str, Some(&channel_id))
         .await
         .map_err(|e| ApiError::internal(format!("删除文档失败: {e}")))?;
 
@@ -583,30 +521,18 @@ pub async fn publish_document(
 
     let doc_id_str = document_id.to_string();
     let rows_affected = state
-        .sqlite
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE documents SET status = 'published' WHERE id = ? AND channel_id = ? AND status = 'draft'",
-                rusqlite::params![doc_id_str, channel_id],
-            )
-        })
+        .store
+        .set_document_status(&doc_id_str, Some(&channel_id), Some("draft"), "published")
         .await
         .map_err(|e| ApiError::internal(format!("更新文档状态失败: {e}")))?;
 
     if rows_affected == 0 {
-        let doc_id_str = document_id.to_string();
-        let channel_id = query.channel_id.trim().to_string();
-        let exists: bool = state
-            .sqlite
-            .call(move |conn| {
-                conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
-                    rusqlite::params![doc_id_str, channel_id],
-                    |row| row.get(0),
-                )
-            })
+        let exists = state
+            .store
+            .get_document(&doc_id_str, Some(&channel_id))
             .await
-            .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?;
+            .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?
+            .is_some();
 
         if !exists {
             return Err(ApiError::not_found("文档不存在"));
@@ -660,30 +586,18 @@ pub async fn unpublish_document(
 
     let doc_id_str = document_id.to_string();
     let rows_affected = state
-        .sqlite
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE documents SET status = 'draft' WHERE id = ? AND channel_id = ? AND status = 'published'",
-                rusqlite::params![doc_id_str, channel_id],
-            )
-        })
+        .store
+        .set_document_status(&doc_id_str, Some(&channel_id), Some("published"), "draft")
         .await
         .map_err(|e| ApiError::internal(format!("更新文档状态失败: {e}")))?;
 
     if rows_affected == 0 {
-        let doc_id_str = document_id.to_string();
-        let channel_id = query.channel_id.trim().to_string();
-        let exists: bool = state
-            .sqlite
-            .call(move |conn| {
-                conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ? AND channel_id = ?)",
-                    rusqlite::params![doc_id_str, channel_id],
-                    |row| row.get(0),
-                )
-            })
+        let exists = state
+            .store
+            .get_document(&doc_id_str, Some(&channel_id))
             .await
-            .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?;
+            .map_err(|e| ApiError::internal(format!("查询文档失败: {e}")))?
+            .is_some();
 
         if !exists {
             return Err(ApiError::not_found("文档不存在"));
@@ -750,165 +664,60 @@ pub async fn batch_update_status(
         .copied()
         .collect();
 
-    let results = state
-        .sqlite
-        .call(move |conn| {
-            let tx = conn.transaction()?;
-
-            // 1. Fetch current status for all requested IDs belonging to the channel
-            let mut current_statuses = HashMap::new();
-            if !all_ids.is_empty() {
-                // Build parameterized query with proper rusqlite params handling
-                let statuses: Vec<(String, String)> = if all_ids.len() <= 900 {
-                    // rusqlite supports up to ~900 parameters, use direct IN clause
-                    let placeholders = (0..all_ids.len())
-                        .map(|_| "?")
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    let sql = format!(
-                        "SELECT id, status FROM documents WHERE channel_id = ? AND id IN ({})",
-                        placeholders
-                    );
-
-                    let ids_as_strings: Vec<String> =
-                        all_ids.iter().map(|u| u.to_string()).collect();
-                    let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                        Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
-                    )
-                    .chain(
-                        ids_as_strings
-                            .iter()
-                            .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::ToSql>),
-                    )
-                    .collect();
-
-                    // 占位符数量随批次大小变化,prepare_cached 按 SQL 文本做缓存键,
-                    // 此处永远命中不到缓存且会持续泄漏条目,改用 prepare。
-                    let mut stmt = tx.prepare(&sql)?;
-                    let rows =
-                        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                            let id: String = row.get(0)?;
-                            let status: String = row.get(1)?;
-                            Ok((id, status))
-                        })?;
-
-                    rows.filter_map(|r| r.ok()).collect()
-                } else {
-                    // For very large batches, use iterative approach (unlikely in practice)
-                    all_ids
-                        .iter()
-                        .filter_map(|id| {
-                            tx.query_row(
-                                "SELECT id, status FROM documents WHERE channel_id = ? AND id = ?",
-                                rusqlite::params![channel_id.clone(), id.to_string()],
-                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                            )
-                            .ok()
-                        })
-                        .collect()
-                };
-
-                for (id_str, status) in statuses {
-                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
-                        current_statuses.insert(uuid, status);
-                    }
-                }
-            }
-
-            // 2. Build results array with individual guards
-            let mut response_items = Vec::new();
-            let mut valid_publish_ids = Vec::new();
-            let mut valid_unpublish_ids = Vec::new();
-
-            for id in &publish_ids {
-                let (applied, final_status, reason) = match current_statuses.get(id) {
-                    None => (
-                        false,
-                        "not_found".to_string(),
-                        Some("not_found".to_string()),
-                    ),
-                    Some(status) if status == "draft" => {
-                        valid_publish_ids.push(*id);
-                        (true, "published".to_string(), None)
-                    }
-                    Some(status) => (false, status.clone(), Some("invalid_status".to_string())),
-                };
-                response_items.push(BatchStatusItem {
-                    document_id: *id,
-                    action: BatchAction::Publish,
-                    applied,
-                    status: final_status,
-                    reason,
-                });
-            }
-
-            for id in &unpublish_ids {
-                let (applied, final_status, reason) = match current_statuses.get(id) {
-                    None => (
-                        false,
-                        "not_found".to_string(),
-                        Some("not_found".to_string()),
-                    ),
-                    Some(status) if status == "published" => {
-                        valid_unpublish_ids.push(*id);
-                        (true, "draft".to_string(), None)
-                    }
-                    Some(status) => (false, status.clone(), Some("invalid_status".to_string())),
-                };
-                response_items.push(BatchStatusItem {
-                    document_id: *id,
-                    action: BatchAction::Unpublish,
-                    applied,
-                    status: final_status,
-                    reason,
-                });
-            }
-
-            // 3. Execute batched updates with proper parameterization.
-            // SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER=999,单臂 >999 个合法 ID 会让
-            // IN 子句参数超限并回滚整个事务。按 900 分块,每块仍保留状态守卫。
-            const UPDATE_CHUNK: usize = 900;
-
-            for chunk in valid_publish_ids.chunks(UPDATE_CHUNK) {
-                let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
-                let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-                let sql = format!(
-                    "UPDATE documents SET status='published' WHERE channel_id = ? AND id IN ({}) AND status='draft'",
-                    placeholders
-                );
-                let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                    Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
-                )
-                .chain(ids.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>))
-                .collect();
-                tx.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
-            }
-
-            for chunk in valid_unpublish_ids.chunks(UPDATE_CHUNK) {
-                let ids: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
-                let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-                let sql = format!(
-                    "UPDATE documents SET status='draft' WHERE channel_id = ? AND id IN ({}) AND status='published'",
-                    placeholders
-                );
-                let params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(
-                    Box::new(channel_id.clone()) as Box<dyn rusqlite::ToSql>,
-                )
-                .chain(ids.into_iter().map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>))
-                .collect();
-                tx.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
-            }
-
-            tx.commit()?;
-
-            Ok::<BatchStatusResponse, rusqlite::Error>(BatchStatusResponse {
-                results: response_items,
-            })
-        })
+    // 读取与应用之间的极小竞态由存储侧守卫更新兜底，误分类按 invalid_status 回报
+    let statuses: HashMap<Uuid, String> = state
+        .store
+        .document_statuses(&channel_id, &all_ids)
         .await
-        .map_err(|e| ApiError::internal(format!("批量状态更新失败: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("批量状态更新失败: {e}")))?
+        .into_iter()
+        .filter_map(|(id, status)| Uuid::parse_str(&id).ok().map(|u| (u, status)))
+        .collect();
 
-    Ok(Json(results))
+    let applied_flags = state
+        .store
+        .set_documents_status(&channel_id, &publish_ids, &unpublish_ids)
+        .await
+        .map_err(|e| ApiError::internal(format!("批量状态更新失败: {e}")))?;
+    let applied_map: HashMap<Uuid, bool> = applied_flags.into_iter().collect();
+
+    let mut response_items = Vec::new();
+
+    for id in &publish_ids {
+        let applied = applied_map.get(id).copied().unwrap_or(false);
+        let (final_status, reason) = match statuses.get(id) {
+            None => ("not_found".to_string(), Some("not_found".to_string())),
+            Some(_) if applied => ("published".to_string(), None),
+            Some(status) => (status.clone(), Some("invalid_status".to_string())),
+        };
+        response_items.push(BatchStatusItem {
+            document_id: *id,
+            action: BatchAction::Publish,
+            applied,
+            status: final_status,
+            reason,
+        });
+    }
+
+    for id in &unpublish_ids {
+        let applied = applied_map.get(id).copied().unwrap_or(false);
+        let (final_status, reason) = match statuses.get(id) {
+            None => ("not_found".to_string(), Some("not_found".to_string())),
+            Some(_) if applied => ("draft".to_string(), None),
+            Some(status) => (status.clone(), Some("invalid_status".to_string())),
+        };
+        response_items.push(BatchStatusItem {
+            document_id: *id,
+            action: BatchAction::Unpublish,
+            applied,
+            status: final_status,
+            reason,
+        });
+    }
+
+    Ok(Json(BatchStatusResponse {
+        results: response_items,
+    }))
 }
 
 /// 去重并保留首次出现顺序。

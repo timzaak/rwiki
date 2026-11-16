@@ -18,7 +18,6 @@ dotenv = { workspace = true }
 tokio-rusqlite = { workspace = true }
 rusqlite = { workspace = true }
 rusqlite_migration = { workspace = true }
-sqlite-vec = { workspace = true }
 axum = { workspace = true }
 ipnet = { workspace = true }
 

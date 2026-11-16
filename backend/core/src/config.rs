@@ -33,6 +33,10 @@ pub struct AppConfig {
     /// 存在段（即使为空）即视为启用，参照 rerank/low_recall 惯例。
     #[serde(default)]
     pub mcp: Option<McpConfig>,
+    /// PostgreSQL 存储后端配置；省略整个 `[postgres]` 段 → None（默认 SQLite
+    /// 模式，行为零变更）。段存在即启用 PG 模式（快速失败，不静默回退）。
+    #[serde(default)]
+    pub postgres: Option<PostgresConfig>,
     /// 多频道配置；省略 `[channels]` 段 → 空频道列表。
     /// 系统启动时校验至少存在一个已配置频道。
     #[serde(default)]
@@ -64,6 +68,14 @@ impl AppConfig {
             // section means rerank is disabled, so there is nothing to override.
             if let Some(rerank) = config.rerank.as_mut() {
                 rerank.api_key = Some(key);
+            }
+        }
+        if let Ok(url) = env::var("POSTGRES_URL") {
+            // POSTGRES_URL 仅当 [postgres] 段存在时生效（覆盖 url）；
+            // 段省略时环境变量被忽略，保持默认 SQLite 模式——
+            // 「段存在即启用」优先于环境变量。
+            if let Some(postgres) = config.postgres.as_mut() {
+                postgres.url = url;
             }
         }
         Ok(config)
@@ -108,6 +120,32 @@ pub struct ServerConfig {
 pub struct SqliteConfig {
     /// SQLite 数据库文件路径，默认 "data/rwiki.db"
     pub path: String,
+}
+
+fn default_pg_max_connections() -> u32 {
+    10
+}
+
+fn default_pg_acquire_timeout_secs() -> u64 {
+    10
+}
+
+/// PostgreSQL 存储后端配置（企业部署可选）。
+/// 省略整个 `[postgres]` 段 → None（默认 SQLite 模式，与 `[rerank]`/`[low_recall]`/
+/// `[mcp]` 的「段存在即启用、省略即关闭」惯例一致）。
+/// 段存在时 url 必填非空（启动快速失败，不静默回退）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    /// 连接串，如 "postgres://user:pass@host:5432/rwiki?sslmode=require"。
+    /// 可经环境变量 POSTGRES_URL 覆盖（仅当 [postgres] 段存在时生效）。
+    pub url: String,
+    /// 池上限（默认 10，保守值：单实例服务 + 少量并发检索足够，
+    /// 避免挤占企业 PG 的连接配额）。
+    #[serde(default = "default_pg_max_connections")]
+    pub max_connections: u32,
+    /// 取连接超时秒数（默认 10）。
+    #[serde(default = "default_pg_acquire_timeout_secs")]
+    pub acquire_timeout_secs: u64,
 }
 
 /// LLM 配置（OpenAI 兼容 provider）
@@ -1912,5 +1950,96 @@ mod tests {
         validate_historical_rows_have_channel_id(&sqlite, &["documents"])
             .await
             .expect("validation should pass after backfill");
+    }
+
+    // Covers: US-INFRA-001 — [postgres] 段省略 → None（默认 SQLite 模式零变更）；
+    // 段存在 + 缺 url → 反序列化失败且错误指名 url 字段（快速失败不静默回退）。
+    #[test]
+    fn postgres_config_section_semantics() {
+        let base = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+        "#;
+
+        let config: AppConfig = toml::from_str(base).expect("省略 [postgres] 应反序列化成功");
+        assert!(config.postgres.is_none(), "省略段必须保持默认 SQLite 模式");
+
+        let missing_url = format!("{base}\n[postgres]\nmax_connections = 5\n");
+        let err = toml::from_str::<AppConfig>(&missing_url).expect_err("缺 url 必须快速失败");
+        assert!(
+            err.to_string().contains("url"),
+            "错误应指名 [postgres].url 字段: {err}"
+        );
+
+        let full = format!("{base}\n[postgres]\nurl = \"postgres://u:p@localhost:5432/rwiki\"\n");
+        let config: AppConfig = toml::from_str(&full).expect("完整段应反序列化成功");
+        let pg = config.postgres.expect("段存在即启用");
+        assert_eq!(pg.url, "postgres://u:p@localhost:5432/rwiki");
+        assert_eq!(pg.max_connections, 10, "池上限默认 10");
+        assert_eq!(pg.acquire_timeout_secs, 10, "取连接超时默认 10s");
+    }
+
+    // Covers: US-INFRA-001 — POSTGRES_URL 仅在 [postgres] 段存在时覆盖 url；
+    // 段省略时环境变量被忽略（「段存在即启用」优先于环境变量）。
+    #[test]
+    fn postgres_url_env_override_requires_section() {
+        let base = r#"
+            [server]
+            bind_address = "0.0.0.0:8080"
+            log_level = "info"
+            app_env = "development"
+            enable_openapi = true
+
+            [sqlite]
+            path = "data/rwiki.db"
+
+            [llm]
+            api_key = "test"
+            base_url = "https://example.com"
+            model = "test-model"
+
+            [embedding]
+        "#;
+
+        let env_url = "postgres://env-user:env-pass@env-host:5432/env_db";
+
+        let prev = take_env("POSTGRES_URL");
+        env::set_var("POSTGRES_URL", env_url);
+        let with_section =
+            format!("{base}\n[postgres]\nurl = \"postgres://file-user@file-host:5432/file_db\"\n");
+        let mut file = NamedTempFile::new().expect("temp file");
+        file.write_all(with_section.as_bytes())
+            .expect("write config");
+        let config = AppConfig::load(file.path()).expect("load with section");
+        restore_env("POSTGRES_URL", prev);
+        assert_eq!(
+            config.postgres.expect("section present").url,
+            env_url,
+            "POSTGRES_URL 应覆盖文件 url"
+        );
+
+        let prev = take_env("POSTGRES_URL");
+        env::set_var("POSTGRES_URL", env_url);
+        let mut file = NamedTempFile::new().expect("temp file");
+        file.write_all(base.as_bytes()).expect("write config");
+        let config = AppConfig::load(file.path()).expect("load without section");
+        restore_env("POSTGRES_URL", prev);
+        assert!(
+            config.postgres.is_none(),
+            "段省略时 POSTGRES_URL 必须被忽略"
+        );
     }
 }

@@ -23,6 +23,10 @@ tokio-rusqlite = { workspace = true }
 rusqlite_migration = { workspace = true }
 zerocopy = { workspace = true }
 md5 = { workspace = true }
+sqlx = { workspace = true }
+pgvector = { workspace = true }
+# sqlite-vec：SQLite 后端 vec0 虚表（storage_sqlite::ensure_sqlite_vec_loaded 注册）
+sqlite-vec = { workspace = true }
 
 # Time & ID
 chrono = { workspace = true }
@@ -44,10 +48,13 @@ opentelemetry = { workspace = true }
 # Chinese word segmentation
 jieba-rs = { workspace = true }
 
+[features]
+# 暴露 storage_testing 测试工厂（api/app 的 dev-dependencies 启用）
+test-support = []
+
 [dev-dependencies]
 mockito = "1"
 rust_xlsxwriter = "0.96"
-sqlite-vec = { workspace = true }
 tempfile = "3"
 opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 tracing-opentelemetry = { workspace = true }

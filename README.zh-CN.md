@@ -44,11 +44,12 @@ RWiki 只做一件事 — 知识库问答 — 并把基础设施压缩到一个�
 
 ## 特性
 
-- **流式对话问答** — 提问，获取带结构化引用（标题、章节、链接、标签）的回答
+- **流式对话问答** — 提问，获取带结构化引用（标题、章节、链接、标签）的回答。会话历史保存在访客浏览器中（按频道隔离，不上传服务器），回答支持一键复制
 - **混合搜索** — FTS5 全文 + 向量相似度，使用 RRF 融合提升召回率
+- **公开站点搜索** — 每个频道页自带搜索框（结果高亮、键盘导航、ask-AI 转接），底层是公开的 `POST /api/search` 端点 — 默认纯 FTS5 关键词检索（无需凭据、不调用 LLM、毫秒级响应），可通过 `[retrieval].public_search_mode = "hybrid"` 切换为完整混合检索管线
 - **Rerank 重排（可选）** — 在混合搜索后对候选片段做语义重排，提升检索精度。支持 OpenRouter、智谱 BigModel、阿里云 DashScope。通过 `[rerank]` 配置段开启（未配置时零开销）；失败时自动降级为融合结果。
 - **查询改写与扩展** — 自动查询改写与多查询扩展，处理模糊提问
-- **可嵌入聊天组件** — 单个 JS 文件，Shadow DOM，两行 HTML 嵌入任意网站
+- **可嵌入聊天组件** — 单个 JS 文件，Shadow DOM，两行 HTML 嵌入任意网站；支持弹窗与侧边栏两种展示模式
 - **MCP Server（可选）** — 将知识库问答与检索以只读 MCP 工具（`rwiki_qa`、`rwiki_search`）暴露给 Claude Code、Cursor 等 Agent 客户端，Streamable HTTP 传输，每个已配置频道一个公开入口（`/mcp/<channelId>`，无需凭据）。通过 `[mcp]` 配置段开启（未配置时入口不挂载）
 - **多格式导入** — Markdown 文件、XLSX 表格、OpenAPI 规格
 - **API 文档助手** — 上传 OpenAPI 规格，向 API 提问
@@ -70,6 +71,10 @@ docker run -d -p 8080:8080 \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```
+
+### PostgreSQL（可选）
+
+面向需要托管/集中数据库的企业部署：在 `config.toml` 增加 `[postgres]` 段即可把存储后端切换到自备的 PostgreSQL 实例（需启用 pgvector 扩展，≥0.8）。省略该段则保持默认的零依赖单文件 SQLite 模式，一切行为不变。实例不可达或缺少 pgvector 时启动快速失败并指明问题（不静默回退）。Docker 镜像不变；上传、混合检索、聊天、反馈、MCP 等全部能力在两种后端下行为对等。完整选项见 `backend/config/config.example.toml`。
 
 ### 从源码构建
 

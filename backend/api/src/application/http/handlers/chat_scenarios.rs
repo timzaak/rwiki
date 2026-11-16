@@ -27,7 +27,6 @@ use super::chat::{
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -743,22 +742,6 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
-static LOW_RECALL_SQLITE_VEC_INIT: Once = Once::new();
-fn low_recall_ensure_sqlite_vec_loaded() {
-    LOW_RECALL_SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
-
 /// Build a minimal `AppState` identical to the rerank/feedback test-app-state
 /// construction (in-memory sqlite + migrations + seeded `chunk_metadata` row
 /// so the chat handler proceeds past the "knowledge base empty" guard, plus a
@@ -781,37 +764,42 @@ async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
 }
 
 async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) -> Arc<AppState> {
-    low_recall_ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
+    let storage =
+        rwiki_core::infrastructure::storage_testing::make_storage("chat_low_recall").await;
 
     // Seed a published document for the configured channel. This satisfies the
     // chat handler's channel-scope published-document guard.
-    let created_at = "2026-01-01T00:00:00.000Z";
-    conn.execute(
-        "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-         VALUES (?1, ?2, 'published', ?3, ?4)",
-        rusqlite::params![
+    use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
+    storage
+        .insert_document(NewDocument {
+            id: LOW_RECALL_DOC_ID.to_string(),
+            file_name: "test.md".to_string(),
+            row_count: 1,
+            channel_id: LOW_RECALL_CHANNEL_ID.to_string(),
+        })
+        .await
+        .expect("seed documents");
+    storage
+        .set_document_status(
             LOW_RECALL_DOC_ID,
-            "test.md",
-            created_at,
-            LOW_RECALL_CHANNEL_ID
-        ],
-    )
-    .expect("seed documents");
+            Some(LOW_RECALL_CHANNEL_ID),
+            Some("processing"),
+            "published",
+        )
+        .await
+        .expect("publish seed document");
 
     // Seed a dummy chunk so vector_store.is_empty() returns false, allowing the
     // chat handler to proceed. The seeded chunk has no vec_chunks row, so the
     // handler sees zero results and records a "完全未命中" row (top_score NULL).
-    conn.execute(
-        "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![LOW_RECALL_DOC_ID, "test-chunk", "seed content", "Seed Title"],
+    rwiki_core::infrastructure::storage_testing::seed_chunk_metadata_only(
+        &storage,
+        LOW_RECALL_DOC_ID,
+        "test-chunk",
+        "seed content",
+        "Seed Title",
     )
-    .expect("seed chunk_metadata");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    .await;
 
     // Channel configuration that matches the seeded document.
     let mut channels = HashMap::new();
@@ -859,7 +847,7 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -869,7 +857,7 @@ async fn build_low_recall_app_state(low_recall_config: Option<LowRecallConfig>) 
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -907,42 +895,20 @@ async fn test_app_state_low_recall_disabled() -> Arc<AppState> {
 
 /// Count rows in `low_recall_records` for the given AppState's sqlite handle.
 async fn count_low_recall_records(state: &Arc<AppState>) -> i64 {
-    state
-        .sqlite
-        .call(|conn| -> Result<i64, rusqlite::Error> {
-            let count: i64 =
-                conn.query_row("SELECT COUNT(*) FROM low_recall_records", [], |row| {
-                    row.get(0)
-                })?;
-            Ok(count)
-        })
+    rwiki_core::infrastructure::storage_testing::fetch_low_recall_rows(&state.store)
         .await
-        .expect("count low_recall_records")
+        .len() as i64
 }
 
 /// Read the `channel_id` of the most recently inserted `low_recall_records`
 /// row whose `query` contains `query_substr`.
 async fn read_low_recall_channel_id(state: &Arc<AppState>, query_substr: &str) -> Option<String> {
-    let needle = format!("%{query_substr}%");
-    state
-        .sqlite
-        .call(move |conn| -> Result<Option<String>, rusqlite::Error> {
-            let mut stmt = conn.prepare(
-                "SELECT channel_id FROM low_recall_records \
-                     WHERE query LIKE ?1 \
-                     ORDER BY id DESC LIMIT 1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![needle])?;
-            match rows.next()? {
-                Some(row) => {
-                    let channel_id: Option<String> = row.get(0)?;
-                    Ok(channel_id)
-                }
-                None => Ok(None),
-            }
-        })
+    rwiki_core::infrastructure::storage_testing::fetch_low_recall_rows(&state.store)
         .await
-        .expect("read low_recall channel_id")
+        .iter()
+        .rev()
+        .find(|(_, _, query, _)| query.contains(query_substr))
+        .and_then(|(_, channel_id, _, _)| channel_id.clone())
 }
 
 /// Read the `top_score` of the most recently inserted `low_recall_records`
@@ -953,29 +919,12 @@ async fn read_low_recall_channel_id(state: &Arc<AppState>, query_substr: &str) -
 /// - `Some(None)` — a row exists but `top_score IS NULL` (zero-result path).
 /// - `Some(Some(score))` — a row exists with a non-null top_score.
 async fn read_top_score(state: &Arc<AppState>, query_substr: &str) -> Option<Option<f64>> {
-    let needle = format!("%{query_substr}%");
-    state
-        .sqlite
-        .call(
-            move |conn| -> Result<Option<Option<f64>>, rusqlite::Error> {
-                let mut stmt = conn.prepare(
-                    "SELECT top_score FROM low_recall_records \
-                 WHERE query LIKE ?1 \
-                 ORDER BY id DESC LIMIT 1",
-                )?;
-                let mut rows = stmt.query(rusqlite::params![needle])?;
-                match rows.next()? {
-                    Some(row) => {
-                        // top_score is nullable; read as Option<f64>.
-                        let top_score: Option<f64> = row.get(0)?;
-                        Ok(Some(top_score))
-                    }
-                    None => Ok(None),
-                }
-            },
-        )
+    rwiki_core::infrastructure::storage_testing::fetch_low_recall_rows(&state.store)
         .await
-        .expect("read top_score")
+        .iter()
+        .rev()
+        .find(|(_, _, query, _)| query.contains(query_substr))
+        .map(|(_, _, _, top_score)| *top_score)
 }
 
 /// Build a public `/api/chat` POST request with JSON body.
@@ -1300,14 +1249,7 @@ fn channel_chat_channels_config() -> ChannelsConfig {
 /// false. The embeddings endpoint is mocked so that additional documents can be
 /// indexed without hitting the real OpenAI API.
 async fn build_channel_chat_app_state() -> Arc<AppState> {
-    low_recall_ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("chat_channel").await;
 
     let embed_server = leak_unpooled_mock_server().await;
     let dummy_embedding: Vec<f64> = vec![0.0; 1536];
@@ -1336,7 +1278,7 @@ async fn build_channel_chat_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -1346,7 +1288,7 @@ async fn build_channel_chat_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     let state = Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -1384,22 +1326,25 @@ async fn seed_channel_published_document(
     content: &str,
 ) {
     let doc_uuid = Uuid::parse_str(doc_id).expect("valid uuid");
-    let created_at = "2026-01-01T00:00:00.000Z";
-    let channel_id = channel_id.to_string();
-    let doc_id_str = doc_id.to_string();
 
-    state
-        .sqlite
-        .call(move |conn| -> Result<(), rusqlite::Error> {
-            conn.execute(
-                "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-                 VALUES (?1, ?2, 'published', ?3, ?4)",
-                rusqlite::params![doc_id_str, "test.md", created_at, channel_id],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("insert channel document");
+    {
+        use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
+        state
+            .store
+            .insert_document(NewDocument {
+                id: doc_id.to_string(),
+                file_name: "test.md".to_string(),
+                row_count: 1,
+                channel_id: channel_id.to_string(),
+            })
+            .await
+            .expect("insert channel document");
+        state
+            .store
+            .set_document_status(doc_id, Some(channel_id), Some("processing"), "published")
+            .await
+            .expect("publish channel document");
+    }
 
     let chunk = DocumentChunk {
         id: format!("{doc_id}-chunk"),
@@ -2034,62 +1979,60 @@ fn interrupted_flag_participates_uniformly_and_never_leaks_into_prompts() {
 async fn build_low_recall_app_state_with_design_vector_seeds(
     low_recall_config: Option<LowRecallConfig>,
 ) -> Arc<AppState> {
-    low_recall_ensure_sqlite_vec_loaded();
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("chat_rank").await;
 
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-
-    let created_at = "2026-01-01T00:00:00.000Z";
-    let seed_doc = |conn: &mut rusqlite::Connection, doc_id: &str, file_name: &str| {
-        conn.execute(
-            "INSERT INTO documents (id, file_name, status, created_at, channel_id) \
-             VALUES (?1, ?2, 'published', ?3, ?4)",
-            rusqlite::params![doc_id, file_name, created_at, LOW_RECALL_CHANNEL_ID],
-        )
-        .expect("seed documents");
+    use rwiki_core::infrastructure::storage::{
+        MetadataStore, NewChunkRow, NewDocument, RetrievalStore,
     };
-    seed_doc(&mut conn, "doc-rank-a", "rank-a.md");
-    seed_doc(&mut conn, "doc-rank-b", "rank-b.md");
+    for (doc_id, file_name) in [("doc-rank-a", "rank-a.md"), ("doc-rank-b", "rank-b.md")] {
+        storage
+            .insert_document(NewDocument {
+                id: doc_id.to_string(),
+                file_name: file_name.to_string(),
+                row_count: 1,
+                channel_id: LOW_RECALL_CHANNEL_ID.to_string(),
+            })
+            .await
+            .expect("seed documents");
+        storage
+            .set_document_status(
+                doc_id,
+                Some(LOW_RECALL_CHANNEL_ID),
+                Some("processing"),
+                "published",
+            )
+            .await
+            .expect("publish seed document");
+    }
 
     // KNN order against the mocked query vector e1 is fixed:
     // b-sub1 (e1, rank 0) > b-sub0 (mid, rank 1) > a-sub0 (e2, rank 2).
     // Titles share no lexical tokens with the test message, so the title
     // bonus never fires and scores stay the raw RRF fusion scores.
-    let seed_chunk = |conn: &mut rusqlite::Connection,
-                      doc_id: &str,
+    let seed_chunk = |_doc_id: &str,
                       chunk_id: &str,
                       page_id: &str,
                       sub_index: i64,
                       chunk_count: i64,
                       title: &str,
-                      embedding: Vec<f32>| {
-        conn.execute(
-            "INSERT INTO chunk_metadata \
-             (document_id, chunk_id, content, title, page_id, sub_index, chunk_count) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                doc_id,
-                chunk_id,
-                format!("rank content {chunk_id}"),
-                title,
-                page_id,
-                sub_index,
-                chunk_count
-            ],
-        )
-        .expect("seed chunk_metadata");
-        let rowid = conn.last_insert_rowid();
-        let mut blob = Vec::with_capacity(1536 * 4);
-        for &v in &embedding {
-            blob.extend_from_slice(&v.to_le_bytes());
+                      embedding: Vec<f32>|
+     -> NewChunkRow {
+        NewChunkRow {
+            chunk_id: chunk_id.to_string(),
+            content: format!("rank content {chunk_id}"),
+            title: title.to_string(),
+            locale: None,
+            link: None,
+            tags: vec![],
+            section: None,
+            page_id: page_id.to_string(),
+            sub_index: Some(sub_index),
+            chunk_count: Some(chunk_count),
+            content_hash: format!("seed-hash-{chunk_id}"),
+            embedding_model: "text-embedding-3-small".to_string(),
+            embedding,
+            fts_tokens: String::new(),
         }
-        conn.execute(
-            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
-            rusqlite::params![rowid, blob],
-        )
-        .expect("seed vec_chunks");
     };
     let unit = |a: f64, b: f64| {
         let mut v = vec![0.0f32; 1536];
@@ -2098,8 +2041,7 @@ async fn build_low_recall_app_state_with_design_vector_seeds(
         v
     };
     let mid = 1.0f64 / 2.0f64.sqrt();
-    seed_chunk(
-        &mut conn,
+    let row_a = seed_chunk(
         "doc-rank-a",
         "rank-a-sub0",
         "rank-page-a",
@@ -2108,27 +2050,34 @@ async fn build_low_recall_app_state_with_design_vector_seeds(
         "Alpha Page",
         unit(0.0, 1.0),
     );
-    seed_chunk(
-        &mut conn,
-        "doc-rank-b",
-        "rank-b-sub0",
-        "rank-page-b",
-        0,
-        2,
-        "Beta Page",
-        unit(mid, mid),
-    );
-    seed_chunk(
-        &mut conn,
-        "doc-rank-b",
-        "rank-b-sub1",
-        "rank-page-b",
-        1,
-        2,
-        "Beta Page",
-        unit(1.0, 0.0),
-    );
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let rows_b = vec![
+        seed_chunk(
+            "doc-rank-b",
+            "rank-b-sub0",
+            "rank-page-b",
+            0,
+            2,
+            "Beta Page",
+            unit(mid, mid),
+        ),
+        seed_chunk(
+            "doc-rank-b",
+            "rank-b-sub1",
+            "rank-page-b",
+            1,
+            2,
+            "Beta Page",
+            unit(1.0, 0.0),
+        ),
+    ];
+    storage
+        .insert_chunks("doc-rank-a", vec![row_a])
+        .await
+        .expect("seed chunks");
+    storage
+        .insert_chunks("doc-rank-b", rows_b)
+        .await
+        .expect("seed chunks");
 
     let mut channels = HashMap::new();
     channels.insert(
@@ -2169,7 +2118,7 @@ async fn build_low_recall_app_state_with_design_vector_seeds(
         rwiki_core::infrastructure::embedding_model::AppEmbeddingModel::new(embedding_model);
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -2182,7 +2131,7 @@ async fn build_low_recall_app_state_with_design_vector_seeds(
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),

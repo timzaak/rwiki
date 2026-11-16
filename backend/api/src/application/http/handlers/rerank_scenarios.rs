@@ -12,7 +12,6 @@
 //! The chat endpoint is invoked via the Axum test harness (oneshot).
 
 use std::sync::Arc;
-use std::sync::Once;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -26,51 +25,47 @@ use rwiki_core::infrastructure::reranker::RerankerProvider;
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
 
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
-
 /// Build a minimal `AppState` with reranker configured per the given provider
 /// and config. All other fields use test defaults.
 async fn test_app_state_with_reranker(
     reranker: Option<RerankerProvider>,
     rerank_config: RerankConfig,
 ) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("rerank").await;
 
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    // Seed a dummy row so vector_store.is_empty() returns false, allowing
-    // the chat handler to proceed past the "knowledge base empty" guard.
-    conn.execute(
-        "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params!["test-doc", "test-chunk", "seed content", "Seed Title"],
-    )
-    .expect("seed chunk_metadata");
+    use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
     // Seed a published document for the test channel so the public chat handler
-    // passes the "channel has published documents" guard.
-    conn.execute(
-        "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?1, ?2, 'published', 1, ?3)",
-        rusqlite::params!["test-doc", "seed.md", TEST_CHANNEL_ID],
+    // passes the "channel has published documents" guard（PG 轨道 FK 要求
+    // documents 行先于 chunk 存在）。
+    storage
+        .insert_document(NewDocument {
+            id: "test-doc".to_string(),
+            file_name: "seed.md".to_string(),
+            row_count: 1,
+            channel_id: TEST_CHANNEL_ID.to_string(),
+        })
+        .await
+        .expect("seed published document");
+    storage
+        .set_document_status(
+            "test-doc",
+            Some(TEST_CHANNEL_ID),
+            Some("processing"),
+            "published",
+        )
+        .await
+        .expect("publish seed document");
+    // Seed a dummy row so vector_store.is_empty() returns false, allowing
+    // the chat handler to proceed past the "knowledge base empty" guard
+    // （孤儿 chunk：无向量、无 FTS 命中，检索结果为空）。
+    rwiki_core::infrastructure::storage_testing::seed_chunk_metadata_only(
+        &storage,
+        "test-doc",
+        "test-chunk",
+        "seed content",
+        "Seed Title",
     )
-    .expect("seed published document");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    .await;
 
     // Start a mockito server for the embedding API so search_hybrid can
     // embed the query without hitting the real OpenAI endpoint.
@@ -107,7 +102,7 @@ async fn test_app_state_with_reranker(
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -117,7 +112,7 @@ async fn test_app_state_with_reranker(
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),

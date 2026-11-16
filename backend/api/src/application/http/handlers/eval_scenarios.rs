@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -25,27 +24,6 @@ use rwiki_core::config::RerankConfig;
 
 use crate::application::http::create_api_routes;
 use crate::application::http::state::AppState;
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-/// Ensure the sqlite-vec extension is registered globally.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Build a minimal AppState for eval tests.
 /// When `seed_data` is true, inserts a chunk so vector_store.is_empty() returns false.
@@ -62,22 +40,30 @@ async fn leak_unpooled_mock_server() -> &'static mut mockito::Server {
 }
 
 async fn test_app_state(seed_data: bool) -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("eval").await;
 
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-
+    // 孤儿 chunk（无向量/无 FTS 命中）：检索结果为空但结构断言仍然成立；
+    // PG 轨道 FK 要求先建 documents 行（Collection 作用域不受发布状态影响）。
     if seed_data {
-        conn.execute(
-            "INSERT INTO chunk_metadata (document_id, chunk_id, content, title) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["doc-001", "chunk-001", "Rust is a systems programming language.", "Rust Introduction"],
+        use rwiki_core::infrastructure::storage::{MetadataStore, NewDocument};
+        storage
+            .insert_document(NewDocument {
+                id: "doc-001".to_string(),
+                file_name: "eval-seed.md".to_string(),
+                row_count: 1,
+                channel_id: "help_center".to_string(),
+            })
+            .await
+            .expect("seed document");
+        rwiki_core::infrastructure::storage_testing::seed_chunk_metadata_only(
+            &storage,
+            "doc-001",
+            "chunk-001",
+            "Rust is a systems programming language.",
+            "Rust Introduction",
         )
-        .expect("seed chunk_metadata");
+        .await;
     }
-
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
 
     // Mock embedding server
     let embed_server = leak_unpooled_mock_server().await;
@@ -105,7 +91,7 @@ async fn test_app_state(seed_data: bool) -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -138,7 +124,7 @@ async fn test_app_state(seed_data: bool) -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", llm_server.url());
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -189,10 +175,6 @@ async fn parse_json_body(body: Body) -> serde_json::Value {
         .expect("read body");
     serde_json::from_slice(&bytes).expect("parse json")
 }
-
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: Design 4.2.2 -- The eval endpoint requires Bearer token auth.
 // Without a token, the endpoint must return 401.

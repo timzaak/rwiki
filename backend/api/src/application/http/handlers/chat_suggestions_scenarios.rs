@@ -346,29 +346,10 @@ fn prefix_match_is_case_insensitive() {
 // questions.
 
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use tower::ServiceExt;
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 use rwiki_core::config::{ChannelConfig, ChannelsConfig, ChatConfig, RerankConfig};
 
@@ -426,13 +407,8 @@ fn suggestions_channels_config() -> ChannelsConfig {
 /// The endpoint does not exercise the vector store or LLM, but AppState still
 /// requires all fields to be populated.
 async fn test_app_state_for_suggestions() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage =
+        rwiki_core::infrastructure::storage_testing::make_storage("chat_suggestions").await;
 
     let embedding_model = rwiki_core::infrastructure::rig_client::connect(
         rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-suggestions-tests-only"),
@@ -443,7 +419,7 @@ async fn test_app_state_for_suggestions() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -453,7 +429,7 @@ async fn test_app_state_for_suggestions() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

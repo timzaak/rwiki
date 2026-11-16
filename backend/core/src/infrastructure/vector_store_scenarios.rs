@@ -23,40 +23,17 @@ use super::vector_store::tokenize_fallback;
 use super::vector_store::RetrievalScope;
 use super::vector_store::SearchResult;
 use super::vector_store::VectorStoreManager;
-use std::sync::Once;
-
-static SQLITE_VEC_INIT: Once = Once::new();
-
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Create a VectorStoreManager backed by in-memory SQLite with all migrations
 /// and sqlite-vec extension, but without loading any embedding model.
 /// Uses a dummy OpenAI client -- the embedding model is never called in these tests,
 /// since get_neighbor_chunks is pure SQL.
 fn make_sql_only_store() -> VectorStoreManager {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory SQLite should open");
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .expect("WAL mode should be settable");
-    super::migration::migrations(1536) // matches text-embedding-3-small default
-        .to_latest(&mut conn)
-        .expect("migrations should run");
-
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    super::storage_sqlite::ensure_sqlite_vec_loaded();
+    let sqlite = Arc::new(tokio_rusqlite::Connection::from(
+        super::storage_testing::migrated_memory_conn(1536),
+    ));
+    let storage = super::storage::Storage::Sqlite(super::storage_sqlite::SqliteStore::new(sqlite));
 
     // Dummy OpenAI embedding model -- never invoked by get_neighbor_chunks tests.
     let dummy_model =
@@ -64,10 +41,15 @@ fn make_sql_only_store() -> VectorStoreManager {
             .embedding("text-embedding-3-small", None);
 
     VectorStoreManager::new(
-        sqlite,
+        storage,
         AppEmbeddingModel::new(dummy_model),
         "test-dummy".to_string(),
     )
+}
+
+/// SQLite-only 场景测试专用：取回底层 tokio_rusqlite 连接做数据预置/校验。
+fn sqlite_conn(store: &VectorStoreManager) -> Arc<tokio_rusqlite::Connection> {
+    super::storage_testing::sqlite_handle(&store.store).expect("SQLite-only 测试不应在 PG 轨道运行")
 }
 
 /// Insert a test document row into the documents table.
@@ -85,8 +67,7 @@ async fn insert_test_document_with_channel(
     let doc_id = document_id.to_string();
     let status_val = status.to_string();
     let channel_val = channel_id.map(|s| s.to_string());
-    store
-        .conn
+    sqlite_conn(store)
         .call(move |conn| {
             conn.execute(
                 "INSERT INTO documents (id, file_name, status, row_count, channel_id) VALUES (?, 'test.xlsx', ?, ?, ?)",
@@ -116,8 +97,7 @@ async fn insert_test_chunk(
     let cc = chunk_count;
     let ndims = store.ndims();
 
-    store
-        .conn
+    sqlite_conn(store)
         .call(move |conn| {
             let dummy_embedding = vec![0u8; ndims * 4];
 
@@ -138,10 +118,6 @@ async fn insert_test_chunk(
         .await
         .expect("insert_test_chunk should succeed");
 }
-
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: US-CORE-002
 // Covers: get_neighbor_chunks() only returns chunks from published documents.
@@ -398,8 +374,7 @@ async fn publishing_document_makes_chunks_searchable() {
 
     // Update status to published
     let doc_id = "doc_lifecycle".to_string();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'published' WHERE id = ?",
@@ -423,10 +398,6 @@ async fn publishing_document_makes_chunks_searchable() {
     assert_eq!(published_results[0].chunk_id, "lc_chunk_0");
     assert_eq!(published_results[1].chunk_id, "lc_chunk_1");
 }
-
-// ---------------------------------------------------------------------------
-// RRF fusion scenario tests
-// ---------------------------------------------------------------------------
 
 /// Helper to construct a SearchResult for rrf_fuse pure function tests.
 /// These tests exercise rrf_fuse directly and need no database.
@@ -732,17 +703,12 @@ fn rrf_fuse_one_empty_one_nonempty_returns_nonempty_results() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// FTS index lifecycle scenario tests
-// ---------------------------------------------------------------------------
-
 /// Insert a row into the fts_chunks FTS5 index for an existing chunk_metadata row.
 /// Tokenizes the content using jieba and inserts with the chunk's rowid.
 async fn insert_fts_row(store: &VectorStoreManager, chunk_id: &str, content: &str) {
     let cid = chunk_id.to_string();
     let content_owned = content.to_string();
-    store
-        .conn
+    sqlite_conn(store)
         .call(move |conn| {
             let rowid: i64 = conn.query_row(
                 "SELECT rowid FROM chunk_metadata WHERE chunk_id = ?",
@@ -771,8 +737,7 @@ async fn fts_virtual_table_exists_after_migration() {
     let store = make_sql_only_store();
 
     // Check via sqlite_master that the fts_chunks virtual table exists
-    let exists: bool = store
-        .conn
+    let exists: bool = sqlite_conn(&store)
         .call(move |conn| {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fts_chunks'",
@@ -1104,10 +1069,6 @@ async fn fts_lifecycle_write_search_delete_search_empty() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Keyword search tokenization and sanitization scenario tests
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-002
 // Covers: Chinese keyword exact match via FTS. After inserting a document, chunk,
 //         and FTS row with Chinese content "Rust 语言的内存管理", searching for the
@@ -1396,10 +1357,6 @@ fn tokenization_fallback_produces_output_for_edge_cases() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Hybrid search RRF fusion scenario tests
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-019
 // Covers: When FTS and vector result lists share an overlapping chunk, rrf_fuse must
 //         deduplicate by chunk_id and assign the combined RRF score. Chunk B appearing
@@ -1536,8 +1493,7 @@ async fn startup_backfill_populates_fts_index_from_existing_chunks() {
     let content = "回填测试内容关于负载均衡策略".to_string();
     let pid = "page_bf".to_string();
     let ndims_copy = ndims;
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             let dummy_embedding = vec![0u8; ndims_copy * 4];
             conn.execute(
@@ -1668,8 +1624,7 @@ async fn fts_failure_degrades_gracefully_not_error() {
     insert_fts_row(&store, "fts_fail_chunk", "容错测试关于缓存穿透防护").await;
 
     // Drop the fts_chunks table to simulate FTS corruption/absence
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute_batch("DROP TABLE IF EXISTS fts_chunks;")?;
             Ok::<(), rusqlite::Error>(())
@@ -1698,10 +1653,6 @@ async fn fts_failure_degrades_gracefully_not_error() {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Self-contained deduplication scenario tests
-// ---------------------------------------------------------------------------
 
 // User Story: batch-refresh
 // Covers: Self-contained deduplication - two documents with identical content
@@ -1745,8 +1696,7 @@ async fn old_offline_new_still_retrievable() {
 
     // Verify both documents have their own independent chunk entries
     let old_doc_id_for_query = old_doc_id.clone();
-    let old_doc_chunks = store
-        .conn
+    let old_doc_chunks = sqlite_conn(&store)
         .call(move |conn| {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",
@@ -1759,8 +1709,7 @@ async fn old_offline_new_still_retrievable() {
         .expect("query should succeed");
 
     let new_doc_id_for_query = new_doc_id.clone();
-    let new_doc_chunks = store
-        .conn
+    let new_doc_chunks = sqlite_conn(&store)
         .call(move |conn| {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM chunk_metadata WHERE document_id = ?",
@@ -1780,8 +1729,7 @@ async fn old_offline_new_still_retrievable() {
 
     // When: 老文档下线（状态改为 draft）
     let old_doc_id_for_update = old_doc_id.clone();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'draft' WHERE id = ?",
@@ -1794,8 +1742,7 @@ async fn old_offline_new_still_retrievable() {
 
     // And: 新文档上线（状态改为 published）
     let new_doc_id_for_update = new_doc_id.clone();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'published' WHERE id = ?",
@@ -1836,8 +1783,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
     let pub_content = "已发布文档的API网关配置说明".to_string();
     let pub_pid = "page_bf_pub".to_string();
     let ndims_pub = ndims;
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             let dummy_embedding = vec![0u8; ndims_pub * 4];
             conn.execute(
@@ -1865,8 +1811,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
     let draft_content = "草稿文档的API网关设计计划".to_string();
     let draft_pid = "page_bf_draft".to_string();
     let ndims_draft = ndims;
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             let dummy_embedding = vec![0u8; ndims_draft * 4];
             conn.execute(
@@ -1919,8 +1864,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
     // We cannot SELECT COUNT(*) from an FTS5 external-content table without MATCH,
     // so instead we temporarily publish the draft doc and verify both chunks appear.
     let doc_id_to_temp_publish = "doc_bf_draft".to_string();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'published' WHERE id = ?",
@@ -1944,8 +1888,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 
     // Revert the draft status for the rest of the test
     let doc_id_to_revert = "doc_bf_draft".to_string();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'draft' WHERE id = ?",
@@ -1958,8 +1901,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 
     // Now publish the draft document
     let doc_id_to_publish = "doc_bf_draft".to_string();
-    store
-        .conn
+    sqlite_conn(&store)
         .call(move |conn| {
             conn.execute(
                 "UPDATE documents SET status = 'published' WHERE id = ?",
@@ -1996,28 +1938,8 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Channel-scoped retrieval scenario tests (BE-T02)
-// ---------------------------------------------------------------------------
-
 const CHANNEL_A: &str = "channel-a";
 const CHANNEL_B: &str = "channel-b";
-
-// Covers: BE-D02 — RetrievalScope::Channel exposes the exact SQL filter and
-// bound parameter needed by both keyword and vector search paths.
-#[test]
-fn channel_scope_filter_sql_requires_channel_id_and_published_status() {
-    let (sql, params) = RetrievalScope::Channel(CHANNEL_A.to_string()).filter_sql();
-    assert_eq!(
-        sql, "AND d.channel_id = ? AND d.status = 'published'",
-        "Channel scope must filter on channel_id and published status"
-    );
-    assert_eq!(
-        params,
-        vec![CHANNEL_A.to_string()],
-        "Channel scope must bind the channel id"
-    );
-}
 
 // Covers: BE-D02 — get_neighbor_chunks under RetrievalScope::Channel returns
 // chunks only when both documents.channel_id matches and status is published.

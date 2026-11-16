@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -19,24 +18,6 @@ use crate::application::http::state::AppState;
 const TEST_API_TOKEN: &str = "test-api-token-md-upload";
 const EMBEDDING_DIMS: usize = 1536;
 const CHANNEL_ID: &str = "channel-a";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Start a local mock server that mimics the OpenAI embeddings API.
 ///
@@ -102,13 +83,8 @@ async fn mock_embeddings_handler(
 /// Starts a local mock embedding server so the upload pipeline can
 /// complete without calling the real OpenAI API.
 async fn test_app_state() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage =
+        rwiki_core::infrastructure::storage_testing::make_storage("markdown_upload").await;
 
     // Start mock embedding server and point the OpenAI client at it
     let (mock_base_url, _abort_handle) = start_mock_embedding_server().await;
@@ -123,7 +99,7 @@ async fn test_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -133,7 +109,7 @@ async fn test_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -524,26 +500,17 @@ async fn upload_large_md_chunking_works() {
 
     let doc_id = body["id"].as_str().expect("document id").to_string();
 
-    // Query chunk_metadata to verify chunking
-    let chunks: Vec<(String, Option<i64>, Option<i64>)> = state
-        .sqlite
-        .call(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT page_id, sub_index, chunk_count FROM chunk_metadata WHERE document_id = ? ORDER BY sub_index ASC",
-            )?;
-            let rows = stmt
-                .query_map(rusqlite::params![doc_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<i64>>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<Vec<(String, Option<i64>, Option<i64>)>, rusqlite::Error>(rows)
-        })
-        .await
-        .expect("query chunks");
+    // Query chunk_metadata to verify chunking（工厂方言读取，按 sub_index 排序）
+    let mut chunks: Vec<(String, Option<i64>, Option<i64>)> =
+        rwiki_core::infrastructure::storage_testing::fetch_chunk_rows(&state.store, &doc_id)
+            .await
+            .into_iter()
+            .map(|(chunk_id, page_id, sub_index, chunk_count, _content)| {
+                let _ = chunk_id;
+                (page_id, sub_index, chunk_count)
+            })
+            .collect();
+    chunks.sort_by_key(|(_, si, _)| si.unwrap_or(-1));
 
     assert!(
         chunks.len() > 1,
@@ -599,19 +566,13 @@ async fn upload_md_page_id_nonempty() {
     let body = parse_json_body(resp.into_body()).await;
     let doc_id = body["id"].as_str().expect("document id").to_string();
 
-    // Query chunk_metadata for page_id
-    let page_ids: Vec<String> = state
-        .sqlite
-        .call(move |conn| {
-            let mut stmt =
-                conn.prepare("SELECT page_id FROM chunk_metadata WHERE document_id = ?")?;
-            let rows = stmt
-                .query_map(rusqlite::params![doc_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<Vec<String>, rusqlite::Error>(rows)
-        })
-        .await
-        .expect("query page_ids");
+    // Query chunk_metadata for page_id（工厂方言读取）
+    let page_ids: Vec<String> =
+        rwiki_core::infrastructure::storage_testing::fetch_chunk_rows(&state.store, &doc_id)
+            .await
+            .into_iter()
+            .map(|(_, page_id, _, _, _)| page_id)
+            .collect();
 
     assert!(
         !page_ids.is_empty(),
@@ -651,17 +612,16 @@ async fn upload_md_with_channel_id_persists_channel_id() {
     );
 
     // Verify the document row records the channel_id in the database.
-    let stored_channel_id: String = state
-        .sqlite
-        .call(move |conn| {
-            conn.query_row(
-                "SELECT channel_id FROM documents WHERE id = ?",
-                rusqlite::params![doc_id],
-                |row| row.get::<_, String>(0),
-            )
-        })
-        .await
-        .expect("query document channel_id");
+    let stored_channel_id = {
+        use rwiki_core::infrastructure::storage::MetadataStore;
+        state
+            .store
+            .get_document(&doc_id, None)
+            .await
+            .expect("query document")
+            .expect("document row must exist")
+            .channel_id
+    };
     assert_eq!(
         stored_channel_id, CHANNEL_ID,
         "documents.channel_id must match upload"

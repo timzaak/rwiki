@@ -44,11 +44,12 @@ RWiki does one thing — knowledge base Q&A — and keeps the infrastructure to 
 
 ## Features
 
-- **Streaming chat Q&A** — Ask questions, get answers with structured citations (title, section, link, tags) from your documents
+- **Streaming chat Q&A** — Ask questions, get answers with structured citations (title, section, link, tags) from your documents. Conversation history lives in the visitor's browser (per channel, never sent to the server), with one-click answer copy
 - **Hybrid search** — FTS5 full-text + vector similarity with RRF fusion for better recall
+- **Public site search** — Every channel page ships a search box (highlighted results, keyboard navigation, ask-AI handover) backed by a public `POST /api/search` endpoint — pure FTS5 keyword search by default (no credentials, no LLM calls, milliseconds), switchable to the full hybrid pipeline via `[retrieval].public_search_mode = "hybrid"`
 - **Rerank (optional)** — Semantically re-scores retrieved chunks after hybrid search to sharpen precision. Supports OpenRouter, Zhipu BigModel, and Alibaba DashScope. Opt-in via a `[rerank]` section (zero overhead when omitted); auto-degrades to fusion results on failure.
 - **Query rewrite & expansion** — Automatic query rewriting with multi-query expansion to handle ambiguous questions
-- **Embeddable chat widget** — Single JS file, Shadow DOM, add to any site with two lines of HTML
+- **Embeddable chat widget** — Single JS file, Shadow DOM, add to any site with two lines of HTML; modal or side-panel display mode
 - **MCP server (optional)** — Expose knowledge Q&A and retrieval as read-only MCP tools (`rwiki_qa`, `rwiki_search`) for Claude Code, Cursor, and other agent clients over Streamable HTTP, one public endpoint per channel (`/mcp/<channelId>`, no credentials needed). Opt-in via an `[mcp]` section (endpoints not mounted when omitted)
 - **Multi-format ingestion** — Markdown files, XLSX spreadsheets, OpenAPI specifications
 - **API documentation assistant** — Upload OpenAPI specs, ask questions about your APIs
@@ -70,6 +71,10 @@ docker run -d -p 8080:8080 \
   -e OPENAI_API_KEY=your-embedding-key \
   ghcr.io/timzaak/rwiki
 ```
+
+### PostgreSQL (optional)
+
+For enterprise deployments that need a managed/centralized database, add a `[postgres]` section to `config.toml` to switch the storage backend to your own PostgreSQL instance (with the pgvector extension, ≥0.8). Omitting the section keeps the default zero-dependency single-file SQLite mode — nothing changes. Startup fails fast with a specific message (no silent fallback) when the instance is unreachable or lacks pgvector. The Docker image stays the same, and all capabilities (upload, hybrid search, chat, feedback, MCP) behave identically on both backends. See `backend/config/config.example.toml` for the full option set.
 
 ### From Source
 

@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Once;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -23,24 +22,6 @@ const TEST_API_TOKEN: &str = "test-api-token-12345";
 const CHANNEL_A: &str = "help_center";
 const CHANNEL_B: &str = "dev_docs";
 const UNKNOWN_CHANNEL: &str = "unknown_channel";
-
-/// Ensure the sqlite-vec extension is registered globally so that the
-/// `vec0` virtual table module is available for in-memory connections.
-static SQLITE_VEC_INIT: Once = Once::new();
-fn ensure_sqlite_vec_loaded() {
-    SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
-}
 
 /// Build a `ChannelsConfig` with two configured channels for isolation scenarios.
 fn test_channels_config() -> ChannelsConfig {
@@ -68,13 +49,7 @@ fn test_channels_config() -> ChannelsConfig {
 
 /// Build a minimal `AppState` suitable for feedback tests.
 async fn test_app_state() -> Arc<AppState> {
-    ensure_sqlite_vec_loaded();
-
-    let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    rwiki_core::infrastructure::migration::migrations(1536)
-        .to_latest(&mut conn)
-        .expect("apply migrations");
-    let sqlite = Arc::new(tokio_rusqlite::Connection::from(conn));
+    let storage = rwiki_core::infrastructure::storage_testing::make_storage("feedback").await;
 
     let embedding_model = rwiki_core::infrastructure::rig_client::connect(
         rig::providers::openai::OpenAIConfig::new("sk-test-fake-key-for-feedback-tests-only"),
@@ -85,7 +60,7 @@ async fn test_app_state() -> Arc<AppState> {
 
     let vector_store = Arc::new(
         rwiki_core::infrastructure::vector_store::VectorStoreManager::new(
-            sqlite.clone(),
+            storage.clone(),
             app_embedding_model,
             "text-embedding-3-small".to_string(),
         ),
@@ -95,7 +70,7 @@ async fn test_app_state() -> Arc<AppState> {
         rwiki_core::infrastructure::rig_client::connect_at("sk-test-fake", "http://localhost:0");
 
     Arc::new(AppState {
-        sqlite,
+        store: Arc::new(storage),
         enable_openapi: false,
         vector_store,
         chat_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -148,34 +123,17 @@ async fn insert_test_feedback(
     assistant_message: &str,
     created_at: Option<&str>,
 ) {
-    let sid = channel_id.to_string();
-    let sess = session_id.to_string();
-    let mid = message_id.to_string();
-    let fb = feedback.to_string();
-    let um = user_message.to_string();
-    let am = assistant_message.to_string();
-    let ca = created_at.map(|s| s.to_string());
-
-    state
-        .sqlite
-        .call(move |conn| -> Result<(), rusqlite::Error> {
-            if let Some(ref ts) = ca {
-                conn.execute(
-                    "INSERT INTO chat_feedback (channel_id, session_id, message_id, feedback, user_message, assistant_message, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![sid, sess, mid, fb, um, am, ts],
-                )?;
-            } else {
-                conn.execute(
-                    "INSERT INTO chat_feedback (channel_id, session_id, message_id, feedback, user_message, assistant_message) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![sid, sess, mid, fb, um, am],
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .expect("insert test feedback");
+    rwiki_core::infrastructure::storage_testing::seed_feedback(
+        &state.store,
+        channel_id,
+        session_id,
+        message_id,
+        feedback,
+        user_message,
+        assistant_message,
+        created_at,
+    )
+    .await;
 }
 
 /// Build a POST request with JSON body to `/api/chat/feedback`.
@@ -219,35 +177,20 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
     );
 
     // Verify DB row
-    let row: (String, String, String, String, String, String) = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            conn.query_row(
-                "SELECT channel_id, session_id, message_id, feedback, user_message, assistant_message \
-                 FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'sess-1' AND message_id = 'msg-1'",
-                rusqlite::params![CHANNEL_A],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
-        })
-        .await
-        .expect("query feedback row");
+    let rows =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await;
+    let row = rows
+        .iter()
+        .find(|r| r.session_id == "sess-1" && r.message_id == "msg-1")
+        .expect("feedback row must exist");
 
-    assert_eq!(row.0, CHANNEL_A, "channel_id must match");
-    assert_eq!(row.1, "sess-1", "session_id must match");
-    assert_eq!(row.2, "msg-1", "message_id must match");
-    assert_eq!(row.3, "like", "feedback must be 'like'");
-    assert_eq!(row.4, "What is Rust?", "user_message must match");
+    assert_eq!(row.session_id, "sess-1", "session_id must match");
+    assert_eq!(row.message_id, "msg-1", "message_id must match");
+    assert_eq!(row.feedback, "like", "feedback must be 'like'");
+    assert_eq!(row.user_message, "What is Rust?", "user_message must match");
     assert_eq!(
-        row.5, "Rust is a systems programming language.",
+        row.assistant_message, "Rust is a systems programming language.",
         "assistant_message must match"
     );
 }
@@ -278,17 +221,14 @@ async fn submit_dislike_feedback_returns_204() {
     );
 
     // Verify DB row has feedback='dislike'
-    let feedback: String = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'sess-2' AND message_id = 'msg-2'",
-                rusqlite::params![CHANNEL_A],
-                |row| row.get::<_, String>(0),
-            )
-        })
-        .await
-        .expect("query feedback row");
+    let feedback =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await
+            .iter()
+            .find(|r| r.session_id == "sess-2" && r.message_id == "msg-2")
+            .expect("feedback row must exist")
+            .feedback
+            .clone();
 
     assert_eq!(feedback, "dislike", "feedback must be 'dislike'");
 }
@@ -318,21 +258,15 @@ async fn submit_feedback_with_channel_id_persists_channel_id() {
         "submit with channelId must return 204"
     );
 
-    let channel_id: String = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            conn.query_row(
-                "SELECT channel_id FROM chat_feedback WHERE session_id = 'sess-channel' AND message_id = 'msg-channel'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-        })
-        .await
-        .expect("query channel_id");
-
-    assert_eq!(
-        channel_id, CHANNEL_B,
-        "chat_feedback.channel_id must match requested channelId"
+    // 反馈行落在请求的频道（按 sess/msg 定位；记录经 CHANNEL_B 频道读取）
+    let channel_rows =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_B)
+            .await;
+    assert!(
+        channel_rows
+            .iter()
+            .any(|r| r.session_id == "sess-channel" && r.message_id == "msg-channel"),
+        "chat_feedback.row must exist under requested channel {CHANNEL_B}"
     );
 }
 
@@ -424,18 +358,17 @@ async fn unconfigured_channel_id_returns_400() {
         "unconfigured channelId must return 400"
     );
 
-    // Ensure no row was written
-    let count: i64 = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'sess-unknown' AND message_id = 'msg-unknown'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .await
-        .expect("count rows");
+    // Ensure no row was written（两个已配置频道均无该外部 id 的记录）
+    let count = [
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await,
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_B)
+            .await,
+    ]
+    .concat()
+    .iter()
+    .filter(|r| r.session_id == "sess-unknown" && r.message_id == "msg-unknown")
+    .count() as i64;
     assert_eq!(
         count, 0,
         "no feedback row must be written for unconfigured channel"
@@ -500,28 +433,23 @@ async fn identical_session_message_in_two_channels_does_not_overwrite() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     // Verify both rows are isolated
-    let (channel_a_fb, channel_b_fb, total): (String, String, i64) = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            let channel_a_fb = conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'shared-sess' AND message_id = 'shared-msg'",
-                rusqlite::params![CHANNEL_A],
-                |row| row.get::<_, String>(0),
-            )?;
-            let channel_b_fb = conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'shared-sess' AND message_id = 'shared-msg'",
-                rusqlite::params![CHANNEL_B],
-                |row| row.get::<_, String>(0),
-            )?;
-            let total = conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE session_id = 'shared-sess' AND message_id = 'shared-msg'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?;
-            Ok((channel_a_fb, channel_b_fb, total))
-        })
-        .await
-        .expect("query feedback");
+    use rwiki_core::infrastructure::storage::FeedbackRecord;
+    let find_fb = |rows: &[FeedbackRecord]| {
+        rows.iter()
+            .find(|r| r.session_id == "shared-sess" && r.message_id == "shared-msg")
+            .expect("shared feedback row must exist in channel")
+            .feedback
+            .clone()
+    };
+    let channel_a_rows =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await;
+    let channel_b_rows =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_B)
+            .await;
+    let channel_a_fb = find_fb(&channel_a_rows);
+    let channel_b_fb = find_fb(&channel_b_rows);
+    let total = channel_a_rows.len() + channel_b_rows.len();
 
     assert_eq!(
         channel_a_fb, "dislike",
@@ -582,23 +510,16 @@ async fn switch_feedback_like_to_dislike_updates_db() {
     );
 
     // Verify single row with feedback='dislike'
-    let (feedback, count): (String, i64) = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            let feedback = conn.query_row(
-                "SELECT feedback FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'sess-3' AND message_id = 'msg-3'",
-                rusqlite::params![CHANNEL_A],
-                |row| row.get::<_, String>(0),
-            )?;
-            let count = conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'sess-3' AND message_id = 'msg-3'",
-                rusqlite::params![CHANNEL_A],
-                |row| row.get::<_, i64>(0),
-            )?;
-            Ok((feedback, count))
-        })
-        .await
-        .expect("query feedback");
+    let rows =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await;
+    let hits: Vec<_> = rows
+        .iter()
+        .filter(|r| r.session_id == "sess-3" && r.message_id == "msg-3")
+        .collect();
+    assert_eq!(hits.len(), 1);
+    let feedback = hits[0].feedback.clone();
+    let count = hits.len() as i64;
 
     assert_eq!(
         feedback, "dislike",
@@ -656,17 +577,12 @@ async fn cancel_feedback_deletes_db_record() {
     );
 
     // Verify DB has 0 rows for CHANNEL_A
-    let count: i64 = state
-        .sqlite
-        .call(|conn| -> Result<_, rusqlite::Error> {
-            conn.query_row(
-                "SELECT COUNT(*) FROM chat_feedback WHERE channel_id = ?1 AND session_id = 'sess-4' AND message_id = 'msg-4'",
-                rusqlite::params![CHANNEL_A],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .await
-        .expect("count rows");
+    let count =
+        rwiki_core::infrastructure::storage_testing::fetch_feedback_rows(&state.store, CHANNEL_A)
+            .await
+            .iter()
+            .filter(|r| r.session_id == "sess-4" && r.message_id == "msg-4")
+            .count() as i64;
     assert_eq!(count, 0, "feedback record must be deleted after cancel");
 
     // Idempotent: cancel again on non-existent record still returns 204
