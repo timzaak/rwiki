@@ -257,7 +257,7 @@ fn valid_openapi_json() -> Vec<u8> {
 // User Story: As a knowledge base editor, I want to upload a FAQ JSONL file
 // so that each Q&A becomes an independent knowledge page in draft status,
 // ready for review before publishing. (US-CORE-032 scenario 1)
-// Covers: US-CORE-032, BE-D01, BE-T01
+// Covers: US-CORE-032
 
 #[tokio::test]
 async fn upload_valid_faq_jsonl_returns_200_draft() {
@@ -290,7 +290,7 @@ async fn upload_valid_faq_jsonl_returns_200_draft() {
 // required fields to be rejected with a 400 that pinpoints the failing entry
 // and field, so I can fix the source file at the exact location.
 // (US-CORE-032 scenario 2)
-// Covers: US-CORE-032, BE-D01, BE-T01
+// Covers: US-CORE-032
 
 #[tokio::test]
 async fn upload_faq_missing_answer_returns_400() {
@@ -327,7 +327,7 @@ async fn upload_faq_missing_answer_returns_400() {
 // be rejected with a clear "no usable Q&A data" message, so I notice the file
 // is empty instead of accidentally creating an empty draft document.
 // (US-CORE-032 scenario 3)
-// Covers: US-CORE-032, BE-D01, BE-T01
+// Covers: US-CORE-032
 
 #[tokio::test]
 async fn upload_empty_faq_file_returns_400() {
@@ -355,7 +355,7 @@ async fn upload_empty_faq_file_returns_400() {
 // a valid OpenAPI document to be rejected by the OpenAPI parser, so that
 // `.json` exclusively routes to OpenAPI and FAQ arrays cannot be uploaded as
 // `.json` anymore. (US-CORE-032 scenario 4)
-// Covers: US-CORE-032, BE-D01, BE-T01
+// Covers: US-CORE-032
 
 #[tokio::test]
 async fn upload_non_openapi_json_returns_400() {
@@ -380,7 +380,7 @@ async fn upload_non_openapi_json_returns_400() {
 // uploads to keep working after FAQ support is added, so that the new format
 // detection does not break the previously supported upload path.
 // (US-CORE-032 scenario 6)
-// Covers: US-CORE-032, BE-D01, BE-T01
+// Covers: US-CORE-032
 
 #[tokio::test]
 async fn upload_openapi_json_unaffected_by_faq_support() {
@@ -418,7 +418,7 @@ async fn upload_openapi_json_unaffected_by_faq_support() {
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // FAQ JSONL upload path to persist the channelId I provide and echo it back.
-// Covers: BE-D02 (FAQ JSONL upload writes documents.channel_id and returns channelId).
+// Covers: FAQ JSONL upload writes documents.channel_id and returns channelId.
 #[tokio::test]
 async fn upload_faq_with_channel_id_persists_channel_id() {
     let state = test_app_state().await;
@@ -457,7 +457,7 @@ async fn upload_faq_with_channel_id_persists_channel_id() {
 
 // User Story: support-multiple-website — As an API operator, I want FAQ
 // uploads without a channelId to be rejected with 400.
-// Covers: BE-D02 (upload endpoint requires channelId before format routing).
+// Covers: upload endpoint requires channelId before format routing.
 #[tokio::test]
 async fn upload_faq_without_channel_id_returns_400() {
     let state = test_app_state().await;

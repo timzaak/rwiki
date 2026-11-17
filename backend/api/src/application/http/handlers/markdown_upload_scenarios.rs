@@ -243,7 +243,7 @@ fn upload_request_without_channel(
 // User Story: As a knowledge base editor, I want to upload a .md file with
 // frontmatter so that the system extracts metadata (title, locale, link, tags)
 // and indexes the content for RAG retrieval.
-// Covers: US-CORE-014, BE-D03 (format routing), BE-D02 (markdown parser frontmatter)
+// Covers: US-CORE-014, format routing, markdown parser frontmatter
 #[tokio::test]
 async fn upload_md_with_frontmatter_returns_200() {
     let state = test_app_state().await;
@@ -272,7 +272,7 @@ async fn upload_md_with_frontmatter_returns_200() {
 // User Story: As a knowledge base editor, I want to upload a .md file without
 // frontmatter so that the system derives the title from the first H1 heading
 // and still indexes the content successfully.
-// Covers: US-CORE-014, BE-D02 (title fallback from H1)
+// Covers: US-CORE-014, title fallback from H1
 #[tokio::test]
 async fn upload_md_without_frontmatter_title_from_h1_returns_200() {
     let state = test_app_state().await;
@@ -294,7 +294,7 @@ async fn upload_md_without_frontmatter_title_from_h1_returns_200() {
 
 // User Story: As a knowledge base editor, I want to upload a .mdx file so that
 // MDX content is ingested as plain text and indexed for RAG retrieval.
-// Covers: US-CORE-014, BE-D03 (.mdx extension routing)
+// Covers: US-CORE-014, .mdx extension routing
 #[tokio::test]
 async fn upload_mdx_file_returns_200() {
     let state = test_app_state().await;
@@ -312,7 +312,7 @@ async fn upload_mdx_file_returns_200() {
 
 // User Story: As a knowledge base editor, I want the system to reject empty
 // .md files with a clear error so that I know the file has no usable content.
-// Covers: US-CORE-014, BE-D02 (EmptyFile error)
+// Covers: US-CORE-014, EmptyFile error
 #[tokio::test]
 async fn upload_empty_md_returns_400() {
     let state = test_app_state().await;
@@ -331,7 +331,7 @@ async fn upload_empty_md_returns_400() {
 
 // User Story: As a knowledge base editor, I want the system to reject .md files
 // that have frontmatter but no body content, so that I know the file has no usable content.
-// Covers: US-CORE-014, BE-D02 (EmptyFile error -- body empty after frontmatter extraction)
+// Covers: US-CORE-014, EmptyFile error -- body empty after frontmatter extraction
 #[tokio::test]
 async fn upload_md_frontmatter_only_no_body_returns_400() {
     let state = test_app_state().await;
@@ -350,7 +350,7 @@ async fn upload_md_frontmatter_only_no_body_returns_400() {
 
 // User Story: As a knowledge base editor, I want the system to reject non-UTF-8
 // .md files with a clear error so that I know the file encoding is unsupported.
-// Covers: US-CORE-014, BE-D02 (InvalidEncoding error)
+// Covers: US-CORE-014, InvalidEncoding error
 #[tokio::test]
 async fn upload_non_utf8_md_returns_400() {
     let state = test_app_state().await;
@@ -369,7 +369,7 @@ async fn upload_non_utf8_md_returns_400() {
 
 // User Story: As a knowledge base editor, I want the system to reject .md files
 // with malformed frontmatter so that I know the metadata block has a syntax error.
-// Covers: US-CORE-014, BE-D02 (FrontmatterNotClosed error)
+// Covers: US-CORE-014, FrontmatterNotClosed error
 #[tokio::test]
 async fn upload_md_unclosed_frontmatter_returns_400() {
     let state = test_app_state().await;
@@ -393,7 +393,7 @@ async fn upload_md_unclosed_frontmatter_returns_400() {
 // User Story: As a knowledge base editor, I want the system to reject unsupported
 // file formats with a message listing supported formats, so that I know which
 // file types are accepted.
-// Covers: US-CORE-014, BE-D03 (extension validation rejects unsupported formats)
+// Covers: US-CORE-014, extension validation rejects unsupported formats
 #[tokio::test]
 async fn upload_unsupported_format_returns_400() {
     let state = test_app_state().await;
@@ -419,7 +419,7 @@ async fn upload_unsupported_format_returns_400() {
 // User Story: As a knowledge base editor, I want .xlsx uploads to continue
 // working after the markdown support changes, so that existing workflows are
 // not disrupted.
-// Covers: US-CORE-001, BE-D03 (xlsx path preserved)
+// Covers: US-CORE-001, xlsx path preserved
 #[tokio::test]
 async fn upload_xlsx_still_works_returns_200() {
     let state = test_app_state().await;
@@ -551,7 +551,7 @@ async fn upload_large_md_chunking_works() {
 // User Story: As a knowledge base editor, I want uploaded markdown documents to
 // have a page_id assigned to each chunk, so that neighbor expansion and dedup
 // logic works correctly.
-// Covers: US-CORE-014, BE-D01 (page_id migration)
+// Covers: US-CORE-014, page_id migration
 #[tokio::test]
 async fn upload_md_page_id_nonempty() {
     let state = test_app_state().await;
@@ -588,7 +588,7 @@ async fn upload_md_page_id_nonempty() {
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // markdown upload path to persist the channelId I provide and echo it back.
-// Covers: BE-D02 (markdown upload writes documents.channel_id and returns channelId).
+// Covers: markdown upload writes documents.channel_id and returns channelId.
 #[tokio::test]
 async fn upload_md_with_channel_id_persists_channel_id() {
     let state = test_app_state().await;
@@ -630,7 +630,7 @@ async fn upload_md_with_channel_id_persists_channel_id() {
 
 // User Story: support-multiple-website — As an API operator, I want markdown
 // uploads without a channelId to be rejected with 400.
-// Covers: BE-D02 (upload endpoint requires channelId before format routing).
+// Covers: upload endpoint requires channelId before format routing.
 #[tokio::test]
 async fn upload_md_without_channel_id_returns_400() {
     let state = test_app_state().await;

@@ -176,7 +176,7 @@ async fn parse_json_body(body: Body) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("parse json")
 }
 
-// User Story: Design 4.2.2 -- The eval endpoint requires Bearer token auth.
+// Covers: The eval endpoint requires Bearer token auth.
 // Without a token, the endpoint must return 401.
 // Covers: Route registration under doc_router with auth_middleware.
 //         auth_middleware returns 401 when no Authorization header is present.
@@ -196,7 +196,7 @@ async fn eval_query_requires_auth() {
     );
 }
 
-// User Story: Design 4.2.2 -- Empty query must be rejected with 400.
+// Covers: Empty query must be rejected with 400.
 // The handler validates that query is not empty/whitespace before proceeding.
 // Covers: eval_query handler validation: `if req.query.trim().is_empty()`.
 
@@ -230,7 +230,7 @@ async fn eval_query_empty_query_returns_400() {
     );
 }
 
-// User Story: Design 4.2.2 -- When the knowledge base is empty (no indexed data),
+// Covers: When the knowledge base is empty (no indexed data),
 // the eval endpoint must return 503 Service Unavailable.
 // Covers: eval_query handler check: `if state.vector_store.is_empty().await`.
 
@@ -249,7 +249,7 @@ async fn eval_query_empty_knowledge_base_returns_503() {
     );
 }
 
-// User Story: Design 4.2.2 -- The eval response must contain search results with
+// Covers: The eval response must contain search results with
 // document_id fields, enabling external eval tools to compute retrieval metrics
 // (HitRate, MRR, Recall) by matching returned document_ids against golden dataset.
 // Covers: EvalSearchResult struct includes document_id field; the eval handler
@@ -298,7 +298,7 @@ async fn eval_query_returns_search_results_with_doc_ids() {
     }
 }
 
-// User Story: Design 4.2.2 -- When rerank is enabled, scores in search results
+// Covers: When rerank is enabled, scores in search results
 // must be the rerank relevance scores (not raw RRF scores). When rerank is
 // disabled, scores must be the original RRF scores.
 // Covers: search_and_rerank applies rerank scores via result.score = score,
@@ -341,7 +341,7 @@ async fn eval_query_includes_rerank_scores() {
     }
 }
 
-// User Story: Design 4.2.2 -- When a sessionId is provided, the eval handler
+// Covers: When a sessionId is provided, the eval handler
 // should reuse the existing session's conversation history for query rewrite
 // context (same SessionStore as the chat endpoint).
 // Covers: eval_query handler reads session from state.chat_sessions, and

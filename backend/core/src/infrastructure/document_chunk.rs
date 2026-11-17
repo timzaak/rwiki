@@ -224,7 +224,7 @@ mod tests {
         );
     }
 
-    // Covers: A ParsedChunk created with ..Default::default() has content_type: ContentType::None
+    // Covers: a ParsedChunk created with ..Default::default() has content_type: ContentType::None
     //         and fts_tokens: None. The resulting DocumentChunk must also have these defaults.
     #[test]
     fn from_parsed_default_content_type_is_none() {

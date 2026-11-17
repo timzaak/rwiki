@@ -283,7 +283,7 @@ fn upload_request_without_channel(
 
 // User Story: As a knowledge base editor, I want to publish a draft document
 // so that its content becomes available in RAG search results.
-// Covers: BE-D01 (DocumentStatus enum), BE-D03 (publish handler)
+// Covers: DocumentStatus enum, publish handler
 
 #[tokio::test]
 async fn publish_draft_document_returns_200_published() {
@@ -312,7 +312,7 @@ async fn publish_draft_document_returns_200_published() {
 
 // User Story: As a knowledge base editor, I want to unpublish a published
 // document so that its content is removed from RAG search results.
-// Covers: BE-D01 (DocumentStatus enum), BE-D03 (unpublish handler)
+// Covers: DocumentStatus enum, unpublish handler
 
 #[tokio::test]
 async fn unpublish_published_document_returns_200_draft() {
@@ -339,7 +339,7 @@ async fn unpublish_published_document_returns_200_draft() {
 // User Story: As a knowledge base editor, I want a clear error when I attempt
 // to publish a document that is already published, so that I know the current
 // state and do not double-publish.
-// Covers: BE-D03 (publish rejects non-draft with 409)
+// Covers: publish rejects non-draft with 409
 
 #[tokio::test]
 async fn publish_already_published_returns_409() {
@@ -362,7 +362,7 @@ async fn publish_already_published_returns_409() {
 // User Story: As a knowledge base editor, I want a clear error when I attempt
 // to publish a document that is still processing, so that I wait for it to
 // finish indexing before publishing.
-// Covers: BE-D03 (publish rejects non-draft with 409), BE-D01 (Processing status)
+// Covers: publish rejects non-draft with 409, Processing status
 
 #[tokio::test]
 async fn publish_processing_document_returns_409() {
@@ -384,7 +384,7 @@ async fn publish_processing_document_returns_409() {
 
 // User Story: As a knowledge base editor, I want a clear error when I attempt
 // to unpublish a draft document, because it is already in draft state.
-// Covers: BE-D03 (unpublish rejects non-published with 409)
+// Covers: unpublish rejects non-published with 409
 
 #[tokio::test]
 async fn unpublish_draft_document_returns_409() {
@@ -407,7 +407,7 @@ async fn unpublish_draft_document_returns_409() {
 // User Story: As a knowledge base editor, I want a clear error when I attempt
 // to unpublish a failed document, because only published documents can be
 // unpublished.
-// Covers: BE-D03 (unpublish rejects non-published with 409), BE-D01 (Failed status)
+// Covers: unpublish rejects non-published with 409, Failed status
 
 #[tokio::test]
 async fn unpublish_failed_document_returns_409() {
@@ -429,7 +429,7 @@ async fn unpublish_failed_document_returns_409() {
 
 // User Story: As a knowledge base editor, I want a 404 when I attempt to
 // publish a document that does not exist, so that I know the ID is wrong.
-// Covers: BE-D03 (publish returns 404 for unknown ID)
+// Covers: publish returns 404 for unknown ID
 
 #[tokio::test]
 async fn publish_nonexistent_document_returns_404() {
@@ -451,7 +451,7 @@ async fn publish_nonexistent_document_returns_404() {
 
 // User Story: As a knowledge base editor, I want a 404 when I attempt to
 // unpublish a document that does not exist, so that I know the ID is wrong.
-// Covers: BE-D03 (unpublish returns 404 for unknown ID)
+// Covers: unpublish returns 404 for unknown ID
 
 #[tokio::test]
 async fn unpublish_nonexistent_document_returns_404() {
@@ -473,7 +473,7 @@ async fn unpublish_nonexistent_document_returns_404() {
 
 // User Story: As an API operator, I want publish requests without a token to
 // be rejected, so that only authorized clients can change document visibility.
-// Covers: BE-D03 (publish route is behind auth middleware)
+// Covers: publish route is behind auth middleware
 
 #[tokio::test]
 async fn publish_without_token_returns_401() {
@@ -500,7 +500,7 @@ async fn publish_without_token_returns_401() {
 // User Story: As an API operator, I want unpublish requests without a token
 // to be rejected, so that only authorized clients can revert document
 // visibility.
-// Covers: BE-D03 (unpublish route is behind auth middleware)
+// Covers: unpublish route is behind auth middleware
 
 #[tokio::test]
 async fn unpublish_without_token_returns_401() {
@@ -527,7 +527,7 @@ async fn unpublish_without_token_returns_401() {
 // User Story: As a knowledge base editor, I want newly uploaded documents to
 // start in "draft" status, so that content is not immediately visible in RAG
 // search before I review and publish it.
-// Covers: BE-D01 (upload sets initial status to "draft")
+// Covers: upload sets initial status to "draft"
 
 #[tokio::test]
 async fn upload_sets_initial_status_to_draft() {
@@ -559,7 +559,7 @@ async fn upload_sets_initial_status_to_draft() {
 // User Story: As a knowledge base editor, I want published documents to show
 // "published" status in the document list, so that I can verify the transition
 // took effect.
-// Covers: BE-D01, BE-D03 (upload -> publish -> list shows "published")
+// Covers: upload -> publish -> list shows "published"
 
 #[tokio::test]
 async fn publish_then_list_shows_published_status() {
@@ -596,7 +596,7 @@ async fn publish_then_list_shows_published_status() {
 // User Story: As a knowledge base editor, I want unpublished documents to show
 // "draft" status in the document list, so that I can verify the revert took
 // effect.
-// Covers: BE-D01, BE-D03 (upload -> publish -> unpublish -> list shows "draft")
+// Covers: upload -> publish -> unpublish -> list shows "draft"
 
 #[tokio::test]
 async fn unpublish_then_list_shows_draft_status() {
@@ -633,7 +633,7 @@ async fn unpublish_then_list_shows_draft_status() {
 // User Story: support-multiple-website — As an API operator, I want upload
 // requests without a channelId to be rejected so documents always belong to a
 // configured channel.
-// Covers: BE-D02 (upload requires channelId, returns 400 when missing).
+// Covers: upload requires channelId, returns 400 when missing.
 #[tokio::test]
 async fn upload_without_channel_id_returns_400() {
     let state = test_app_state().await;
@@ -657,7 +657,7 @@ async fn upload_without_channel_id_returns_400() {
 // User Story: support-multiple-website — As a knowledge base editor, I want
 // uploaded documents to carry the channelId I provided so they can be managed and
 // retrieved within that channel.
-// Covers: BE-D02 (upload persists documents.channel_id and returns it in response).
+// Covers: upload persists documents.channel_id and returns it in response.
 #[tokio::test]
 async fn upload_with_channel_id_persists_channel_id() {
     let state = test_app_state().await;
@@ -688,7 +688,7 @@ async fn upload_with_channel_id_persists_channel_id() {
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // document list to show only documents that belong to the channel I am managing.
-// Covers: BE-D02 (list filters by channelId, response items include channelId).
+// Covers: list filters by channelId, response items include channelId.
 #[tokio::test]
 async fn list_with_channel_id_returns_only_that_channels_documents() {
     let state = test_app_state().await;
@@ -726,7 +726,7 @@ async fn list_with_channel_id_returns_only_that_channels_documents() {
 // User Story: support-multiple-website — As a knowledge base editor, I want a
 // 404 when I try to publish another channel's document, and that document must not
 // be mutated.
-// Covers: BE-D02 (cross-channel publish returns 404 and leaves the target doc alone).
+// Covers: cross-channel publish returns 404 and leaves the target doc alone.
 #[tokio::test]
 async fn publish_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;
@@ -760,7 +760,7 @@ async fn publish_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
 // User Story: support-multiple-website — As a knowledge base editor, I want a
 // 404 when I try to unpublish another channel's document, and that document must
 // not be mutated.
-// Covers: BE-D02 (cross-channel unpublish returns 404 and leaves the target doc alone).
+// Covers: cross-channel unpublish returns 404 and leaves the target doc alone.
 #[tokio::test]
 async fn unpublish_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;
@@ -794,7 +794,7 @@ async fn unpublish_with_mismatched_channel_id_returns_404_and_does_not_mutate() 
 // User Story: support-multiple-website — As a knowledge base editor, I want a
 // 404 when I try to delete another channel's document, and that document must not
 // be removed.
-// Covers: BE-D02 (cross-channel delete returns 404 and leaves the target doc alone).
+// Covers: cross-channel delete returns 404 and leaves the target doc alone.
 #[tokio::test]
 async fn delete_with_mismatched_channel_id_returns_404_and_does_not_mutate() {
     let state = test_app_state().await;

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use super::chat::match_locale;
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 1; no locale provided -> default key lookup path.
+// Covers: no locale provided -> default key lookup path.
 
 #[test]
 fn default_group_no_locale_returns_default_questions() {
@@ -31,7 +31,7 @@ fn default_group_no_locale_returns_default_questions() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 2; exact match path.
+// Covers: exact match path.
 
 #[test]
 fn exact_locale_match_returns_matching_questions() {
@@ -71,7 +71,7 @@ fn exact_locale_match_is_case_insensitive() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 3a; no prefix match for locale -> default path.
+// Covers: no prefix match for locale -> default path.
 
 #[test]
 fn no_prefix_match_falls_to_default() {
@@ -90,7 +90,7 @@ fn no_prefix_match_falls_to_default() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 3b; longest prefix match path.
+// Covers: longest prefix match path.
 
 #[test]
 fn prefix_match_to_shorter_key() {
@@ -109,7 +109,7 @@ fn prefix_match_to_shorter_key() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 4; None config handling.
+// Covers: None config handling.
 
 #[test]
 fn no_config_returns_empty_array() {
@@ -133,7 +133,7 @@ fn empty_hashmap_returns_empty_array() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design 5.1 scenario 5; truncation to MAX_SUGGESTIONS (10).
+// Covers: truncation to MAX_SUGGESTIONS (10).
 
 #[test]
 fn more_than_ten_questions_truncated_to_ten() {
@@ -248,7 +248,7 @@ fn exact_match_with_empty_array_returns_empty() {
 }
 
 // User Story: US-CORE-028
-// Covers: Design BE-D01 spec "longest prefix match" -- most specific key wins.
+// Covers: "longest prefix match" -- most specific key wins.
 
 #[test]
 fn multiple_prefix_matches_longest_wins() {

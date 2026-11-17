@@ -270,9 +270,6 @@ fn new_session_sliding_window_is_empty_confirming_no_rewrite_needed() {
 //      skipping compact preserves all messages.
 //   3. Code-structure checks document that the handler wraps LLM calls in
 //      match arms that fall back gracefully.
-//
-// This strategy is endorsed by the task item (BE-T03) and the design doc
-// section 5.1 (test strategy rows 5-6).
 
 // User Story: As a user in a long conversation (US-CORE-012), when the LLM
 // call for summary compression fails, the system must preserve all original
@@ -416,7 +413,7 @@ fn compact_history_success_path_trims_and_sets_summary() {
 // verified via code-structure + pure-fn anchors. No mock-LLM harness is
 // introduced.
 //
-// The dev slot (BE-D02) owns the exhaustive pure-fn unit-test table for
+// The exhaustive pure-fn unit-test table for
 // `parse_suggested_questions_response` and `build_post_answer_prompt` inside
 // `chat.rs::tests`. These scenarios do NOT duplicate that table; each one
 // carries at most a SINGLE representative pure-fn anchor that encodes WHY
@@ -528,8 +525,7 @@ fn post_answer_suggestions_switch_off_skips_event_and_llm_call_code_structure() 
     // `if` guards the entire block including `generate_post_answer_suggestions`,
     // so the extra LLM call is skipped entirely (not just its send).
 
-    // Pure-fn anchor pinning the default-off precondition (BE-D01 guarantees
-    // `#[serde(default)]` + `Default = false`). This anchor encodes WHY the
+    // Pure-fn anchor pinning the default-off precondition (`#[serde(default)]` + `Default = false`). This anchor encodes WHY the
     // guard matters: an operator who omits the field gets the switch off, so
     // the `if` block is skipped and behavior is backward-compatible.
     use rwiki_core::config::ChatConfig;
@@ -539,7 +535,7 @@ fn post_answer_suggestions_switch_off_skips_event_and_llm_call_code_structure() 
         "ChatConfig::default() must set enable_post_answer_suggestions=false \
          so the closure's `if enable_post_answer_suggestions` guard skips the \
          extra LLM call and the `suggestions` event for operators who do not \
-         opt in (backward compatibility, design §4.2)"
+         opt in (backward compatibility)"
     );
 }
 
@@ -586,14 +582,14 @@ fn post_answer_suggestions_timeout_or_error_silently_degrades_code_structure() {
     // returns on timeout/error. This pins WHY the silent-degrade matters:
     // garbage -> empty -> no `suggestions` event, but `done` still fires.
     // The exhaustive parser table (including the truncation-to-3 case) lives
-    // in chat.rs::tests (BE-D02, owned by the dev slot).
+    // in chat.rs::tests.
     let parsed = parse_suggested_questions_response("not json");
     assert!(
         parsed.is_empty(),
         "garbage LLM output must parse to empty Vec, which is the same shape \
          the generator returns on timeout/error; an empty Vec causes chat_inner \
          to skip the `suggestions` send while still emitting `done` (silent \
-         degrade, design §4.2 / §5.2)"
+         degrade)"
     );
 }
 
@@ -649,7 +645,7 @@ fn post_answer_suggestions_never_emitted_on_main_answer_error_code_structure() {
     // rewrite-fallback Err arm.
 }
 
-// User Story: US-CORE-037 (regression, design §6.3) -- Moving `context_text`
+// User Story: US-CORE-037 (regression) -- Moving `context_text`
 // into the `chat_inner` closure (so the post-answer generator can reuse it)
 // must NOT detach the existing `build_preamble` / `context_chars` consumers
 // from the same value. The preamble must still embed the round's retrieved
@@ -690,7 +686,7 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
     // must still be embedded by `build_preamble`. If the move had detached
     // preamble from context (e.g., by re-running format_context_xml on a
     // different/empty slice, or by passing a stale clone), this substring
-    // presence would fail. This pins design §6.3: "context_text 移入闭包
+    // presence would fail. This pins the invariant "context_text 移入闭包
     // 不破坏既有 preamble/context_chars".
     let context = "<documents>\n<document index=\"1\">\n<title>Reset Password</title>\n<content>\nClick the reset button in settings.\n</content>\n</document>\n</documents>";
     let preamble = build_preamble(
@@ -708,7 +704,7 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
         "build_preamble must embed the SAME context string that \
          generate_post_answer_suggestions receives via &context_text; if the \
          closure move detached preamble from context this substring would fail \
-         (design §6.3 regression pin)"
+         (regression pin)"
     );
     let sys_pos = preamble
         .find("You are a knowledge base assistant.")
@@ -731,14 +727,14 @@ fn post_answer_context_text_move_does_not_break_preamble_code_structure() {
 //   - gated on `state.low_recall_config.is_some()`
 //   - logs when `top_score < threshold` OR when there are zero results
 //     (zero-result path always logs with `top_score = NULL`)
-//   - write failure is swallowed via `tracing::warn!` (design §7 P0:
-//     "writing must never block chat or change its latency / availability")
+//   - write failure is swallowed via `tracing::warn!`:
+//     "writing must never block chat or change its latency / availability"
 //
 // Each triggering scenario strongly asserts `resp.status().is_success()`
-// (design §7 P0) — the chat response MUST NOT be blocked or altered by the
+// The chat response MUST NOT be blocked or altered by the
 // bypass write. The detached `tokio::spawn` is async, so before asserting on
 // `low_recall_records` row counts the tests `tokio::time::sleep` briefly to
-// yield and let the spawn complete (BE-T02 spec).
+// yield and let the spawn complete.
 
 /// Ensure the sqlite-vec extension is registered globally so that the
 /// `vec0` virtual table module is available for in-memory connections.
@@ -977,9 +973,9 @@ fn low_recall_scoped_chat_request(
 // query whose top-1 retrieved relevance is below the configured threshold to
 // be automatically recorded (bypass, fire-and-forget) so I can discover KB
 // blind spots. The recording MUST NOT alter or block the chat response.
-// Covers: Design §5.3 (detached `tokio::spawn` bypass write), §6.1 scenario
-//         "启用 [low_recall] + top score 低于阈值 → 记录落库", §7 P0
-//         (write failure / slowness must not affect chat).
+// Covers: detached `tokio::spawn` bypass write —
+//         "启用 [low_recall] + top score 低于阈值 → 记录落库";
+//         write failure / slowness must not affect chat.
 //
 // Strong controls: (a) chat returns success 200 (NOT blocked), (b) after
 // letting the detached spawn complete, `low_recall_records` row count is
@@ -1001,7 +997,7 @@ async fn low_recall_enabled_logs_low_score_record() {
     );
     let resp = app.oneshot(req).await.expect("send request");
 
-    // §7 P0: the bypass write MUST NOT block or break chat.
+    // The bypass write MUST NOT block or break chat.
     assert!(
         resp.status().is_success(),
         "chat endpoint must succeed (200) even when low-recall bypass write \
@@ -1040,10 +1036,9 @@ async fn low_recall_enabled_logs_low_score_record() {
 // configured `[low_recall]`, I expect the feature to be completely inert:
 // no rows are ever written, and chat behavior is byte-identical to before
 // the feature existed.
-// Covers: Design §5.3 (the bypass block is gated on
+// Covers: the bypass block is gated on
 //         `state.low_recall_config.is_some()`; `None` short-circuits before
-//         the spawn), §6.1 scenario "功能关闭 (low_recall_config = None) → 不
-//         产生记录", §4.1 ("功能关闭时不产生任何记录").
+//         the spawn.
 
 #[tokio::test]
 async fn low_recall_disabled_does_not_record() {
@@ -1081,10 +1076,10 @@ async fn low_recall_disabled_does_not_record() {
 // be recorded with `top_score = NULL` (and `result_count = 0`) regardless of
 // the threshold, because a zero-result query is an unconditional KB blind
 // spot. Chat must still succeed.
-// Covers: Design §5.3 (`let top_score = search_results.first().map(|r| r.score)`
+// Covers: `let top_score = search_results.first().map(|r| r.score)`
 //         → None when empty; `should_log = top_score.map_or(true, |s| s <
-//         threshold)` → true for None), §6.1 scenario "result_count == 0
-//         (完全未命中) → 记录落库、topScore = null", §4.1.4 assumption.
+//         threshold)` → true for None — zero-result query (完全未命中)
+//         records with result_count == 0 and topScore = null.
 
 #[tokio::test]
 async fn low_recall_logs_zero_result_with_null_top_score() {
@@ -1136,11 +1131,10 @@ async fn low_recall_logs_zero_result_with_null_top_score() {
 // relevance" is NOT a production KB blind spot, so mixing it into the
 // operator's low-recall view would pollute the signal. The bypass write must
 // be gated on `RetrievalScope::Published` only.
-// Covers: Design §4.1 ("仅对公共 /api/chat (RetrievalScope::Published) 记录,
-//         不对 /api/chat/scoped 记录"), §5.3 (`if matches!(scope, Published)`
-//         guard wraps the entire bypass block), §6.1 scenario "scoped chat
-//         (Collection 作用域) → 不产生记录", §6.3 regression risk row on
-//         scope gating.
+// Covers: 仅对公共 /api/chat (RetrievalScope::Published) 记录，不对
+//         /api/chat/scoped 记录 — `if matches!(scope, Published)` guard
+//         wraps the entire bypass block; scoped chat (Collection 作用域)
+//         → 不产生记录.
 
 #[tokio::test]
 async fn low_recall_skips_scoped_chat() {
@@ -1175,7 +1169,7 @@ async fn low_recall_skips_scoped_chat() {
     );
 }
 
-// Multi-channel public chat scenario tests (BE-T03)
+// Multi-channel public chat scenario tests
 //
 // Covers the channel-scoped behavior introduced by `support-multiple-website`:
 // configured-channel validation, channel-scoped retrieval, channel-level prompt

@@ -12,22 +12,14 @@ use std::time::Duration;
 
 use super::reranker::{DashScopeReranker, OpenRouterReranker, RerankResult, RerankerProvider};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn make_documents(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("document {i}")).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-030 -- As a user, when rerank is enabled the returned
 // results must be ordered by relevance score (descending) as determined by
 // the cross-encoder API, not by the original retrieval order.
-// Covers: Design 4.5.4 -- RerankerProvider dispatches to OpenRouter, parses
+// Covers: RerankerProvider dispatches to OpenRouter, parses
 //         the response, and returns results preserving API ordering (index + score).
 
 #[tokio::test]
@@ -75,7 +67,7 @@ async fn rerank_provider_returns_correct_result_order() {
 // documents sent to the rerank API to prevent exceeding provider limits and
 // control latency. The top_n parameter controls how many documents are
 // included in the API request body.
-// Covers: Design 4.5.2 -- top_n truncates the candidate list before sending
+// Covers: top_n truncates the candidate list before sending
 //         to the API. The request body must contain at most top_n documents.
 
 #[tokio::test]
@@ -120,7 +112,7 @@ async fn rerank_top_n_truncates_candidates() {
 // filter those out gracefully rather than panicking or producing incorrect
 // results. This can happen if the API has a bug or the document list was
 // truncated between request and response processing.
-// Covers: Design 4.5.4 -- the chat handler uses filter_map to skip indices
+// Covers: the chat handler uses filter_map to skip indices
 //         that fall outside the truncated slice. This test verifies the
 //         provider itself returns raw results (filtering is the caller's job),
 //         but confirms that out-of-range indices do not cause errors.
@@ -173,8 +165,8 @@ async fn rerank_out_of_range_index_returned_without_error() {
 // User Story: US-CORE-030 -- As a user, when my query returns no search
 // results (empty document list), the reranker must not make an API call.
 // This avoids unnecessary network latency and API costs.
-// Covers: Design 4.5.2 -- empty documents returns empty Vec without HTTP call.
-//         Design doc 4.5.2 Reranker::rerank: "为空时直接返回空 Vec，不发起 API 调用".
+// Covers: empty documents returns empty Vec without HTTP call.
+//         Reranker::rerank: "为空时直接返回空 Vec，不发起 API 调用".
 
 #[tokio::test]
 async fn rerank_empty_documents_returns_empty_without_api_call() {
@@ -204,7 +196,7 @@ async fn rerank_empty_documents_returns_empty_without_api_call() {
 // the original search results. This test verifies the provider returns the
 // raw out-of-range results; the caller's filter_map produces an empty Vec,
 // triggering the degradation path.
-// Covers: Design 4.5.4 -- filter_map on rerank_results produces empty Vec
+// Covers: filter_map on rerank_results produces empty Vec
 //         when all indices are invalid. Combined with the chat handler's
 //         logic, this means the original search_results are used.
 
@@ -249,7 +241,7 @@ async fn rerank_all_indices_out_of_range_returns_raw_results() {
 // User Story: US-CORE-033 (scenario 2) -- As a user, when the deployer configures
 // rerank provider = "dash_scope", the system must call Alibaba Bailian's rerank
 // endpoint and feed the reranked ordering into the LLM context.
-// Covers: PRD 5.1.2 + Decision "精排新增 dash_scope provider" -- RerankerProvider
+// Covers: PRD 5.1.2 -- RerankerProvider
 //         enum dispatch routes DashScope variant through DashScopeReranker, which
 //         parses the OpenAI-compatible flat response shape and returns results
 //         preserving API ordering (index + relevance_score).

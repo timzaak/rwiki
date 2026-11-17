@@ -144,7 +144,7 @@ async fn insert_test_record(
 
 // User Story: US-CORE-038 -- As an operator, I want to view low-recall records
 // filtered by score so I can identify knowledge-base blind spots.
-// Covers: Design §6.1 scenario 1 / §4.2 maxScore filter; records with topScore
+// Covers: maxScore filter; records with topScore
 //          0.1/0.5/0.9 + ?maxScore=0.4 -> only the 0.1 record returned.
 
 #[tokio::test]
@@ -232,7 +232,7 @@ async fn list_returns_only_low_score_records() {
 
 // User Story: US-CORE-038 -- As an operator, I want to filter records by time
 // range so I can investigate incidents within a specific window.
-// Covers: Design §6.1 scenario 2 / §4.2 from/to closed interval; records on
+// Covers: from/to closed interval; records on
 //          2025-01-01/02/03 + from/to bracketing only 01-02 -> 1 record.
 
 #[tokio::test]
@@ -317,7 +317,7 @@ async fn list_filters_by_time_range() {
 
 // User Story: US-CORE-038 -- As an operator, I want paginated records with a
 // correct total so I can page through large datasets reliably.
-// Covers: Design §6.1 scenario 3 / §4.2 limit/offset + total; 3 records with
+// Covers: limit/offset + total; 3 records with
 //          explicit created_at + ?limit=2&offset=0 -> 2 items, total=3, newest
 //          first (createdAt DESC).
 
@@ -404,7 +404,7 @@ async fn list_pagination_total() {
 
 // User Story: support-multiple-website -- Low-recall queries must require a
 // channelId and reject requests without one.
-// Covers: BE-D04; GET /api/low-recall/records without channelId returns 400.
+// Covers: GET /api/low-recall/records without channelId returns 400.
 
 #[tokio::test]
 async fn list_missing_channel_id_returns_400() {
@@ -421,7 +421,7 @@ async fn list_missing_channel_id_returns_400() {
 }
 
 // User Story: support-multiple-website -- Only configured channels may be queried.
-// Covers: BE-D04; GET /api/low-recall/records with unconfigured channelId returns 400.
+// Covers: GET /api/low-recall/records with unconfigured channelId returns 400.
 
 #[tokio::test]
 async fn list_unconfigured_channel_id_returns_400() {
@@ -442,7 +442,7 @@ async fn list_unconfigured_channel_id_returns_400() {
 
 // User Story: support-multiple-website -- Querying low-recall records for one
 // channel must not return records belonging to another channel.
-// Covers: BE-D04; GET with channelId returns only that channel's records while
+// Covers: GET with channelId returns only that channel's records while
 // preserving default sort order.
 
 #[tokio::test]
@@ -530,7 +530,7 @@ async fn list_returns_only_requested_channel_records() {
 
 // User Story: support-multiple-website -- Score filtering must be scoped by
 // channelId; a filter should not include low-score records from other channels.
-// Covers: BE-D04; ?maxScore combined with channelId returns only matching records
+// Covers: ?maxScore combined with channelId returns only matching records
 // for the requested channel.
 
 #[tokio::test]
@@ -614,7 +614,7 @@ async fn list_channel_isolation_preserves_score_filter() {
 
 // User Story: US-CORE-038 -- As an operator, I want unauthorized access rejected
 // so that sensitive user queries are protected.
-// Covers: Design §6.1 scenario 4 / §4.2 401 on missing or invalid token; the
+// Covers: 401 on missing or invalid token; the
 //          endpoint is mounted under doc_router (auth_middleware), so both the
 //          no-token and wrong-token cases must yield 401 Unauthorized.
 
@@ -655,7 +655,7 @@ async fn list_requires_auth() {
 // User Story: US-CORE-038 -- As an operator, when there are no low-recall
 // records I want an empty list (not an error) so the UI can show the empty
 // state (US-CORE-038 scenario 4).
-// Covers: Design §6.1 scenario 4 empty state / §4.2 200 with items=[] total=0
+// Covers: 200 with items=[] total=0
 //          when the table has no rows for the requested channel.
 
 #[tokio::test]
@@ -686,7 +686,7 @@ async fn list_empty_returns_empty() {
 
 // User Story: US-CORE-038 -- As a system, I want invalid filter parameters
 // rejected with 400 so callers know the query was malformed.
-// Covers: Design §6.1 scenario 6 / §4.2 400 on minScore > maxScore and on
+// Covers: 400 on minScore > maxScore and on
 //          non-ISO8601 from/to.
 
 #[tokio::test]

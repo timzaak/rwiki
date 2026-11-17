@@ -4,7 +4,7 @@
 //! - Config loads [llm].api_key from file without OPENROUTER_API_KEY env var.
 //! - Config ignores OPENROUTER_API_KEY env var even when set (env var reading removed).
 //!
-//! These tests provide regression protection for the env var removal in BE-D01.
+//! These tests provide regression protection for the env var removal.
 
 use super::{
     validate_historical_rows_have_channel_id, AppConfig, ChannelConfig, ChannelValidationError,
@@ -134,7 +134,7 @@ fn llm_api_key_loads_from_file_without_openrouter_env() {
 
 // User Story: US-LLM-CONFIG-001
 // Covers: Even if OPENROUTER_API_KEY is set in the environment, config uses the file value.
-//         The env var reading for LLM api_key was removed by BE-D01.
+//         The env var reading for LLM api_key was removed.
 #[test]
 fn llm_api_key_ignores_openrouter_env_var() {
     let prev = take_env("OPENROUTER_API_KEY");
@@ -214,8 +214,8 @@ timeout_secs = 3
 // User Story: US-CORE-033 (scenario 2 config seam) -- As a deployer, I configure
 // a single Bailian API Key to drive chat + embedding + DashScope rerank, and the
 // full AppConfig must parse with the rerank provider set to dash_scope.
-// Covers: PRD 3.2 "单一 provider 全栈" + PRD 8 "精排新增 dash_scope provider" +
-//         decision "默认精排模型 qwen3-rerank" -- verified at the AppConfig
+// Covers: PRD 3.2 "单一 provider 全栈" + PRD 8 "精排新增 dash_scope provider"
+//         -- verified at the AppConfig
 //         deserialization seam (toml -> AppConfig), distinct from the RerankConfig
 //         unit test in config.rs which only exercises the isolated struct.
 #[test]
@@ -390,13 +390,13 @@ model = "qwen3-rerank"
     restore_env("OPENROUTER_API_KEY", prev_or);
 }
 
-// Post-answer suggested-questions switch (BE-T02 / US-CORE-037)
+// Post-answer suggested-questions switch (US-CORE-037)
 //
 // The toggle `enable_post_answer_suggestions` lives on `ChatConfig`
 // (`backend/core/src/config.rs` lines 129-133: `#[serde(default)] pub
 // enable_post_answer_suggestions: bool`). It is reachable as
 // `config.chat.enable_post_answer_suggestions`. The feature must be OFF by
-// default in every existing deployment (design §1.4, §5.3) -- this is the core
+// default in every existing deployment -- this is the core
 // safety property: the SSE `suggestions` event must not appear for anyone who
 // has not explicitly opted in. These four scenarios pin that property at the
 // config-deserialization seam.
@@ -482,11 +482,11 @@ enable_post_answer_suggestions = true"#,
 
 // User Story: US-CORE-037 -- As a deployer with an existing config file that
 // has no `[chat]` section at all, my deployment must keep loading and the
-// post-answer suggestions feature must stay OFF (backward-compat, design §1.4).
+// post-answer suggestions feature must stay OFF (backward-compat).
 // Covers: Verified contract -- `AppConfig.chat: ChatConfig` carries
 //         `#[serde(default)]` (`backend/core/src/config.rs` lines 18-19), so a
 //         missing `[chat]` section deserializes to `ChatConfig::default()`, and
-//         BE-D01's `Default` impl sets `enable_post_answer_suggestions: false`
+//         The `Default` impl sets `enable_post_answer_suggestions: false`
 //         (`config.rs` line 161). This test FAILS loudly if anyone removes
 //         `#[serde(default)]` from `AppConfig.chat` (load would error) or flips
 //         the toggle default to `true`.
@@ -512,7 +512,7 @@ fn post_answer_suggestions_missing_chat_section_is_backward_compatible_and_false
 // to keep the feature OFF, so any code path that constructs a config without
 // file input (tests, fresh AppState, fallbacks) cannot accidentally enable the
 // SSE `suggestions` event.
-// Covers: The `Default` impl entry BE-D01 added -- `enable_post_answer_suggestions:
+// Covers: The `Default` impl -- `enable_post_answer_suggestions:
 //         false` (`config.rs` line 161). Fails if someone removes that explicit
 //         initializer from `impl Default for ChatConfig`.
 #[test]
@@ -525,12 +525,11 @@ fn post_answer_suggestions_default_impl_is_false() {
     );
 }
 
-// LowRecallConfig enablement toggle (BE-T03 / US-CORE-038 + US-CORE-033)
+// LowRecallConfig enablement toggle (US-CORE-038 + US-CORE-033)
 //
 // The low-recall logging feature's enablement lives on `AppConfig.low_recall:
 // Option<LowRecallConfig>` (`backend/core/src/config.rs` lines 28-31:
-// `#[serde(default)] pub low_recall: Option<LowRecallConfig>`). Per design §4.1
-// the toggle mirrors the `[rerank]` section-presence convention established by
+// `#[serde(default)] pub low_recall: Option<LowRecallConfig>`). The toggle mirrors the `[rerank]` section-presence convention established by
 // commit 4b53c6d: an ABSENT `[low_recall]` section -> `None` (feature OFF); a
 // PRESENT section (even empty) -> `Some(..)` (feature ON). The `threshold`
 // field carries `#[serde(default = "default_low_recall_threshold")]` = 0.3
@@ -586,8 +585,8 @@ model = "gpt-4o-mini"
 // records are produced and chat latency/behavior is untouched.
 // Also US-CORE-033 (config seam) -- the deserialization contract for the
 // absent-section case.
-// Covers: Design §4.1 (enablement = section presence, mirroring rerank commit
-//         4b53c6d) + §5.1 (`#[serde(default)]` on `AppConfig.low_recall` ->
+// Covers: (enablement = section presence, mirroring rerank commit
+//         4b53c6d) + (`#[serde(default)]` on `AppConfig.low_recall` ->
 //         absent section deserializes to `None`). This test FAILS if anyone
 //         removes `#[serde(default)]` from `AppConfig.low_recall` (load would
 //         error on configs without the section, breaking every pre-existing
@@ -636,7 +635,7 @@ model = "gpt-4o-mini"
 // feature turns ON with the documented default threshold 0.3 so I do not have
 // to guess a value on first enable.
 // Also US-CORE-033 (config seam) -- the section-presence enablement contract.
-// Covers: Design §4.1 (section presence = enablement) + §5.1 (`LowRecallConfig`
+// Covers: (section presence = enablement) + (`LowRecallConfig`
 //         `#[serde(default = "default_low_recall_threshold")]` -> 0.3 when the
 //         field is omitted; `default_low_recall_threshold()` returns 0.3 per
 //         `config.rs` lines 325-327). This test FAILS if anyone changes the
@@ -669,7 +668,7 @@ fn low_recall_enabled_when_section_present() {
 // is parsed verbatim (no clamping/surprise coercion) so calibration is
 // predictable.
 // Also US-CORE-033 (config seam) -- the explicit-value parse path.
-// Covers: Design §5.1 (`LowRecallConfig.threshold: f64` round-trips through
+// Covers: (`LowRecallConfig.threshold: f64` round-trips through
 //         TOML). This test FAILS if the field is renamed, the type stops being
 //         a plain `f64`, or anyone adds silent clamping that would mask a
 //         calibration typo.
@@ -694,7 +693,7 @@ fn low_recall_threshold_explicit_value_parsed() {
     restore_env("OPENROUTER_API_KEY", prev_or);
 }
 
-// Channel configuration scenarios (BE-T01)
+// Channel configuration scenarios
 //
 // Covers: configured channel parsing, default representation of omitted fields,
 //         startup rejection preconditions, and historical-row validation.
@@ -734,7 +733,7 @@ system_prompt = "test prompt"
 
 // User Story: support-multiple-website — As a deployer, I configure multiple
 // channels with names, per-channel system prompts, and localized suggested questions.
-// Covers: Design 5.1 — full AppConfig parses `[channels.<id>]` with all optional
+// Covers: full AppConfig parses `[channels.<id>]` with all optional
 //         fields present on one channel and absent on another.
 #[test]
 fn multiple_channels_parse_with_names_prompts_and_localized_suggestions() {
@@ -802,7 +801,7 @@ name = "Developer Docs"
 
 // User Story: support-multiple-website — As a deployer, I can declare a channel
 // with only a name and rely on the global prompt / empty suggestions.
-// Covers: Design 5.1 — omitted `system_prompt` and `suggested_questions` stay
+// Covers: omitted `system_prompt` and `suggested_questions` stay
 //         `Option::None`; tests must not invent fallback values.
 #[test]
 fn omitted_channel_prompt_and_suggestions_represent_defaults() {

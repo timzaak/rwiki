@@ -13,10 +13,6 @@ use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMete
 
 use rwiki_core::infrastructure::metrics::RwikiMetrics;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn build_test_provider() -> (
     SdkMeterProvider,
     opentelemetry::metrics::Meter,
@@ -85,14 +81,10 @@ fn collect_metric_names(
     names
 }
 
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
-
 // User Story: As a platform engineer, I need to verify that all primary RAG
 // pipeline metrics (counters and histograms) are recorded and captured by the
 // OTel pipeline when a realistic request sequence is simulated.
-// Covers: BE-D01 (all 16 instruments), BE-D02 (RwikiMetrics integration).
+// Covers: all 16 instruments, RwikiMetrics integration.
 #[test]
 fn metrics_instruments_are_recordable_under_meter_provider() {
     let (provider, meter, exporter) = build_test_provider();
@@ -156,7 +148,7 @@ fn metrics_instruments_are_recordable_under_meter_provider() {
 // User Story: As a platform engineer, I need to confirm that empty retrieval
 // results are tracked via a dedicated counter, so alerting can detect retrieval
 // degradation.
-// Covers: BE-D01 (retrieval_empty_count counter), BE-D03 (retrieval stage metrics).
+// Covers: retrieval_empty_count counter, retrieval stage metrics.
 #[test]
 fn retrieval_empty_counter_increments() {
     let (provider, meter, exporter) = build_test_provider();
@@ -176,7 +168,7 @@ fn retrieval_empty_counter_increments() {
 // User Story: As a platform engineer, I need all error and timeout counters
 // to be captured by the OTel pipeline so that error dashboards and alerts work
 // correctly.
-// Covers: BE-D01 (5 error/timeout counters), BE-D03 (error path metrics).
+// Covers: error/timeout counters, error path metrics.
 #[test]
 fn error_counter_increments() {
     let (provider, meter, exporter) = build_test_provider();
@@ -220,7 +212,7 @@ fn error_counter_increments() {
 // User Story: As a platform engineer, I need every instrument's metric name to
 // match the design specification exactly, so that dashboards and alerts built
 // on expected metric names do not silently break.
-// Covers: BE-D01 (all 16 instrument names verified against design).
+// Covers: all 16 instrument names.
 #[test]
 fn all_instrument_names_match_design() {
     let (provider, meter, exporter) = build_test_provider();

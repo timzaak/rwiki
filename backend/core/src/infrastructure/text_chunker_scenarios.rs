@@ -12,10 +12,6 @@ use super::text_chunker::{split_long_chunks_with_section, split_long_chunks_with
 use super::xlsx_parser::ParsedChunk;
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// Scenario tests
-// ---------------------------------------------------------------------------
-
 // User Story: US-CORE-001
 // Covers: When a single row's content exceeds max_chunk_chars and is split into
 //         N sub-chunks via split_long_chunks_with_section, each resulting sub-chunk
@@ -59,7 +55,7 @@ fn chunk_count_for_split_row_sub_chunks() {
 }
 
 // User Story: US-CORE-001
-// Covers: A short chunk that is not split gets chunk_count = Some(1) after
+// Covers: a short chunk that is not split gets chunk_count = Some(1) after
 //         passing through split_long_chunks_with_section. This verifies that
 //         fill_chunk_counts correctly annotates single (unsplit) chunks.
 #[test]

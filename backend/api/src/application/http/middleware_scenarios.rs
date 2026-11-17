@@ -99,7 +99,7 @@ fn test_channels_config() -> rwiki_core::config::ChannelsConfig {
 // User Story: As an API operator, I want unauthenticated requests to document
 // endpoints to be rejected, so that only authorized clients can manage
 // documents.
-// Covers: BE-D02 (auth middleware rejects missing token on protected routes)
+// Covers: auth middleware rejects missing token on protected routes
 
 #[tokio::test]
 async fn document_list_without_token_returns_401() {
@@ -122,7 +122,7 @@ async fn document_list_without_token_returns_401() {
 
 // User Story: As an API operator, I want requests with invalid Bearer tokens
 // to be rejected, so that guessing tokens does not grant access.
-// Covers: BE-D02 (auth middleware rejects invalid token)
+// Covers: auth middleware rejects invalid token
 
 #[tokio::test]
 async fn document_list_with_invalid_token_returns_401() {
@@ -146,7 +146,7 @@ async fn document_list_with_invalid_token_returns_401() {
 
 // User Story: As an authorized client, I want to access document endpoints
 // with a valid Bearer token, so that I can manage documents.
-// Covers: BE-D02 (auth middleware passes valid token through)
+// Covers: auth middleware passes valid token through
 
 #[tokio::test]
 async fn document_list_with_valid_token_returns_200() {
@@ -251,7 +251,7 @@ async fn document_list_with_spoofed_forwarded_ip_returns_401() {
 // User Story: As a monitoring system, I want the health check endpoint to be
 // accessible without authentication, so that I can probe service health
 // without managing tokens.
-// Covers: BE-D03 (health route is unprotected)
+// Covers: health route is unprotected
 
 #[tokio::test]
 async fn health_check_without_token_returns_200() {
@@ -274,7 +274,7 @@ async fn health_check_without_token_returns_200() {
 
 // User Story: As a user, I want to chat with the knowledge base without an
 // API token, so that the chat endpoint remains open for interactive use.
-// Covers: BE-D03 (chat route is unprotected)
+// Covers: chat route is unprotected
 
 #[tokio::test]
 async fn chat_without_token_does_not_return_401() {
@@ -300,7 +300,7 @@ async fn chat_without_token_does_not_return_401() {
 
 // User Story: As an API operator, I want file upload to require
 // authentication, so that only authorized users can ingest documents.
-// Covers: BE-D02, BE-D03 (upload route is behind auth middleware)
+// Covers: upload route is behind auth middleware
 
 #[tokio::test]
 async fn upload_without_token_returns_401() {
@@ -323,7 +323,7 @@ async fn upload_without_token_returns_401() {
 
 // User Story: As an API operator, I want document deletion to require
 // authentication, so that only authorized users can remove documents.
-// Covers: BE-D02, BE-D03 (delete route is behind auth middleware)
+// Covers: delete route is behind auth middleware
 
 #[tokio::test]
 async fn delete_without_token_returns_401() {

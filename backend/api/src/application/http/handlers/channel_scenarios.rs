@@ -114,7 +114,7 @@ fn sample_channels_config() -> ChannelsConfig {
 
 // User Story: support-multiple-website — As a frontend or widget, I want to
 // discover configured channels so I can let users pick or validate a channel.
-// Covers: Design 4.2.1 — `/api/channels` returns `{ id, name }` for every
+// Covers: `/api/channels` returns `{ id, name }` for every
 //         configured channel and does not leak system prompts or questions.
 #[tokio::test]
 async fn list_channels_returns_id_and_name_without_prompts_or_suggestions() {
@@ -168,7 +168,7 @@ async fn list_channels_returns_id_and_name_without_prompts_or_suggestions() {
 
 // User Story: support-multiple-website — Callers must be able to handle a
 // registry with no channels even though startup validation normally prevents it.
-// Covers: Design 4.2.1 — `/api/channels` returns `channels: []` for an empty registry.
+// Covers: `/api/channels` returns `channels: []` for an empty registry.
 #[tokio::test]
 async fn list_channels_returns_empty_array_when_no_channels_configured() {
     let state = test_app_state_with_channels(ChannelsConfig::default()).await;

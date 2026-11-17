@@ -557,7 +557,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.3 TracerGuard Drop — shutdown completes without panic.
+    // Covers: TracerGuard Drop — shutdown completes without panic.
     // User Story: Graceful shutdown flushes pending spans; TracerGuard::Drop must not panic.
     //
     // Uses SdkTracerProvider::default() (no exporter, empty span processors) to avoid
@@ -570,7 +570,7 @@ mod tests {
         drop(guard);
     }
 
-    // Covers: Design 5.2 conditional OTLP layer, Design 6.1 "endpoint empty skips OTLP init".
+    // Covers: conditional OTLP layer, "endpoint empty skips OTLP init".
     // User Story: OTLP layer is only created when endpoint is non-empty.
     //
     // Verifies the conditional: empty endpoint means init_otel_tracing is NOT called,

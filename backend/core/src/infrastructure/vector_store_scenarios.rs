@@ -1941,7 +1941,7 @@ async fn backfill_indexes_all_chunks_but_search_filters_by_status() {
 const CHANNEL_A: &str = "channel-a";
 const CHANNEL_B: &str = "channel-b";
 
-// Covers: BE-D02 — get_neighbor_chunks under RetrievalScope::Channel returns
+// Covers: get_neighbor_chunks under RetrievalScope::Channel returns
 // chunks only when both documents.channel_id matches and status is published.
 // Draft chunks in the same channel and published chunks in another channel are excluded.
 #[tokio::test]
@@ -2021,7 +2021,7 @@ async fn get_neighbor_chunks_channel_scope_filters_by_channel_and_published_stat
     assert_eq!(channel_b_results[0].chunk_id, "b_pub_chunk");
 }
 
-// Covers: BE-D02 — search_by_keyword under RetrievalScope::Channel returns only
+// Covers: search_by_keyword under RetrievalScope::Channel returns only
 // chunks from published documents that belong to the requested channel.
 // Unpublished documents and documents owned by other channels are excluded.
 #[tokio::test]

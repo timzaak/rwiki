@@ -1568,7 +1568,7 @@ mod tests {
         );
     }
 
-    // --- match_locale and is_valid_locale tests (BE-D01) ---
+    // --- match_locale and is_valid_locale tests ---
 
     // Covers: PRD locale validation — valid 2-letter locale accepted.
     #[test]
@@ -1658,14 +1658,14 @@ mod tests {
         );
     }
 
-    // Covers: Design 4.2.2 — config None returns empty vec.
+    // Covers: config None returns empty vec.
     #[test]
     fn match_locale_none_config_returns_empty() {
         let result = match_locale(&None, Some("en"));
         assert!(result.is_empty(), "None config should return empty vec");
     }
 
-    // Covers: Design 4.2.2 — exact match returns matching questions.
+    // Covers: exact match returns matching questions.
     #[test]
     fn match_locale_exact_match() {
         let config = Some(HashMap::from([
@@ -1677,7 +1677,7 @@ mod tests {
         assert_eq!(result, vec!["Q zh"]);
     }
 
-    // Covers: Design 4.2.2 — case-insensitive exact match.
+    // Covers: case-insensitive exact match.
     #[test]
     fn match_locale_case_insensitive() {
         let config = Some(HashMap::from([(
@@ -1688,7 +1688,7 @@ mod tests {
         assert_eq!(result, vec!["Q zh"]);
     }
 
-    // Covers: Design 4.2.2 — longest prefix match when no exact match.
+    // Covers: longest prefix match when no exact match.
     #[test]
     fn match_locale_longest_prefix_match() {
         let config = Some(HashMap::from([
@@ -1704,7 +1704,7 @@ mod tests {
         assert_eq!(result, vec!["Q zh short"]);
     }
 
-    // Covers: Design 4.2.2 — default key fallback when no locale match.
+    // Covers: default key fallback when no locale match.
     #[test]
     fn match_locale_default_fallback() {
         let config = Some(HashMap::from([
@@ -1715,7 +1715,7 @@ mod tests {
         assert_eq!(result, vec!["Q default"]);
     }
 
-    // Covers: Design 4.2.2 — no match and no default returns empty vec.
+    // Covers: no match and no default returns empty vec.
     #[test]
     fn match_locale_no_match_no_default_returns_empty() {
         let config = Some(HashMap::from([(
@@ -1729,7 +1729,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 4.2.2 — None locale falls back to default.
+    // Covers: None locale falls back to default.
     #[test]
     fn match_locale_none_locale_uses_default() {
         let config = Some(HashMap::from([
@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(result, vec!["Q default"]);
     }
 
-    // Covers: Design 4.2.2 — None locale without default returns empty.
+    // Covers: None locale without default returns empty.
     #[test]
     fn match_locale_none_locale_no_default_returns_empty() {
         let config = Some(HashMap::from([(
@@ -1874,7 +1874,7 @@ mod tests {
 
     // --- build_post_answer_prompt tests (US-CORE-037) ---
 
-    // Covers: prompt grounds in user_message + answer + context (design §6.1).
+    // Covers: prompt grounds in user_message + answer + context.
     #[test]
     fn build_post_answer_prompt_includes_context_segments() {
         let user_message = "如何重置密码?";
@@ -1899,7 +1899,7 @@ mod tests {
         );
     }
 
-    // --- session_key tests (BE-D03) ---
+    // --- session_key tests ---
 
     /// Covers: channel-scoped chat keys include channel id and session id with a prefix,
     /// so they cannot collide with old global sessions that used plain session_id.

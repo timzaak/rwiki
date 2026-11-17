@@ -263,7 +263,7 @@ fn openapi_empty_paths_json() -> Vec<u8> {
 // User Story: As a knowledge base editor, I want to upload a valid OpenAPI 3.x
 // JSON file so that each API endpoint becomes an independent knowledge page in
 // draft status, ready for review before publishing.
-// Covers: US-CORE-018, BE-D01 (openapi parser + .json routing)
+// Covers: US-CORE-018, openapi parser + .json routing
 
 #[tokio::test]
 async fn upload_valid_openapi_json_returns_200_draft() {
@@ -302,7 +302,7 @@ async fn upload_valid_openapi_json_returns_200_draft() {
 // User Story: As a knowledge base editor, I want the system to reject plain
 // JSON files that are not OpenAPI format with a clear error, so that I know
 // the file lacks the required `openapi` field.
-// Covers: US-CORE-018, BE-D01 (format validation)
+// Covers: US-CORE-018, format validation
 
 #[tokio::test]
 async fn upload_non_openapi_json_returns_400() {
@@ -328,7 +328,7 @@ async fn upload_non_openapi_json_returns_400() {
 // User Story: As a knowledge base editor, I want the system to reject OpenAPI
 // files that have no endpoints with a clear error, so that I know there is
 // nothing to index.
-// Covers: US-CORE-018, BE-D01 (EmptyPaths validation)
+// Covers: US-CORE-018, EmptyPaths validation
 
 #[tokio::test]
 async fn upload_openapi_empty_paths_returns_400() {
@@ -358,7 +358,7 @@ async fn upload_openapi_empty_paths_returns_400() {
 // User Story: As a knowledge base editor, I want to upload an OpenAPI JSON file
 // and then publish it, so that the API documentation becomes available for RAG
 // retrieval via the document list.
-// Covers: US-CORE-018, BE-D01 (full pipeline: upload -> publish -> list)
+// Covers: US-CORE-018, full pipeline: upload -> publish -> list
 
 #[tokio::test]
 async fn upload_openapi_then_publish_shows_in_document_list() {
@@ -415,7 +415,7 @@ async fn upload_openapi_then_publish_shows_in_document_list() {
 
 // User Story: support-multiple-website — As a knowledge base editor, I want the
 // OpenAPI upload path to persist the channelId I provide and echo it back.
-// Covers: BE-D02 (OpenAPI JSON upload writes documents.channel_id and returns channelId).
+// Covers: OpenAPI JSON upload writes documents.channel_id and returns channelId.
 #[tokio::test]
 async fn upload_openapi_with_channel_id_persists_channel_id() {
     let state = test_app_state().await;
@@ -458,7 +458,7 @@ async fn upload_openapi_with_channel_id_persists_channel_id() {
 
 // User Story: support-multiple-website — As an API operator, I want OpenAPI
 // uploads without a channelId to be rejected with 400.
-// Covers: BE-D02 (upload endpoint requires channelId before format routing).
+// Covers: upload endpoint requires channelId before format routing.
 #[tokio::test]
 async fn upload_openapi_without_channel_id_returns_400() {
     let state = test_app_state().await;

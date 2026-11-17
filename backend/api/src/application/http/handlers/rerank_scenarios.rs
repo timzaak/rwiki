@@ -174,8 +174,8 @@ fn chat_request(message: &str, session_id: &str) -> Request<Body> {
 
 // User Story: US-CORE-031 -- As a user, when rerank is disabled (the default),
 // search results must pass through unchanged. No rerank API call is made.
-// Covers: Design 4.5.4 -- when state.reranker is None, the if-let branch is
-//         skipped and search_results are used as-is. Design 4.5.1 -- default
+// Covers: when state.reranker is None, the if-let branch is
+//         skipped and search_results are used as-is. Default
 //         enable=false means reranker is None in AppState.
 
 #[tokio::test]
@@ -199,7 +199,7 @@ async fn rerank_disabled_returns_original_results() {
 // User Story: US-CORE-031 -- As a user, when the rerank API returns a 500
 // server error, the system must degrade to the original RRF fusion results.
 // The user should still receive a normal response without errors.
-// Covers: Design 4.5.4 -- Err(e) arm in the rerank match returns search_results.
+// Covers: Err(e) arm in the rerank match returns search_results.
 //         US-CORE-031 core constraint: "API 调用失败时降级使用 RRF 融合结果".
 
 #[tokio::test]
@@ -239,7 +239,7 @@ async fn rerank_api_error_degrades_to_original() {
 // User Story: US-CORE-031 -- As a user, when the rerank API returns 401
 // (invalid API key), the system must degrade gracefully. The user must not
 // see any error; the system logs a warning and uses original RRF results.
-// Covers: US-CORE-031 "API Key 无效" scenario. Design 4.5.4 -- RerankError::Api
+// Covers: US-CORE-031 "API Key 无效" scenario. RerankError::Api
 //         with status 401 is caught in the Err arm and falls back.
 
 #[tokio::test]
@@ -279,8 +279,8 @@ async fn rerank_api_auth_error_degrades_to_original() {
 // (exceeds timeout), the system must degrade to original results without
 // making the user wait. This prevents rerank from blocking the entire
 // response pipeline.
-// Covers: Design 4.5.4 -- timeout triggers RerankError::Timeout which is
-//         caught in the Err arm. Design 4.5.1 -- timeout_secs config default
+// Covers: timeout triggers RerankError::Timeout which is
+//         caught in the Err arm. The timeout_secs config default
 //         is 3 seconds. PRD non-functional: "rerank 阶段延迟 <= 1 秒".
 
 #[tokio::test]
@@ -325,7 +325,7 @@ async fn rerank_timeout_degrades_to_original() {
 // User Story: US-CORE-031 -- As a user, when the rerank API returns 200 but
 // with malformed JSON (e.g., missing expected fields), the system must
 // degrade gracefully instead of crashing or returning an error to the user.
-// Covers: Design 4.5.4 -- RerankError::ResponseParse is caught in the Err arm.
+// Covers: RerankError::ResponseParse is caught in the Err arm.
 //         The handler logs a warning and falls back to original results.
 
 #[tokio::test]
@@ -366,7 +366,7 @@ async fn rerank_invalid_json_degrades_to_original() {
 // results (after global RRF) and apply cross-encoder re-scoring. The
 // final context sent to the LLM must reflect rerank ordering, not the
 // raw RRF fusion order.
-// Covers: Design 4.5.4 -- the same rerank block (lines 605-632) applies to
+// Covers: the same rerank block (lines 605-632) applies to
 //         both single-query and multi-query paths because it runs after
 //         search_results are finalized. For multi-query, search_results
 //         come from search_multi_query_hybrid() which performs global RRF.
@@ -417,9 +417,9 @@ async fn multi_query_rerank_applies_to_fused_results() {
 // when the rerank API fails, the system must degrade to the global RRF
 // fusion results (not the raw per-query results). This ensures the user
 // still receives the best available results from the multi-query search.
-// Covers: Design 4.5.4 -- Err arm returns search_results which, for the
+// Covers: Err arm returns search_results which, for the
 //         multi-query path, are the global RRF fusion results from
-//         search_multi_query_hybrid(). Design 5.1 row 4: "多查询 + rerank
+//         search_multi_query_hybrid(). "多查询 + rerank
 //         降级：rerank 失败时回退到全局 RRF 融合结果".
 
 #[tokio::test]

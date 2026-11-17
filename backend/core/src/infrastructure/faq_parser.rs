@@ -12,10 +12,6 @@ use uuid::Uuid;
 
 use super::xlsx_parser::{ContentType, ParsedChunk};
 
-// ---------------------------------------------------------------------------
-// Internal deserialization types
-// ---------------------------------------------------------------------------
-
 /// Tag value accepts either a comma-separated string or a string array.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -52,10 +48,6 @@ struct FaqItem {
     locale: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
 /// Error type for FAQ JSONL file parsing.
 #[derive(Debug)]
 pub enum FaqParseError {
@@ -78,7 +70,7 @@ impl fmt::Display for FaqParseError {
             FaqParseError::EmptyFile => write!(f, "No usable Q&A records found in the file"),
             FaqParseError::MissingRequiredFields { index, fields } => {
                 // Hand-render fields as slash-joined (NOT Debug format) so the
-                // output matches the design doc §4.2.2 table:
+                // output matches the expected error-message format:
                 //   "Q&A item 0 is missing required field(s): question/answer"
                 write!(
                     f,
@@ -94,10 +86,6 @@ impl fmt::Display for FaqParseError {
 }
 
 impl std::error::Error for FaqParseError {}
-
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Parse a FAQ JSONL file into one `ParsedChunk` per Q&A pair.
 ///

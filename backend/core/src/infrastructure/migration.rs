@@ -171,7 +171,7 @@ mod tests {
         conn
     }
 
-    // Covers: BE-D04 chat_feedback migration — the natural key must include channel_id
+    // Covers: chat_feedback migration — the natural key must include channel_id
     // so identical session/message ids from different channels cannot overwrite each other.
     // Historical rows with NULL channel_id must migrate without failure (startup validation
     // enforces backfill before the service actually runs).
@@ -184,7 +184,7 @@ mod tests {
             .to_version(&mut conn, 6)
             .expect("apply migrations through site_id column addition");
 
-        // Seed a pre-BE-D04 feedback row with NULL site_id.
+        // Seed a legacy feedback row with NULL site_id.
         conn.execute(
             "INSERT INTO chat_feedback (session_id, message_id, feedback, user_message, assistant_message)
              VALUES ('s1', 'm1', 'like', 'hello', 'hi')",
@@ -192,7 +192,6 @@ mod tests {
         )
         .expect("insert historical feedback row");
 
-        // Apply the rename/recreation migration.
         migrations(1536)
             .to_latest(&mut conn)
             .expect("apply chat_feedback rename/recreation migration");

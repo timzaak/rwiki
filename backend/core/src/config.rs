@@ -1024,7 +1024,7 @@ mod tests {
         }
     }
 
-    // Covers: A mistyped mode fails config loading instead of silently falling
+    // Covers: a mistyped mode fails config loading instead of silently falling
     // back — the modes differ in cost and recall, so running the wrong one
     // unnoticed is worse than refusing to start.
     #[test]
@@ -1071,7 +1071,7 @@ mod tests {
         assert_eq!(config.otel.license_key, "file-value");
     }
 
-    // Covers: Design 5.1 OtelConfig struct — all fields parse correctly within AppConfig context.
+    // Covers: OtelConfig struct — all fields parse correctly within AppConfig context.
     // User Story: OTLP config integration — endpoint, license_key, and service_name all deserialize.
     #[test]
     fn otel_config_all_fields_in_app_config() {
@@ -1110,9 +1110,9 @@ mod tests {
         assert_eq!(config.otel.service_name, "custom-name");
     }
 
-    // --- content_language config parsing tests (BE-T01) ---
+    // --- content_language config parsing tests ---
 
-    // Covers: Design 5.1 — content_language parses from TOML with English value.
+    // Covers: content_language parses from TOML with English value.
     // User Story: Query language aware rewrite — English content_language deserializes correctly.
     #[test]
     fn chat_config_parses_content_language_english() {
@@ -1127,7 +1127,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.1 — content_language parses from TOML with Chinese value.
+    // Covers: content_language parses from TOML with Chinese value.
     // User Story: Query language aware rewrite — Chinese content_language deserializes correctly.
     #[test]
     fn chat_config_parses_content_language_chinese() {
@@ -1142,7 +1142,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.1 — content_language parses empty string (handler layer filters to None).
+    // Covers: content_language parses empty string (handler layer filters to None).
     // User Story: Query language aware rewrite — empty string stored as-is; handler filters it.
     #[test]
     fn chat_config_parses_content_language_empty_string() {
@@ -1157,7 +1157,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.1 — missing content_language field defaults to None.
+    // Covers: missing content_language field defaults to None.
     // User Story: Query language aware rewrite — omitted field gives None (no language conversion).
     #[test]
     fn chat_config_missing_content_language_defaults_to_none() {
@@ -1171,7 +1171,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.1 — missing [chat] section gives content_language = None via Default.
+    // Covers: missing [chat] section gives content_language = None via Default.
     // User Story: Query language aware rewrite — backward compatible, no [chat] means None.
     #[test]
     fn app_config_missing_chat_section_content_language_is_none() {
@@ -1201,7 +1201,7 @@ mod tests {
         );
     }
 
-    // --- RerankConfig tests (BE-D01) ---
+    // --- RerankConfig tests ---
 
     // Covers: RerankConfig defaults — provider/top_n/timeout_secs/model/api_key/base_url.
     #[test]
@@ -1214,7 +1214,7 @@ mod tests {
         assert!(config.api_key.is_none());
     }
 
-    // Covers: Design 4.5.1 — RerankConfig parses all fields from TOML.
+    // Covers: RerankConfig parses all fields from TOML.
     #[test]
     fn rerank_config_parses_all_fields() {
         let toml_str = r#"
@@ -1491,7 +1491,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 4.5.1 — Invalid provider value causes deserialization error, not silent fallback.
+    // Covers: Invalid provider value causes deserialization error, not silent fallback.
     #[test]
     fn rerank_config_invalid_provider_fails() {
         let toml_str = r#"
@@ -1504,7 +1504,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 4.5.1 — Partial config uses defaults for missing fields.
+    // Covers: Partial config uses defaults for missing fields.
     #[test]
     fn rerank_config_partial_uses_defaults() {
         let toml_str = r#"
@@ -1557,9 +1557,9 @@ mod tests {
         );
     }
 
-    // --- ChannelConfig / ChannelsConfig tests (BE-D01) ---
+    // --- ChannelConfig / ChannelsConfig tests ---
 
-    // Covers: Design 5.1 — missing [channels] section defaults to empty.
+    // Covers: missing [channels] section defaults to empty.
     #[test]
     fn channels_config_defaults_to_empty() {
         let config = ChannelsConfig::default();
@@ -1570,7 +1570,7 @@ mod tests {
         assert!(config.list_metadata().is_empty());
     }
 
-    // Covers: Design 5.1 — [channels.<id>] parses name, system_prompt, suggested_questions
+    // Covers: [channels.<id>] parses name, system_prompt, suggested_questions
     // and content_language.
     #[test]
     fn channels_config_parses_from_toml() {
@@ -1608,7 +1608,7 @@ mod tests {
         assert!(dev.content_language.is_none());
     }
 
-    // Covers: Design 5.1 — list_metadata returns only id + name in deterministic order.
+    // Covers: list_metadata returns only id + name in deterministic order.
     #[test]
     fn channels_config_list_metadata_includes_id_and_name() {
         let mut channels = ChannelsConfig::default();
@@ -1641,7 +1641,7 @@ mod tests {
         assert_eq!(sorted[1].name, "B Channel");
     }
 
-    // Covers: BE-D01 helper — empty/whitespace channel ids are rejected.
+    // Covers: empty/whitespace channel ids are rejected.
     #[test]
     fn normalize_channel_id_trims_and_rejects_empty() {
         assert_eq!(
@@ -1653,7 +1653,7 @@ mod tests {
         assert_eq!(ChannelsConfig::normalize_channel_id("   "), None);
     }
 
-    // Covers: BE-D01 helper — require_configured enforces non-empty and configured channel.
+    // Covers: require_configured enforces non-empty and configured channel.
     #[test]
     fn require_configured_rejects_empty_and_unknown() {
         let mut channels = ChannelsConfig::default();
@@ -1689,7 +1689,7 @@ mod tests {
         );
     }
 
-    // Covers: Design 5.1 — resolved_system_prompt falls back to global when channel missing
+    // Covers: resolved_system_prompt falls back to global when channel missing
     // or channel-level prompt is empty/unset.
     #[test]
     fn resolved_system_prompt_uses_channel_or_global_fallback() {
@@ -1838,7 +1838,7 @@ mod tests {
         );
     }
 
-    // Covers: BE-D01 — [channels.<id>] section parses within full AppConfig.
+    // Covers: [channels.<id>] section parses within full AppConfig.
     #[test]
     fn app_config_parses_channels_section() {
         let toml_str = r#"
@@ -1893,7 +1893,7 @@ mod tests {
         );
     }
 
-    // Covers: BE-D01 startup validation — tolerate tables without channel_id column,
+    // Covers: startup validation — tolerate tables without channel_id column,
     // and fail loudly when channel_id IS NULL rows exist after the column is added.
     #[tokio::test]
     async fn validate_historical_rows_detects_null_channel_id() {

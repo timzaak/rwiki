@@ -152,7 +152,7 @@ fn feedback_post_request(body: serde_json::Value) -> Request<Body> {
 
 // User Story: US-CORE-029 -- As a user, I want to submit a like feedback for an
 // assistant message so that I can indicate the response was helpful.
-// Covers: Design 5.1 scenario 1; submit_feedback UPSERT with 'like' returns 204,
+// Covers: submit_feedback UPSERT with 'like' returns 204,
 //          DB row has feedback='like' and correct session_id/message_id/content.
 
 #[tokio::test]
@@ -197,7 +197,7 @@ async fn submit_like_feedback_returns_204_and_db_correct() {
 
 // User Story: US-CORE-029 -- As a user, I want to submit a dislike feedback to
 // indicate the response was unhelpful.
-// Covers: Design 5.1 scenario 2; submit_feedback with 'dislike' returns 204.
+// Covers: submit_feedback with 'dislike' returns 204.
 
 #[tokio::test]
 async fn submit_dislike_feedback_returns_204() {
@@ -235,7 +235,7 @@ async fn submit_dislike_feedback_returns_204() {
 
 // User Story: support-multiple-website -- Feedback must be recorded under the
 // requested channel so that operational data is isolated by channel.
-// Covers: BE-D04; submit_feedback with a valid channelId persists chat_feedback.channel_id.
+// Covers: submit_feedback with a valid channelId persists chat_feedback.channel_id.
 
 #[tokio::test]
 async fn submit_feedback_with_channel_id_persists_channel_id() {
@@ -273,7 +273,7 @@ async fn submit_feedback_with_channel_id_persists_channel_id() {
 // User Story: support-multiple-website -- The system must reject feedback that
 // does not identify a configured channel, so records cannot be written without a
 // valid isolation scope.
-// Covers: BE-D04; missing/empty/whitespace channelId returns 400.
+// Covers: missing/empty/whitespace channelId returns 400.
 
 #[tokio::test]
 async fn missing_or_empty_channel_id_returns_400() {
@@ -335,7 +335,7 @@ async fn missing_or_empty_channel_id_returns_400() {
 
 // User Story: support-multiple-website -- Only configured channels are accepted;
 // an unknown channelId must be rejected before any DB write.
-// Covers: BE-D04; unconfigured channelId returns 400.
+// Covers: unconfigured channelId returns 400.
 
 #[tokio::test]
 async fn unconfigured_channel_id_returns_400() {
@@ -377,7 +377,7 @@ async fn unconfigured_channel_id_returns_400() {
 
 // User Story: support-multiple-website -- Identical session/message identifiers
 // in different channels must not collide or overwrite each other.
-// Covers: BE-D04; UNIQUE(channel_id, session_id, message_id) plus UPSERT by channel
+// Covers: UNIQUE(channel_id, session_id, message_id) plus UPSERT by channel
 // keeps records isolated.
 
 #[tokio::test]
@@ -467,7 +467,7 @@ async fn identical_session_message_in_two_channels_does_not_overwrite() {
 
 // User Story: US-CORE-029 -- As a user, I want to switch my feedback from like
 // to dislike so my latest preference is recorded.
-// Covers: Design 5.1 scenario 3; UPSERT updates existing record in-place.
+// Covers: UPSERT updates existing record in-place.
 
 #[tokio::test]
 async fn switch_feedback_like_to_dislike_updates_db() {
@@ -533,7 +533,7 @@ async fn switch_feedback_like_to_dislike_updates_db() {
 
 // User Story: US-CORE-029 -- As a user, I want to cancel my feedback so it is
 // removed from the system.
-// Covers: Design 5.1 scenario 4; feedback=null triggers DELETE, record removed.
+// Covers: feedback=null triggers DELETE, record removed.
 //          Idempotent: canceling non-existent feedback also returns 204.
 
 #[tokio::test]
@@ -606,7 +606,7 @@ async fn cancel_feedback_deletes_db_record() {
 
 // User Story: US-CORE-029 -- As a system, I want invalid input rejected with a
 // clear error so callers know what is wrong.
-// Covers: Design 5.1 scenario 5; empty sessionId/messageId returns 400.
+// Covers: empty sessionId/messageId returns 400.
 
 #[tokio::test]
 async fn missing_required_fields_returns_400() {
@@ -669,7 +669,7 @@ async fn missing_required_fields_returns_400() {
 
 // User Story: US-CORE-029 -- As a system, I want invalid feedback values rejected
 // so only 'like'/'dislike'/null are accepted.
-// Covers: Design 5.1 scenario 6; feedback not in like/dislike/null returns 400.
+// Covers: feedback not in like/dislike/null returns 400.
 
 #[tokio::test]
 async fn invalid_feedback_value_returns_400() {
@@ -714,7 +714,7 @@ async fn invalid_feedback_value_returns_400() {
 
 // User Story: US-CORE-029 -- As an operator, I want to query feedback records
 // to analyze knowledge base quality.
-// Covers: Design 5.1 scenario 7; GET with valid token returns 200, items + total.
+// Covers: GET with valid token returns 200, items + total.
 
 #[tokio::test]
 async fn query_feedback_list_with_auth_returns_200() {
@@ -794,7 +794,7 @@ async fn query_feedback_list_with_auth_returns_200() {
 
 // User Story: US-CORE-029 -- As a system, I want unauthenticated queries rejected
 // so only authorized operators can view feedback data.
-// Covers: Design 5.1 scenario 8; GET without Bearer Token returns 401.
+// Covers: GET without Bearer Token returns 401.
 
 #[tokio::test]
 async fn query_feedback_list_without_token_returns_401() {
@@ -818,7 +818,7 @@ async fn query_feedback_list_without_token_returns_401() {
 
 // User Story: support-multiple-website -- Feedback queries must require a channelId
 // and reject requests that do not specify one.
-// Covers: BE-D04; GET /api/chat/feedback without channelId returns 400.
+// Covers: GET /api/chat/feedback without channelId returns 400.
 
 #[tokio::test]
 async fn query_feedback_missing_channel_id_returns_400() {
@@ -835,7 +835,7 @@ async fn query_feedback_missing_channel_id_returns_400() {
 }
 
 // User Story: support-multiple-website -- Only configured channels may be queried.
-// Covers: BE-D04; GET /api/chat/feedback with unconfigured channelId returns 400.
+// Covers: GET /api/chat/feedback with unconfigured channelId returns 400.
 
 #[tokio::test]
 async fn query_feedback_unconfigured_channel_id_returns_400() {
@@ -856,7 +856,7 @@ async fn query_feedback_unconfigured_channel_id_returns_400() {
 
 // User Story: support-multiple-website -- Querying feedback for one channel must
 // not return records belonging to another channel.
-// Covers: BE-D04; GET with channelId returns only that channel's records.
+// Covers: GET with channelId returns only that channel's records.
 
 #[tokio::test]
 async fn query_feedback_returns_only_requested_channel_records() {
@@ -943,7 +943,7 @@ async fn query_feedback_returns_only_requested_channel_records() {
 
 // User Story: support-multiple-website -- The existing feedback-type filter must
 // continue to work and must not leak records from other channels.
-// Covers: BE-D04; ?feedback=like scoped by channelId returns only matching records
+// Covers: ?feedback=like scoped by channelId returns only matching records
 // for the requested channel.
 
 #[tokio::test]
@@ -1018,7 +1018,7 @@ async fn query_feedback_type_filter_honors_channel_isolation() {
 
 // User Story: US-CORE-029 -- As an operator, I want to filter feedback by type
 // to focus on positive or negative signals.
-// Covers: Design 5.1 scenario 9; GET with ?feedback=like returns only like records.
+// Covers: GET with ?feedback=like returns only like records.
 
 #[tokio::test]
 async fn query_feedback_with_type_filter_returns_matching() {
@@ -1072,7 +1072,7 @@ async fn query_feedback_with_type_filter_returns_matching() {
 
 // User Story: US-CORE-029 -- As an operator, I want paginated feedback results
 // to handle large datasets without overloading the UI.
-// Covers: Design 5.1 scenario 10; GET with limit/offset returns correct page.
+// Covers: GET with limit/offset returns correct page.
 
 #[tokio::test]
 async fn query_feedback_with_pagination_works() {
