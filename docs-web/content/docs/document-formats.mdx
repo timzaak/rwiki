@@ -146,9 +146,9 @@ Regardless of format, every uploaded file walks the same pipeline:
 1. Pick a parser by extension, produce a list of `ParsedChunk`s
 2. Embed each chunk via the embedding model and write to the vector store
 3. Build a FTS5 full-text index in parallel (jieba tokenization)
-4. Persist document metadata to SQLite, mark status as `draft`
+4. Persist document metadata to the storage backend, mark status as `draft`
 
-Before writing, content is deduplicated: if a chunk's content already exists in a `published` document, that chunk is skipped — not re-indexed, not duplicated online (only `draft`-to-`draft` duplication is allowed). The skipped count is logged.
+Before writing, content is deduplicated: every new document always gets its own retrieval entries (self-contained), but chunks whose content already exists in the knowledge base (same content hash and embedding model) reuse the cached vectors instead of calling the embedding API again. The reused count is logged.
 
 At this point the document is previewable but not yet visible in chat answers. Call `PATCH /api/documents/{id}/publish` to make it retrievable.
 

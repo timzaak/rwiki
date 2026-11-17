@@ -8,10 +8,10 @@ RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处�
 
 ## 技术栈
 
-- **后端**：Rust + Axum + rusqlite + sqlite-vec + rig-core
+- **后端**：Rust + Axum + rig-core；存储可选 SQLite（rusqlite + sqlite-vec，默认）或 PostgreSQL（sqlx + pgvector，企业可选模式）
 - **前端**：React + TypeScript + TanStack Router/Query + Tailwind CSS
 
-选 sqlite-vec 而不是 Pinecone / Milvus，是因为 rwiki 定位为轻量私有部署——一个二进制文件加一个 `.db` 文件就能跑起来，不需要外部服务。代价是没法水平扩展，但对于单团队知识库场景，这个取舍合理。
+选 sqlite-vec 而不是 Pinecone / Milvus，是因为 rwiki 定位为轻量私有部署——一个二进制文件加一个 `.db` 文件就能跑起来，不需要外部服务。代价是没法水平扩展，但对于单团队知识库场景，这个取舍合理。需要集中管理数据库的部署可以通过 `[postgres]` 配置段把存储切换到自备的 PostgreSQL 实例（pgvector）；这解除的是存储层的单文件限制，服务本身仍是单实例定位。见[配置 → PostgreSQL](/zh/docs/configuration#postgresql可选)。
 
 选 rig-core 做 LLM 调用，因为它在 OpenAI 兼容 API 上做了薄封装，同时支持 OpenAI、OpenRouter、BigModel 等多种 provider，切换只需要改 `base_url`。
 
@@ -23,8 +23,8 @@ RWiki 是一个 RAG + Agent 知识库问答平台：后端用 Rust（Axum）处�
 flowchart LR
     A[上传文档] --> B[解析 & 分块]
     B --> C[Embedding 向量化]
-    C --> D[存入 sqlite-vec]
-    C --> E[jieba 分词写入 FTS5]
+    C --> D[向量入库: sqlite-vec / pgvector]
+    C --> E[jieba 分词写全文索引: FTS5 / tsvector]
     D --> F{管理员发布}
     E --> F
     F -->|status: published| G[可被检索]
@@ -61,6 +61,8 @@ flowchart LR
 每个 chunk 的文本通过 Embedding API 转为向量（批处理，每批 64 条），存入 sqlite-vec 虚拟表。去重是自包含的：上传时始终为每个新文档建立独立的检索条目；相同内容（相同 content_hash 和 embedding 模型）只复用已缓存的向量，不重复调用 embedding API。这样批量上下线时，下线老文档不影响新文档下的未改动内容（见[文档管理后台](/zh/docs/admin)）。
 
 同时，每个 chunk 的文本会用 [jieba](https://github.com/messense/jieba-rs)（中文分词）进行分词，写入 FTS5 虚拟表（`fts_chunks`）。这样检索时可以同时做 BM25 关键词搜索和向量相似度搜索，两种结果通过 Reciprocal Rank Fusion（RRF）融合排序。
+
+两套索引都在同一个存储接口之后，后端可互换。默认是 SQLite；可选的 PostgreSQL 后端（向量用 pgvector，关键词用内建全文检索）面向自带数据库的企业部署，通过 `[postgres]` 配置段启用。两种后端的检索语义保持一致：jieba 分词在应用层执行，写入与查询两侧同源；向量分数归一到同一标度；发布状态与频道过滤遵循同一套规则。主站、widget、`/api/search`、MCP、评测等全部入口在两种后端下照常工作；PostgreSQL 前提不满足时启动快速失败，不回退 SQLite。
 
 ### 文档状态
 

@@ -4,7 +4,7 @@ description: Docker 部署
 icon: Container
 ---
 
-RWiki 通过 Docker 多阶段构建产出单二进制 + 静态前端的镜像，无需外部数据库或向量服务。SQLite 文件存储在挂载卷中。
+RWiki 通过 Docker 多阶段构建产出单二进制 + 静态前端的镜像，无需外部数据库或向量服务。SQLite 文件存储在挂载卷中。企业部署可选择把存储切换到自备的 PostgreSQL 实例——镜像与配置文件不变（见 [PostgreSQL 存储后端（可选）](#postgresql-存储后端可选)）。
 
 预构建镜像发布在 [GitHub Container Registry](https://github.com/timzaak/rwiki/pkgs/container/rwiki)。
 
@@ -41,6 +41,7 @@ docker run -d -p 8080:8080 \
 | `API_TOKEN` | 文档管理接口鉴权 Token | 建议设置 |
 | `APP_CONFIG` | 配置文件路径，默认 `/app/config.toml` | 否 |
 | `CORS_ALLOWED_ORIGINS` | Widget CORS 来源白名单（逗号分隔）。在第三方网站嵌入 widget 时设置 | 否 |
+| `POSTGRES_URL` | PostgreSQL 连接串。仅当配置中存在 `[postgres]` 段时生效 | 否 |
 
 环境变量优先级高于配置文件。也可以挂载配置文件代替环境变量：
 
@@ -101,6 +102,40 @@ docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
   ghcr.io/timzaak/rwiki
 ```
+
+## PostgreSQL 存储后端（可选）
+
+面向需要集中/托管数据库的企业部署：把存储后端切换到自备的 PostgreSQL 实例。Docker 镜像不变，上传、混合检索、聊天、反馈、MCP 等全部能力在两种后端下行为一致。
+
+实例前提：
+
+- 一个 PostgreSQL 实例（托管或自建），已启用 **pgvector 扩展且版本 ≥0.8**。主流托管平台（AWS RDS/Aurora、阿里云 RDS、GCP Cloud SQL）在控制台开启；自建实例需 `CREATE EXTENSION vector`，或使用有权限执行它的账号——服务启动时会尝试 `CREATE EXTENSION IF NOT EXISTS`，无权限时启动失败并明确提示。
+- 为 rwiki 建专用数据库与账号，账号对该库有 DDL 权限（首次启动自动建表）。
+
+在 `config.toml` 增加 `[postgres]` 段并重启：
+
+```toml
+[postgres]
+url = "postgres://rwiki:<password>@<host>:5432/rwiki?sslmode=require"
+# max_connections = 10        # 连接池上限（默认 10）
+# acquire_timeout_secs = 10   # 取连接超时（秒，默认 10）
+```
+
+省略该段保持默认的零依赖 SQLite 模式。段存在时任一前提不满足，启动即失败并指明问题，不静默回退：
+
+| 启动报错 | 处置 |
+|---|---|
+| `[postgres].url 未配置` | 段存在时 url 必填——检查 TOML 键名 |
+| `PostgreSQL 不可达: <host:port>` | 检查网络/安全组/VPC、账号密码、实例状态 |
+| pgvector 扩展缺失或版本低于 0.8 | 在目标库执行 `CREATE EXTENSION vector`（或升级扩展版本）后重启 |
+| Embedding 维度不匹配（报错含 `vector(N)`） | 换回维度一致的 embedding 模型，或清库重建索引 |
+
+说明：
+
+- 存量 SQLite 数据**不迁移**——PostgreSQL 模式从空库开始。需要旧数据时保持 SQLite 模式，或重新上传文档。
+- 该模式下 `[sqlite].path` 被忽略（启动日志会说明）。
+- 首次启动自动建表、自管迁移版本、按 embedding 配置创建 HNSW 向量索引，随后执行与 SQLite 模式一致的维度检查与崩溃恢复。重启容器后数据仍在，无需重新上传。
+- 完整配置项见[配置 → PostgreSQL](/zh/docs/configuration#postgresql可选)。
 
 ## Caddy 反向代理
 

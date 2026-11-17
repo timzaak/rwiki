@@ -4,7 +4,7 @@ description: Docker deployment
 icon: Container
 ---
 
-RWiki uses Docker multi-stage builds to produce a single binary + static frontend image. No external database or vector service needed. SQLite data is stored in a mounted volume.
+RWiki uses Docker multi-stage builds to produce a single binary + static frontend image. No external database or vector service needed. SQLite data is stored in a mounted volume. Enterprise deployments can optionally switch storage to a self-provided PostgreSQL instance — same image, same config file (see [PostgreSQL storage (optional)](#postgresql-storage-optional)).
 
 Pre-built images are available on [GitHub Container Registry](https://github.com/timzaak/rwiki/pkgs/container/rwiki).
 
@@ -41,6 +41,7 @@ The container listens on port `8080`, data stored at `/app/data`.
 | `API_TOKEN` | Document management endpoint auth token | Recommended |
 | `APP_CONFIG` | Config file path, default `/app/config.toml` | No |
 | `CORS_ALLOWED_ORIGINS` | Widget CORS origin allowlist (comma-separated). Set when embedding the widget on third-party sites | No |
+| `POSTGRES_URL` | PostgreSQL connection URL. Only takes effect when a `[postgres]` section is present in the config | No |
 
 Environment variables take priority over the config file. You can also mount a config file instead:
 
@@ -101,6 +102,40 @@ docker run -d -p 8080:8080 \
   -v rwiki-data:/app/data \
   ghcr.io/timzaak/rwiki
 ```
+
+## PostgreSQL storage (optional)
+
+For enterprise deployments that need a centralized or managed database, switch the storage backend to your own PostgreSQL instance. The Docker image and every capability stay the same — upload, hybrid search, chat, feedback, MCP all behave identically on both backends.
+
+Prerequisites:
+
+- A PostgreSQL instance (managed or self-hosted) with the **pgvector extension ≥0.8**. Major managed platforms (AWS RDS/Aurora, Alibaba Cloud RDS, GCP Cloud SQL) enable this in the console. Self-hosted instances need `CREATE EXTENSION vector`, or an account with permission to run it — the service attempts `CREATE EXTENSION IF NOT EXISTS` on startup and fails with a clear message when it lacks permission.
+- A dedicated database and account with DDL rights on it (the first start creates the schema automatically).
+
+Add a `[postgres]` section to `config.toml` and restart:
+
+```toml
+[postgres]
+url = "postgres://rwiki:<password>@<host>:5432/rwiki?sslmode=require"
+# max_connections = 10        # pool size (default 10)
+# acquire_timeout_secs = 10   # acquire timeout in seconds (default 10)
+```
+
+Omitting the section keeps the default zero-dependency SQLite mode. When the section is present, any unmet prerequisite fails startup with an error naming the problem — no silent fallback:
+
+| Startup error | Fix |
+|---------------|-----|
+| `[postgres].url` not configured | `url` is required once the section exists — check the TOML key |
+| Instance unreachable (the error names the `<host:port>` it tried) | Check network / security groups / VPC, credentials, instance state |
+| pgvector extension missing or below 0.8 | Run `CREATE EXTENSION vector` on the target database (or upgrade the extension), then restart |
+| Embedding dimension mismatch (`vector(N)` in the error) | Switch back to a dimension-matching embedding model, or drop the database and re-index |
+
+Notes:
+
+- Existing SQLite data is **not migrated** — PostgreSQL mode starts from an empty database. Keep SQLite mode, or re-upload the documents.
+- `[sqlite].path` is ignored in this mode (the startup log says so).
+- First start creates the schema, version-tracks its migrations, builds the HNSW vector index from the embedding config, then runs the same dimension check and crash recovery as SQLite mode. Restart the container and the data is still there — no re-upload needed.
+- Full option reference: [Configuration → PostgreSQL](/en/docs/configuration#postgresql-optional).
 
 ## Caddy Reverse Proxy
 

@@ -25,6 +25,7 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `CORS_ALLOWED_ORIGINS` | `server.allowed_origins` | Comma-separated origin allowlist for the chat widget (embedded on third-party sites). Empty means allow all origins (`*`), the default. Set specific origins to restrict which sites may call `/api/chat`. |
 | `OTEL_LICENSE_KEY` | `otel.license_key` | OTLP auth token |
 | `RERANK_API_KEY` | `rerank.api_key` | Rerank API Key |
+| `POSTGRES_URL` | `postgres.url` | PostgreSQL connection URL. Only takes effect when a `[postgres]` section is present — when the section is omitted, the variable is ignored and the default SQLite mode stays on. |
 
 ## Server
 
@@ -48,6 +49,35 @@ The config file path defaults to `config/config.toml` (relative to the working d
 | `path` | string | Yes | — | Database file path, e.g. `"data/rwiki.db"`. Parent directory is created on startup. |
 
 The database runs in WAL mode for concurrent read/write. The vector column width in `vec_chunks` is determined by the embedding model's dimensions.
+
+When a `[postgres]` section is present, the service runs in PostgreSQL mode and `[sqlite].path` is ignored.
+
+## PostgreSQL (optional)
+
+`[postgres]` — Optional PostgreSQL storage backend for enterprise deployments that need a managed or centralized database. **The section's presence enables PostgreSQL mode; omitting the entire section keeps the default zero-dependency single-file SQLite mode, with no behavior change.**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `url` | string | Yes | — | Connection URL, e.g. `"postgres://user:pass@host:5432/rwiki?sslmode=require"`. Set via the `POSTGRES_URL` env var to keep credentials out of the config file (the env var only applies when the section is present). |
+| `max_connections` | number | No | `10` | Connection pool size limit. A conservative default to avoid eating the instance's connection quota. |
+| `acquire_timeout_secs` | number | No | `10` | Timeout in seconds for acquiring a connection from the pool. |
+
+```toml
+[postgres]
+url = "postgres://rwiki:<password>@<host>:5432/rwiki?sslmode=require"
+# max_connections = 10        # pool size (default 10)
+# acquire_timeout_secs = 10   # acquire timeout in seconds (default 10)
+```
+
+Prerequisites and behavior:
+
+- The instance must have the **pgvector extension, version ≥0.8**. Major managed platforms (AWS RDS/Aurora, Alibaba Cloud RDS, GCP Cloud SQL) offer this in the console. Self-hosted instances need `CREATE EXTENSION vector` beforehand, or an account allowed to run it — the service attempts `CREATE EXTENSION IF NOT EXISTS` on startup and fails with a clear message when it lacks permission.
+- On any unmet prerequisite (missing `url`, unreachable instance, pgvector missing or too old), startup fails fast with an error naming the problem. There is no silent fallback to SQLite.
+- First start creates the schema and the HNSW vector index automatically; the embedding-dimension check and crash recovery (`processing` documents marked `failed`) behave the same as SQLite mode.
+- PostgreSQL mode starts from an empty database. Existing SQLite data is **not migrated** — no migration tool is shipped. Keep SQLite mode, or re-upload the documents.
+- All capabilities behave identically on both backends: upload, hybrid search (same jieba tokenization, same score scale), chat, feedback, MCP, eval. The service still targets single-instance deployments — PostgreSQL removes the single-file storage constraint, not the single-writer service model.
+
+Deployment steps and the startup-error troubleshooting table are in [Deployment → PostgreSQL storage](/en/docs/deployment#postgresql-storage-optional).
 
 ## LLM
 

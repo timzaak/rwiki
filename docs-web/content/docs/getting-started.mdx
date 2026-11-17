@@ -17,7 +17,7 @@ The flow: upload a document → publish → ask questions via the chat UI or API
 - **Embedding API Key**: RWiki uses this to vectorize documents for retrieval. Supports OpenAI, BigModel (Zhipu AI), Google Gemini, and other OpenAI-compatible services.
 - **LLM API Key**: For conversational Q&A. Same provider options as above.
 
-Both keys are **required** — the backend won't start without them. RWiki doesn't need an external database. SQLite is embedded in the process, zero external dependencies.
+Both keys are **required** — the backend won't start without them. RWiki doesn't need an external database. SQLite is embedded in the process, zero external dependencies. Enterprise deployments can optionally switch storage to a self-provided PostgreSQL instance (pgvector) — a config toggle, not something this walkthrough needs (see [Deployment > PostgreSQL storage](/en/docs/deployment#postgresql-storage-optional)).
 
 ## Install
 

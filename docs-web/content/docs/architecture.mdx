@@ -8,10 +8,10 @@ RWiki is a RAG + Agent knowledge base Q&A platform. The Rust backend (Axum) hand
 
 ## Tech Stack
 
-- **Backend**: Rust + Axum + rusqlite + sqlite-vec + rig-core
+- **Backend**: Rust + Axum + rig-core; storage via SQLite (rusqlite + sqlite-vec, default) or PostgreSQL (sqlx + pgvector, optional enterprise mode)
 - **Frontend**: React + TypeScript + TanStack Router/Query + Tailwind CSS
 
-sqlite-vec was chosen over Pinecone / Milvus because rwiki targets lightweight private deployments — a single binary and a `.db` file is all you need. The tradeoff is no horizontal scaling, but for a single-team knowledge base this is fine.
+sqlite-vec was chosen over Pinecone / Milvus because rwiki targets lightweight private deployments — a single binary and a `.db` file is all you need. The tradeoff is no horizontal scaling, but for a single-team knowledge base this is fine. Deployments that need a centralized or managed database can switch storage to their own PostgreSQL instance (pgvector) through a `[postgres]` config section; this removes the single-file storage constraint, while the service itself still targets single-instance deployments. See [Configuration > PostgreSQL](/en/docs/configuration#postgresql-optional).
 
 rig-core handles LLM calls because it provides a thin wrapper over OpenAI-compatible APIs, supporting OpenAI, OpenRouter, BigModel and others. Switching providers is just a `base_url` change.
 
@@ -23,8 +23,8 @@ From document upload to the user receiving an answer, data flows through these s
 flowchart LR
     A[Upload document] --> B[Parse & chunk]
     B --> C[Embedding vectorization]
-    C --> D[Store in sqlite-vec]
-    C --> E[FTS5 index with jieba tokens]
+    C --> D[Store vectors: sqlite-vec / pgvector]
+    C --> E[Full-text index with jieba tokens: FTS5 / tsvector]
     D --> F{Admin publishes}
     E --> F
     F -->|status: published| G[Retrievable]
@@ -61,6 +61,8 @@ Overlong chunks are further split at Markdown semantic boundaries.
 Each chunk's text goes through the Embedding API to produce vectors (batched, 64 per batch), stored in the sqlite-vec virtual table. Deduplication is self-contained: every new document always gets its own retrieval entries. Identical content (same `content_hash` and embedding model) reuses the cached vectors instead of calling the embedding API again. This way, batch publishing and unpublishing can retire an old document without losing its unchanged content under the new one (see [Admin Console](/en/docs/admin)).
 
 In parallel, each chunk's text is tokenized with [jieba](https://github.com/messense/jieba-rs) (Chinese word segmentation) and indexed into an FTS5 virtual table (`fts_chunks`). This enables BM25 keyword search alongside vector similarity search — the two are fused via Reciprocal Rank Fusion (RRF) at retrieval time.
+
+Both indexes sit behind one storage interface with two interchangeable backends. The default is SQLite; an optional PostgreSQL backend (pgvector for vectors, built-in full-text search for keywords) serves enterprise deployments that bring their own database, selected by a `[postgres]` config section. Retrieval semantics are kept identical across backends: jieba tokenization runs in the application on both the write and query sides, vector scores are normalized to the same scale, and publish-status/channel filtering follows the same rules. Every entrypoint — main site, widget, `/api/search`, MCP, eval — runs unchanged on either backend, and startup fails fast rather than falling back to SQLite when the PostgreSQL prerequisites aren't met.
 
 ### Document States
 

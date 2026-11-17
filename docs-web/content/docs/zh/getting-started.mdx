@@ -17,7 +17,7 @@ RWiki 是一个知识库问答平台。你把文档传上去，它自动分块�
 - **Embedding API Key**：RWiki 用它把文档转成向量做检索。支持 OpenAI、智谱 AI（BigModel）、Google Gemini 等兼容 OpenAI 接口的服务。
 - **LLM API Key**：用于对话问答。同样支持 OpenAI / OpenRouter / 智谱。
 
-两个 key **都是必填的**，否则后端跑不起来。RWiki 不需要外部数据库，SQLite 嵌入在进程中，零依赖。
+两个 key **都是必填的**，否则后端跑不起来。RWiki 不需要外部数据库，SQLite 嵌入在进程中，零依赖。企业部署可以选择把存储切换到自备的 PostgreSQL 实例（pgvector）——那是一个配置开关，本教程用不到（见[部署 → PostgreSQL 存储后端](/zh/docs/deployment#postgresql-存储后端可选)）。
 
 ## 安装
 
